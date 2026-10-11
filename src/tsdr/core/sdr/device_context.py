@@ -100,6 +100,9 @@ class SDRDeviceContext:
         # Runtime counters (written by I/O worker, read by stats stage)
         self.total_samples_read = 0
         self.dropped_samples = 0
+        # The radio's analog filter width as last read back by the I/O worker
+        # (None = unknown or not settable).
+        self.analog_bandwidth_hz: float | None = None
         self.queue_high_water_mark = 0
         self.total_queue_drops = 0
 

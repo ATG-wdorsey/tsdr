@@ -87,6 +87,15 @@ sudo apt install soapysdr-module-rtlsdr   # or -hackrf, -airspy, -remote, ...
 
 Run `soapy probe` in the console to enumerate the devices SoapySDR can see.
 
+TSDR also sets the analog filter ahead of the radio's converter when the driver
+leaves it wide. The Pluto's stays at 18 MHz whatever the sample rate, so a strong
+signal a few MHz outside a 2 MS/s span overloads the converter from about -35 dBm
+at gain 40 and aliases into the span. On the Pluto TSDR keeps the filter at 0.8 x
+the sample rate; other drivers keep their own. `config --analog-filter` takes
+`track`, `off` (the driver's own setting), `auto`, or a fixed width such as
+`1.5M`, and `--analog-filter-fraction` sets the fraction. The Stats panel shows
+the width the driver reports.
+
 ### Checking your terminal and configuration
 
 After installing, run the built-in diagnostic to verify that your terminal and

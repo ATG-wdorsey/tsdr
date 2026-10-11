@@ -275,6 +275,18 @@ the dial. Free mode applies the offset when it recenters, when `o`/`O`
 (`config --lo-offset`) change it, and when a new demodulator would find the
 LO inside its channel.
 
+## Analog filter
+
+`DeviceConfig.analog_filter` (auto/track/fixed/off), `analog_filter_hz` and
+`analog_filter_fraction` set the filter ahead of the ADC through the optional
+`AnalogFilterControl` (`devices/base.py`; Soapy only). The I/O worker applies
+`core/sdr/analog_filter.target_bandwidth` at open and on every config apply
+(so after every sample-rate change), and hands the driver back the width it
+had at open when tsdr stops managing it. `auto` tracks the rate only on
+`capabilities.static_analog_filter` drivers (SoapyPlutoSDR, which otherwise
+leaves the AD9361 at 18 MHz); drivers that retune their own filter are left
+alone. `SDRDeviceContext.analog_bandwidth_hz` holds the read-back width.
+
 ## Spectrum View (zoom/pan)
 
 The view is client state: `spectrum_center` / `spectrum_span` on `DeviceConfig`

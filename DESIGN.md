@@ -158,6 +158,9 @@ Each worker owns a thread. The worker abstraction revolves around this. Workers 
 
 The IO worker gets samples from and sets config on the SDR hardware, and has exclusive access to it.
 
+It also sets the radio's analog (anti-alias) filter after every sample-rate change on drivers that leave the filter
+where it is, so strong signals outside the captured band stay off the converter.
+
 #### Pipeline Worker
 
 The pipeline worker processes samples and works with the pipelines of the device context, and is generally the CPU

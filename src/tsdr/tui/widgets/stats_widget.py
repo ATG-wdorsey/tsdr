@@ -80,6 +80,8 @@ class StatsWidget(SectionPanel):
         self._controller_gain: int | None = None
         # (hardware center, center - dial) while the LO sits off the dial.
         self._lo: tuple[float, float] | None = None
+        # The radio's analog filter width, read back by the I/O worker.
+        self._analog_bandwidth: float | None = None
         self._wire_bytes_per_sec: float = 0.0
         self._device_state: DeviceState | None = None
         self._requested_sample_rate: float | None = None
@@ -123,6 +125,7 @@ class StatsWidget(SectionPanel):
             if lo_offset and caps.frequency_controllable and not caps.provides_spectrum
             else None
         )
+        self._analog_bandwidth = device.analog_bandwidth_hz
         # Jitter events are coalesced (fire only on change), so seed from the device
         # or a panel opened mid-stream shows stale zeros until the next change.
         if isinstance(device.device, HasJitterBuffer):
@@ -139,6 +142,10 @@ class StatsWidget(SectionPanel):
     def update_stats(self, event: StatsUpdateEvent) -> None:
         self.current_event = event
         self._update_level(event)
+        # Set by the I/O worker after a config change lands, so poll it here.
+        device = get_engine().devices.get(self._device_id or "")
+        if device is not None:
+            self._analog_bandwidth = device.analog_bandwidth_hz
         self.refresh()
 
     def _update_level(self, event: StatsUpdateEvent) -> None:
@@ -252,6 +259,9 @@ class StatsWidget(SectionPanel):
             sign = "+" if offset > 0 else "-"
             delta = format_hz(abs(offset), decimals=1, long_suffix=True)
             lines.append(_row("LO:", f"[white]{lo_freq}[/white] [dim]({sign}{delta})[/dim]"))
+        if self._analog_bandwidth is not None:
+            width = format_hz(self._analog_bandwidth, decimals=3, long_suffix=True)
+            lines.append(_row("Filter:", f"[white]{width}[/white]"))
         if self._controller_center_frequency is not None:
             tuned = format_hz(self._controller_center_frequency, decimals=3, long_suffix=True)
             lines.append(_row("Peer tune:", f"[yellow]{tuned}[/yellow]"))
