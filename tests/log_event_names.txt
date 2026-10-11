@@ -60,6 +60,7 @@ device_started
 device_starting
 device_stopped
 device_stopping
+device_throughput_low
 directory_entry_skipped
 directory_fetch_failed
 directory_fetched
