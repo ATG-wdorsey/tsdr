@@ -101,6 +101,15 @@ def import_soapysdr() -> Any:
 _SoapySDR = import_soapysdr()
 _HAS_SOAPY = _SoapySDR is not None
 
+# Driver or hardware key fragments of direct-conversion (zero-IF) radios.
+_ZERO_IF_KEYS = ("pluto", "hackrf", "lime", "uhd", "bladerf")
+
+
+def _is_zero_if(*keys: str) -> bool:
+    folded = " ".join(keys).casefold()
+    return any(k in folded for k in _ZERO_IF_KEYS)
+
+
 # Stream-format preference, best-first (CF32 lossless; integer formats fallback).
 # Fields: SOAPY_SDR_* string, SampleFormat, numpy read dtype, components per IQ
 # sample (1 = complex64, 2 = interleaved 8-bit).
@@ -256,6 +265,7 @@ class SoapySDRDevice:
             logger.debug("soapy_list_gains_failed error=%r", e)
 
         hw = self._device.getHardwareKey()
+        driver_key = self._device.getDriverKey()
         logger.debug("soapy_gains hw=%s gains=%s has_agc=%s", hw, ",".join(gains), has_agc)
         self._identity = DeviceIdentity(type_label=hw or "Soapy", serial=self._serial or None)
         self._capabilities = DeviceCapabilities(
@@ -267,8 +277,15 @@ class SoapySDRDevice:
             gain_step=1.0,
             gain_unit="dB",
             bias_tee_supported=supports_bias_tee,
+            zero_if=_is_zero_if(driver_key, hw, self._driver),
         )
-        logger.info("soapy_opened hw=%s driver=%s", hw, self._driver or "auto")
+        logger.info(
+            "soapy_opened hw=%s driver=%s driver_key=%s zero_if=%s",
+            hw,
+            self._driver or "auto",
+            driver_key,
+            self._capabilities.zero_if,
+        )
 
     def interrupt(self) -> None:
         # Soapy reads have a 2s timeout, so they unblock on their own.

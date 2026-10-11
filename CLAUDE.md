@@ -263,6 +263,18 @@ bars hold their old positions under the already-moved axis — zoomed and
 full-band alike — and the always-on `FrequencyShiftStage` keeps audio on
 station.
 
+While a demodulator runs, the policy puts the hardware center beside the dial
+instead of on it (`DeviceConfig.lo_offset`: auto/below/above/off;
+`lo_offset_hz`: None = one channel width, at least 50 kHz), keeping a zero-IF
+receiver's LO leakage, DC offset and near-DC intermod out of the channel.
+`auto` means below on `capabilities.zero_if` radios, off otherwise. No
+demodulator, or a channel too wide to sit beside the LO (DAB, ADS-B), means
+no offset; at the edge of the device's range the LO mirrors to the dial's
+other side. In center mode `full_view_range` crops the band symmetric about
+the dial. Free mode applies the offset when it recenters, when `o`/`O`
+(`config --lo-offset`) change it, and when a new demodulator would find the
+LO inside its channel.
+
 ## Spectrum View (zoom/pan)
 
 The view is client state: `spectrum_center` / `spectrum_span` on `DeviceConfig`

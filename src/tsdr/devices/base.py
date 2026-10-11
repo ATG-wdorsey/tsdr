@@ -58,6 +58,11 @@ class DeviceCapabilities:
     # from `frequency_range` instead of `center_frequency ± sample_rate/2`.
     provides_spectrum: bool = False
 
+    # Direct-conversion (zero-IF) receiver: LO leakage, DC offset, 1/f noise
+    # and second-order intermod sit at the capture center, so the tuning
+    # policy keeps the LO beside a demodulated channel by default.
+    zero_if: bool = False
+
     # Populated when another client controls the hardware (shared SpyServer).
     controller_center_frequency: float | None = None
     controller_gain: int | None = None

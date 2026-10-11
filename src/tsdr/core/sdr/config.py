@@ -14,6 +14,9 @@ from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.sdr.samples_batch import SampleFormat
 
 TuningMode = Literal["center", "free"]
+# Where the LO sits relative to the dial while demodulating; auto = below
+# on zero-IF radios, off otherwise.
+LoOffset = Literal["auto", "below", "above", "off"]
 FFTWindow = Literal["hanning", "hamming", "blackman", "bartlett", "rectangular"]
 
 # Floor for the spectrum view span, sized so the deepest server-provided
@@ -66,6 +69,8 @@ class DeviceConfigChanges(TypedDict, total=False):
     tuned_frequency: float
     center_frequency: float
     tuning_mode: TuningMode
+    lo_offset: LoOffset
+    lo_offset_hz: float | None
     sample_rate: float
     rf_gain: float
     auto_gain: bool
@@ -107,6 +112,10 @@ class DeviceConfig:
     center_frequency: float = 100.0e6  # Hz, hardware capture center (derived from the dial)
     # center: hardware follows every dial move; free: DSP offset until the band edge
     tuning_mode: TuningMode = "center"
+    # LO side while demodulating, and its distance from the dial (None = sized
+    # from the demodulator's channel); see tune_policy.lo_offset_for.
+    lo_offset: LoOffset = "auto"
+    lo_offset_hz: float | None = None
     sample_rate: float = 2.4e6  # Samples/sec
     rf_gain: float = 30.0  # dB
     auto_gain: bool = False  # Disable AGC for consistent gain control
@@ -162,6 +171,10 @@ class DeviceConfig:
             raise ValueError(f"tuned_frequency must be positive, got {self.tuned_frequency}")
         if self.tuning_mode not in get_args(TuningMode):
             raise ValueError(f"tuning_mode must be 'center' or 'free', got {self.tuning_mode}")
+        if self.lo_offset not in get_args(LoOffset):
+            raise ValueError(f"lo_offset must be one of {get_args(LoOffset)}, got {self.lo_offset}")
+        if self.lo_offset_hz is not None and self.lo_offset_hz <= 0:
+            raise ValueError(f"lo_offset_hz must be positive, got {self.lo_offset_hz}")
         if self.queue_size <= 0:
             raise ValueError(f"queue_size must be positive, got {self.queue_size}")
         if self.buffer_samples is not None and self.buffer_samples <= 0:

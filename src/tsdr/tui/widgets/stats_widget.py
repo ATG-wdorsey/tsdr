@@ -78,6 +78,8 @@ class StatsWidget(SectionPanel):
         self._frequency_controllable: bool = False
         self._controller_center_frequency: float | None = None
         self._controller_gain: int | None = None
+        # (hardware center, center - dial) while the LO sits off the dial.
+        self._lo: tuple[float, float] | None = None
         self._wire_bytes_per_sec: float = 0.0
         self._device_state: DeviceState | None = None
         self._requested_sample_rate: float | None = None
@@ -115,6 +117,12 @@ class StatsWidget(SectionPanel):
         self._frequency_controllable = caps.frequency_controllable
         self._controller_center_frequency = caps.controller_center_frequency
         self._controller_gain = caps.controller_gain
+        lo_offset = device.config.center_frequency - device.config.tuned_frequency
+        self._lo = (
+            (device.config.center_frequency, lo_offset)
+            if lo_offset and caps.frequency_controllable and not caps.provides_spectrum
+            else None
+        )
         # Jitter events are coalesced (fire only on change), so seed from the device
         # or a panel opened mid-stream shows stale zeros until the next change.
         if isinstance(device.device, HasJitterBuffer):
@@ -238,6 +246,12 @@ class StatsWidget(SectionPanel):
             else:
                 rng = f"{format_hz(lo, decimals=3)} – {format_hz(hi, decimals=3)}"
                 lines.append(_row("Locked:", f"[yellow]{rng}[/yellow]"))
+        if self._lo is not None:
+            center, offset = self._lo
+            lo_freq = format_hz(center, decimals=3, long_suffix=True)
+            sign = "+" if offset > 0 else "-"
+            delta = format_hz(abs(offset), decimals=1, long_suffix=True)
+            lines.append(_row("LO:", f"[white]{lo_freq}[/white] [dim]({sign}{delta})[/dim]"))
         if self._controller_center_frequency is not None:
             tuned = format_hz(self._controller_center_frequency, decimals=3, long_suffix=True)
             lines.append(_row("Peer tune:", f"[yellow]{tuned}[/yellow]"))

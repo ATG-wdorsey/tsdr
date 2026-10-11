@@ -173,6 +173,13 @@ Tuning:
 - `s` / `S`: cycle the tuning step size forward / backward.
 - `c`: toggle center / free tuning (center: hardware follows every dial move;
   free: DSP offset until the band edge; entering center recenters).
+- `o` / `O`: put the LO below / above the dial while demodulating; the same key
+  again removes the offset. Zero-IF radios (Pluto, HackRF, LimeSDR, USRP,
+  bladeRF) keep the LO below the dial by default, one channel width away and at
+  least 50 kHz, so their center spike and intermod products stay out of the
+  channel. In center mode the spectrum is trimmed by twice the offset to keep
+  the dial centered. `config --lo-offset` and `--lo-offset-size` set it from the
+  console.
 
 Reception:
 

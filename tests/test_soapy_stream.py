@@ -11,7 +11,7 @@ import pytest
 
 from tsdr.core.sdr.exceptions import DeviceError
 from tsdr.core.sdr.samples_batch import SampleFormat, SamplesBatch
-from tsdr.devices.soapy import _HAS_SOAPY, SoapySDRDevice
+from tsdr.devices.soapy import _HAS_SOAPY, SoapySDRDevice, _is_zero_if
 
 pytestmark = pytest.mark.skipif(not _HAS_SOAPY, reason="SoapySDR bindings not installed")
 
@@ -109,3 +109,20 @@ def test_auto_gain_guarded_by_has_gain_mode():
     dev2 = _device(has_agc=True)
     dev2.set_auto_gain(True)
     assert ("setGainMode", True) in dev2._device.calls
+
+
+@pytest.mark.parametrize(
+    ("driver_key", "hardware_key", "expected"),
+    [
+        ("PlutoSDR", "PlutoSDR", True),
+        ("HackRF", "HackRF One", True),
+        ("lime", "LimeSDR-USB", True),
+        ("uhd", "B200", True),
+        ("bladeRF", "bladeRF 2.0", True),
+        ("Airspy", "AirSpy", False),
+        ("airspyhf", "AirspyHF", False),
+        ("RTLSDR", "Generic RTL2832U", False),
+    ],
+)
+def test_zero_if_detection(driver_key: str, hardware_key: str, expected: bool) -> None:
+    assert _is_zero_if(driver_key, hardware_key, "") is expected
