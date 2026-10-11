@@ -16,7 +16,12 @@ from tsdr.core.sdr.samples_batch import SampleFormat, SamplesBatch
 from tsdr.core.sdr.spectrum_view import resolve_view
 from tsdr.core.tracing import span
 from tsdr.core.workers import WorkerContext
-from tsdr.devices.base import DeviceCapabilities, HasJitterBuffer, as_spectrum_source
+from tsdr.devices.base import (
+    BuffersCapture,
+    DeviceCapabilities,
+    HasJitterBuffer,
+    as_spectrum_source,
+)
 
 if TYPE_CHECKING:
     from tsdr.core.sdr.config import DeviceConfig
@@ -41,6 +46,22 @@ JITTER_FILL_DELTA = 0.05
 THROUGHPUT_WINDOW_SECONDS = 10.0
 THROUGHPUT_MIN_FRACTION = 0.97
 THROUGHPUT_REPORT_INTERVAL_SECONDS = 60.0
+
+
+def first_sample_utc(device: object, sample_count: int, rate: float, now_utc: float) -> float:
+    """Capture time of a batch's first sample: back from now past the batch
+    and past whatever the device captured after it and still holds."""
+    if rate <= 0:
+        return now_utc
+    held = device.read_backlog_samples if isinstance(device, BuffersCapture) else 0
+    return now_utc - (sample_count + held) / rate
+
+
+def capture_center(device: object, configured: float) -> float:
+    """The center frequency a batch was captured at: a device that buffers
+    capture can still be returning samples from before a retune."""
+    center = device.read_center_frequency if isinstance(device, BuffersCapture) else None
+    return configured if center is None else center
 
 
 class IOWorker:
@@ -253,17 +274,16 @@ class IOWorker:
                         )
                         time.sleep(0.1)
                         continue
-                # Backdate to the first sample of the buffer.
                 sample_count = len(raw_bytes) // self.sample_format.bytes_per_sample
                 actual_rate = device.actual_sample_rate
-                capture_utc_s = clock_sync.now_utc_seconds() - (
-                    sample_count / actual_rate if actual_rate > 0 else 0.0
+                capture_utc_s = first_sample_utc(
+                    device, sample_count, actual_rate, clock_sync.now_utc_seconds()
                 )
 
                 batch = SamplesBatch(
                     raw_samples=raw_bytes,
                     sample_format=self.sample_format,
-                    center_frequency=config.center_frequency,
+                    center_frequency=capture_center(device, config.center_frequency),
                     sample_rate=device.actual_sample_rate,
                     rf_gain=config.rf_gain,
                     capture_utc_s=capture_utc_s,

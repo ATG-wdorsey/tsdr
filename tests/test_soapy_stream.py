@@ -169,6 +169,36 @@ def _open_with(monkeypatch, fake: FakeOpenableDevice) -> SoapySDRDevice:
     return dev
 
 
+def test_open_compiles_the_native_reader_before_the_stream_starts(monkeypatch):
+    """A driver may stall if its first read comes late (SoapyAirspy stops for
+    good when nothing reads ~0.2 s after a rate change), so the reader's ~0.5 s
+    compile must not wait for the first read."""
+    order: list = []
+    fake = FakeOpenableDevice(
+        freq_ranges=[FakeRange(24e6, 1.8e9)],
+        rate_ranges=[FakeRange(10e6, 10e6)],
+        gain_range=FakeRange(0.0, 45.0, 1.0),
+    )
+    fake.activateStream = lambda stream: order.append("activate")  # type: ignore[method-assign]
+    monkeypatch.setattr(soapy, "_native_read_stream", lambda: order.append("compile"))
+    _open_with(monkeypatch, fake)
+    assert order == ["compile", "activate"]
+
+
+def test_a_reader_that_fails_to_compile_falls_back_to_python_reads(monkeypatch, caplog):
+    def fail(read_stream):
+        raise soapy.NumbaError("no")
+
+    monkeypatch.setattr(soapy, "compile_read_loop", fail)
+    soapy._native_read_stream.cache_clear()
+    try:
+        with caplog.at_level("WARNING"):
+            assert soapy._native_read_stream() is None
+    finally:
+        soapy._native_read_stream.cache_clear()
+    assert any("compile_failed" in r.getMessage() for r in caplog.records)
+
+
 def test_open_reports_discrete_sample_rates_and_band(monkeypatch):
     """Airspy R2: two fixed rates, 24 MHz-1.8 GHz, 0-45 dB gain."""
     fake = FakeOpenableDevice(
