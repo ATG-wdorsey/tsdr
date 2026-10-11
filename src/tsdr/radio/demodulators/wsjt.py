@@ -23,12 +23,25 @@ from tsdr.core.events.events import DecodedMessage
 from tsdr.radio.decoders.wsjt.decode import analyze_slot, decode_candidates
 from tsdr.radio.decoders.wsjt.tables import FT4_SLOT_TIME, FT8_SLOT_TIME
 from tsdr.radio.demodulators import NYQUIST_MARGIN, Demodulator
-from tsdr.radio.dsp._kernels import StreamingPolyphaseResampler, make_rational_resampler
+from tsdr.radio.dsp._kernels import (
+    StreamingFilter,
+    StreamingPolyphaseResampler,
+    make_rational_resampler,
+)
 from tsdr.radio.dsp.decimator import MultistageDecimator, smooth_decimation
+from tsdr.radio.dsp.filters import firwin
 
 logger = logging.getLogger(__name__)
 
 TARGET_RATE = 12_000  # canonical WSJT-X audio rate (Hz)
+
+# Upper-sideband selection before taking the real part (the lower sideband
+# would fold onto the same audio): shift the IQ down by a quarter of its rate,
+# low-pass to that quarter, shift back. 129 Kaiser taps: ~60 dB, ~340 Hz
+# transition at 12 kS/s, so audio from ~170 Hz up keeps its LSB rejection.
+_USB_TAPS = 129
+_USB_KAISER_BETA = 5.65
+_QUARTER_TURNS = np.array([1, -1j, -1, 1j], dtype=np.complex64)  # (-j)^n
 WSJTMode = Literal["FT8", "FT4"]
 SUPPORTED_MODES: tuple[WSJTMode, ...] = ("FT8", "FT4")
 
@@ -98,6 +111,16 @@ class WSJTDemodulator(Demodulator):
             if abs(mid_rate - TARGET_RATE) < 1e-6
             else make_rational_resampler(TARGET_RATE, mid_rate)
         )
+        usb_taps = firwin(_USB_TAPS, mid_rate / 4, fs=mid_rate, window=("kaiser", _USB_KAISER_BETA))
+        self._usb_filter = StreamingFilter(usb_taps, [1.0], dtype=np.complex64)
+        self._usb_phase = 0
+
+    def _usb_audio(self, iq: np.ndarray) -> np.ndarray:
+        """Real audio of the upper sideband alone."""
+        turns = _QUARTER_TURNS[(self._usb_phase + np.arange(len(iq))) % 4]
+        self._usb_phase = (self._usb_phase + len(iq)) % 4
+        shifted = self._usb_filter.process(iq * turns) * np.conj(turns)
+        return np.ascontiguousarray(shifted.real, dtype=np.float32)
 
     def set_channel_bandwidth(self, bandwidth: float) -> None:
         self.channel_bandwidth = min(float(bandwidth), TARGET_RATE * NYQUIST_MARGIN)
@@ -132,7 +155,7 @@ class WSJTDemodulator(Demodulator):
         iq_lo = self._decim.process(iq_samples) if self._decim is not None else iq_samples
         if len(iq_lo) == 0:
             return
-        audio = np.ascontiguousarray(iq_lo.real, dtype=np.float32)
+        audio = self._usb_audio(iq_lo)
         if self._resampler is not None:
             out = self._resampler.process(audio.reshape(-1, 1))
             if out.shape[0] == 0:
@@ -220,5 +243,7 @@ class WSJTDemodulator(Demodulator):
             self._decim.reset()
         if self._resampler is not None:
             self._resampler.reset()
+        self._usb_filter.reset()
+        self._usb_phase = 0
         self._reset_slot_state()
         self._messages = []
