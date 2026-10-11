@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 # this bound means a caller derived up/down from an unbounded runtime rate.
 _RESAMPLER_TAPS_WARN = 50_000
 
+# Rotation-table length for apply_freq_shift_c64.
+_SHIFT_BLOCK = 256
+
 
 @nb.njit(cache=True, fastmath=True)
 def _lfilter_fir_f32(
@@ -152,22 +155,39 @@ def apply_freq_shift_c64(
     sample_rate: float,
     phase_in: float,
 ) -> tuple[np.ndarray, float]:
-    """Fused frequency-shift kernel: multiply x[n] by exp(j * (phase_in + phase_inc*n))."""
+    """Fused frequency-shift kernel: multiply x[n] by exp(j * (phase_in + phase_inc*n)).
+
+    Sine and cosine run once per entry of a `_SHIFT_BLOCK`-long rotation table
+    and once per block start, not per sample: within a block the rotator is the
+    block's start phasor times table[k]. Each block start is computed from the
+    absolute phase, so rounding error does not accumulate across a batch.
+    """
     n = x.shape[0]
     y = np.empty(n, dtype=np.complex64)
     two_pi = 2.0 * math.pi
     phase_inc = -two_pi * offset_hz / sample_rate
-    phase = phase_in
-    for i in range(n):
-        c = math.cos(phase)
-        s = math.sin(phase)
-        xi = x[i]
-        xr = xi.real
-        xj = xi.imag
-        # (xr + j*xj) * (c + j*s) = (xr*c - xj*s) + j*(xr*s + xj*c)
-        y[i] = np.complex64(complex(xr * c - xj * s, xr * s + xj * c))
-        phase += phase_inc
-    phase = phase % two_pi
+    block = max(1, min(_SHIFT_BLOCK, n))
+    tab_re = np.empty(block, dtype=np.float32)
+    tab_im = np.empty(block, dtype=np.float32)
+    for k in range(block):
+        tab_re[k] = math.cos(phase_inc * k)
+        tab_im[k] = math.sin(phase_inc * k)
+    for start in range(0, n, block):
+        phase = phase_in + phase_inc * start
+        bc = np.float32(math.cos(phase))
+        bs = np.float32(math.sin(phase))
+        stop = min(start + block, n)
+        for i in range(start, stop):
+            k = i - start
+            # rotator (c + js) = (bc + j*bs) * table[k]
+            c = bc * tab_re[k] - bs * tab_im[k]
+            s = bc * tab_im[k] + bs * tab_re[k]
+            xi = x[i]
+            xr = xi.real
+            xj = xi.imag
+            # (xr + j*xj) * (c + j*s) = (xr*c - xj*s) + j*(xr*s + xj*c)
+            y[i] = np.complex64(complex(xr * c - xj * s, xr * s + xj * c))
+    phase = (phase_in + phase_inc * n) % two_pi
     return y, phase
 
 
