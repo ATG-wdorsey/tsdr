@@ -23,8 +23,8 @@ from tsdr.core.events.events import DecodedMessage
 from tsdr.radio.decoders.wsjt.decode import analyze_slot, decode_candidates
 from tsdr.radio.decoders.wsjt.tables import FT4_SLOT_TIME, FT8_SLOT_TIME
 from tsdr.radio.demodulators import NYQUIST_MARGIN, Demodulator
-from tsdr.radio.dsp import StreamingDecimFilter, firwin
 from tsdr.radio.dsp._kernels import StreamingPolyphaseResampler, make_rational_resampler
+from tsdr.radio.dsp.decimator import MultistageDecimator, smooth_decimation
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ class WSJTDemodulator(Demodulator):
         self.channel_bandwidth = float(channel_bandwidth or self.DEFAULT_CHANNEL_BANDWIDTH)
         self.slot_seconds = FT4_SLOT_TIME if self.mode == "FT4" else FT8_SLOT_TIME
         self._slot_samples = int(self.slot_seconds * TARGET_RATE)
-        self._decim: StreamingDecimFilter | None = None
+        self._decim: MultistageDecimator | None = None
         self._resampler: StreamingPolyphaseResampler | None = None
         self._setup_decim()
 
@@ -78,32 +78,26 @@ class WSJTDemodulator(Demodulator):
         return self.mode == "FT4"
 
     def _setup_decim(self) -> None:
-        """Configure the device-rate -> 12 kHz IQ path.
-
-        Integer-ratio (typical for HF SDRs running 12k/24k/48k/96k/192k/240k/2400k):
-        decimating FIR — cheap, no resampling artifacts. Otherwise fall back to
-        a rational polyphase resampler that runs I and Q as two real channels.
+        """Configure the device-rate -> 12 kHz IQ path: a multistage decimator to
+        the nearest rate at or above 12 kHz that small factors reach (exactly
+        12 kHz from the usual HF SDR rates 48k/96k/192k/240k/2400k), then a
+        rational resampler for the small remainder when there is one.
         """
-        sr = int(round(self.sample_rate))
+        sr = self.sample_rate
         if sr < TARGET_RATE:
             raise ValueError(f"WSJT demod requires sample_rate >= {TARGET_RATE}; got {sr}")
-        if sr % TARGET_RATE == 0:
-            decimation = sr // TARGET_RATE
-            if decimation > 1:
-                aa = firwin(64, TARGET_RATE * 0.45, fs=self.sample_rate, window=("kaiser", 6.0))
-                self._decim = StreamingDecimFilter(
-                    aa,
-                    decimation=decimation,
-                    dtype=np.complex64,
-                    expected_input_size=200_000,
-                )
-            else:
-                self._decim = None
-            self._resampler = None
-            return
-
-        self._decim = None
-        self._resampler = make_rational_resampler(TARGET_RATE, sr)
+        decimation = smooth_decimation(sr / TARGET_RATE)
+        self._decim = (
+            MultistageDecimator(sr, decimation, TARGET_RATE * 0.45, dtype=np.complex64)
+            if decimation > 1
+            else None
+        )
+        mid_rate = sr / decimation
+        self._resampler = (
+            None
+            if abs(mid_rate - TARGET_RATE) < 1e-6
+            else make_rational_resampler(TARGET_RATE, mid_rate)
+        )
 
     def set_channel_bandwidth(self, bandwidth: float) -> None:
         self.channel_bandwidth = min(float(bandwidth), TARGET_RATE * NYQUIST_MARGIN)
@@ -131,23 +125,19 @@ class WSJTDemodulator(Demodulator):
     def demodulate(self, iq_samples: np.ndarray, capture_utc_s: float) -> None:
         if len(iq_samples) == 0:
             return
-        # `StreamingDecimFilter` and the no-resample fallback return views into
+        # `MultistageDecimator` and the no-resample fallback return views into
         # buffers we don't own past this call. We hand `audio` to `_emit_audio`
         # (consumed asynchronously by the audio worker) and to the slot ring
         # buffer, so it must own its memory.
-        if self._decim is not None:
-            iq_lo = self._decim.process(iq_samples)
-            if len(iq_lo) == 0:
-                return
-            audio = np.ascontiguousarray(iq_lo.real, dtype=np.float32)
-        elif self._resampler is not None:
-            real_in = np.ascontiguousarray(iq_samples.real, dtype=np.float32).reshape(-1, 1)
-            out = self._resampler.process(real_in)
+        iq_lo = self._decim.process(iq_samples) if self._decim is not None else iq_samples
+        if len(iq_lo) == 0:
+            return
+        audio = np.ascontiguousarray(iq_lo.real, dtype=np.float32)
+        if self._resampler is not None:
+            out = self._resampler.process(audio.reshape(-1, 1))
             if out.shape[0] == 0:
                 return
             audio = np.ascontiguousarray(out[:, 0])
-        else:
-            audio = np.ascontiguousarray(iq_samples.real, dtype=np.float32)
 
         self._emit_audio(audio, TARGET_RATE)
 

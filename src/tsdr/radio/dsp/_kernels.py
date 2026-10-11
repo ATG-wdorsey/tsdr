@@ -551,6 +551,72 @@ def fir_decim_c64_into(
 
 
 @nb.njit(cache=True, fastmath=True)
+def fir_decim_c64_split_into(
+    x: np.ndarray,
+    flipped: np.ndarray,
+    m: int,
+    history: np.ndarray,
+    phase_in: int,
+    pad_re: np.ndarray,
+    pad_im: np.ndarray,
+    y_out: np.ndarray,
+) -> tuple[int, int]:
+    """``fir_decim_c64_into`` with the padded input split into separate real
+    and imaginary float32 arrays, so each output's two dot products run over
+    contiguous memory and vectorize (several times faster on long filters).
+
+    ``pad_re`` / ``pad_im`` : float32[>= N + K - 1], caller-allocated scratch.
+    Other parameters and the return value are as for ``fir_decim_c64_into``.
+    """
+    n = x.shape[0]
+    k = flipped.shape[0]
+    h_len = k - 1
+
+    if phase_in >= n:
+        n_out = 0
+    else:
+        n_out = (n - phase_in + m - 1) // m
+
+    if n_out > 0:
+        for i in range(h_len):
+            pad_re[i] = history[i].real
+            pad_im[i] = history[i].imag
+        for i in range(n):
+            pad_re[h_len + i] = x[i].real
+            pad_im[h_len + i] = x[i].imag
+
+        for i in range(n_out):
+            base = phase_in + i * m
+            # Slices indexed from 0: numba can't prove `base + j` >= 0, and the
+            # negative-index check it adds per load stops vectorization (14x).
+            seg_re = pad_re[base : base + k]
+            seg_im = pad_im[base : base + k]
+            acc_re = np.float32(0.0)
+            acc_im = np.float32(0.0)
+            for j in range(k):
+                t = flipped[j]
+                acc_re += t * seg_re[j]
+                acc_im += t * seg_im[j]
+            y_out[i] = np.complex64(complex(acc_re, acc_im))
+
+    if n >= h_len:
+        for i in range(h_len):
+            history[i] = x[n - h_len + i]
+    elif n > 0:
+        for i in range(h_len - n):
+            history[i] = history[n + i]
+        for i in range(n):
+            history[h_len - n + i] = x[i]
+
+    if phase_in >= n:
+        phase_out = phase_in - n
+    else:
+        phase_out = phase_in + n_out * m - n
+
+    return n_out, phase_out
+
+
+@nb.njit(cache=True, fastmath=True)
 def fir_decim_f32_into(
     x: np.ndarray,
     flipped: np.ndarray,
@@ -583,9 +649,10 @@ def fir_decim_f32_into(
 
         for i in range(n_out):
             base = phase_in + i * m
+            seg = padded_scratch[base : base + k]  # 0-based: vectorizes (see c64_split)
             acc = np.float32(0.0)
             for j in range(k):
-                acc += flipped[j] * padded_scratch[base + j]
+                acc += flipped[j] * seg[j]
             y_out[i] = acc
 
     # Update history: last K-1 samples of the incoming stream
@@ -839,7 +906,7 @@ class StreamingFilter:
 class StreamingDecimFilter:
     """Decimating FIR filter with pre-allocated scratch buffers.
 
-    Wraps ``fir_decim_f32_into`` for float32 or ``fir_decim_c64_into`` for
+    Wraps ``fir_decim_f32_into`` for float32 or ``fir_decim_c64_split_into`` for
     complex64. Computes only the decimated outputs (m=1 for non-decimating).
     The Direct Form I inner loop is a pure dot product, enabling SIMD.
 
@@ -865,15 +932,20 @@ class StreamingDecimFilter:
         self._phase = 0
 
         # Pre-allocate scratch buffers
-        self._scratch_size = expected_input_size
-        self._padded = np.empty(self._scratch_size + n_taps - 1, dtype=h_dtype)
-        self._y_out = np.empty(self._scratch_size // max(decimation, 1) + 2, dtype=h_dtype)
+        self._grow(expected_input_size)
 
     def _grow(self, n: int) -> None:
         self._scratch_size = n
-        h_dtype = np.complex64 if self._is_complex else np.float32
-        self._padded = np.empty(n + self._n_taps - 1, dtype=h_dtype)
-        self._y_out = np.empty(n // max(self._decimation, 1) + 2, dtype=h_dtype)
+        size = n + self._n_taps - 1
+        n_out = n // max(self._decimation, 1) + 2
+        if self._is_complex:
+            # Real and imaginary parts padded separately (fir_decim_c64_split_into).
+            self._pad_re = np.empty(size, dtype=np.float32)
+            self._pad_im = np.empty(size, dtype=np.float32)
+            self._y_out = np.empty(n_out, dtype=np.complex64)
+        else:
+            self._padded = np.empty(size, dtype=np.float32)
+            self._y_out = np.empty(n_out, dtype=np.float32)
 
     def process(self, x: np.ndarray) -> np.ndarray:
         """Filter and decimate *x*. Returned array is owned by this filter."""
@@ -883,13 +955,14 @@ class StreamingDecimFilter:
 
         if self._is_complex:
             x_c = np.ascontiguousarray(x, dtype=np.complex64)
-            n_out, self._phase = fir_decim_c64_into(
+            n_out, self._phase = fir_decim_c64_split_into(
                 x_c,
                 self._flipped,
                 self._decimation,
                 self._history,
                 self._phase,
-                self._padded,
+                self._pad_re,
+                self._pad_im,
                 self._y_out,
             )
         else:
