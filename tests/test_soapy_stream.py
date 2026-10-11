@@ -226,3 +226,15 @@ def test_read_error_names_the_soapy_code():
     dev._device.readStream = lambda *a, **k: FakeSR(-1)
     with pytest.raises(DeviceError, match="TIMEOUT"):
         dev.read_samples(1024 * 8)
+
+
+def test_overflow_is_counted_and_the_read_completes(caplog):
+    """SOAPY_SDR_OVERFLOW means the radio dropped samples; count it, keep reading."""
+    results = iter([soapy._SoapySDR.SOAPY_SDR_OVERFLOW, 1024])
+    dev = _device(fill=lambda chunk, n: None)
+    dev._device.readStream = lambda *a, **k: FakeSR(next(results))
+    with caplog.at_level("WARNING"):
+        raw = dev.read_samples(1024 * 8)
+    assert len(raw) == 1024 * 8
+    assert dev.overflow_count == 1
+    assert any("soapy_overflow" in r.getMessage() for r in caplog.records)

@@ -9,6 +9,7 @@ when the regular import fails.
 import logging
 import platform
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,9 @@ _STREAM_FORMAT_PREFERENCE: tuple[tuple[str, SampleFormat, Any, int], ...] = (
 )
 
 
+_OVERFLOW_LOG_INTERVAL_S = 5.0
+
+
 @dataclass(frozen=True)
 class SoapySDRParams(DeviceParams):
     """SoapySDR device parameters."""
@@ -145,6 +149,11 @@ class SoapySDRDevice:
         self._stream = None
         self._is_open = False
         self._sample_rate: float = 0.0
+        # Driver-side overflows (samples the radio dropped before we read them),
+        # logged as an aggregate so a link that can't sustain the rate shows up.
+        self.overflow_count = 0
+        self._overflows_logged = 0
+        self._overflow_log_at = 0.0
         self._sample_format: SampleFormat = SampleFormat.COMPLEX64
         self._read_dtype: Any = np.complex64
         self._read_components: int = 1
@@ -346,7 +355,10 @@ class SoapySDRDevice:
             chunk = buf[offset * components : (offset + remaining) * components]
             sr = self._device.readStream(self._stream, [chunk], remaining, timeoutUs=2_000_000)
             status = sr.ret
-            if status == -4:  # SOAPY_SDR_OVERFLOW, skip and retry
+            if status == _SoapySDR.SOAPY_SDR_OVERFLOW:
+                # Samples were lost in the driver; the stream continues.
+                self.overflow_count += 1
+                self._maybe_log_overflows()
                 continue
             if status < 0:
                 raise DeviceError(
@@ -358,6 +370,19 @@ class SoapySDRDevice:
 
         result: bytes = buf.tobytes()  # type: ignore[assignment]
         return result
+
+    def _maybe_log_overflows(self) -> None:
+        now = time.monotonic()
+        if now - self._overflow_log_at < _OVERFLOW_LOG_INTERVAL_S:
+            return
+        logger.warning(
+            "soapy_overflow new=%d total=%d sample_rate=%.0f",
+            self.overflow_count - self._overflows_logged,
+            self.overflow_count,
+            self._sample_rate,
+        )
+        self._overflows_logged = self.overflow_count
+        self._overflow_log_at = now
 
     def set_frequency(self, freq: float) -> None:
         if self._device:
