@@ -183,7 +183,9 @@ signal_exit_failed
 signal_received
 soapy_found_system_path
 soapy_gains
+soapy_get_frequency_range_failed
 soapy_get_gain_range_failed
+soapy_get_sample_rate_range_failed
 soapy_get_setting_info_failed
 soapy_get_stream_formats_failed
 soapy_list_gains_failed

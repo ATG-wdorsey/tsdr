@@ -239,9 +239,12 @@ class SoapySDRDevice:
             supports_bias_tee = False
 
         gain_range = self._capabilities.gain_range
+        gain_step = self._capabilities.gain_step
         try:
             r = self._device.getGainRange(_SoapySDR.SOAPY_SDR_RX, 0)
             gain_range = (float(r.minimum()), float(r.maximum()))
+            if r.step() > 0:
+                gain_step = float(r.step())
         except (RuntimeError, AttributeError) as e:
             logger.debug("soapy_get_gain_range_failed error=%r", e)
 
@@ -258,17 +261,58 @@ class SoapySDRDevice:
         hw = self._device.getHardwareKey()
         logger.debug("soapy_gains hw=%s gains=%s has_agc=%s", hw, ",".join(gains), has_agc)
         self._identity = DeviceIdentity(type_label=hw or "Soapy", serial=self._serial or None)
+        frequency_range = self._probe_frequency_range()
+        sample_rates = self._probe_sample_rates()
         self._capabilities = DeviceCapabilities(
-            frequency_range=None,
+            frequency_range=frequency_range,
             frequency_controllable=True,
-            sample_rates=None,
+            sample_rates=sample_rates,
             gain_supported=True,
             gain_range=gain_range,
-            gain_step=1.0,
+            gain_step=gain_step,
             gain_unit="dB",
             bias_tee_supported=supports_bias_tee,
         )
-        logger.info("soapy_opened hw=%s driver=%s", hw, self._driver or "auto")
+        logger.info(
+            "soapy_opened hw=%s driver=%s frequency_range=%s sample_rates=%s gain_range=%s",
+            hw,
+            self._driver or "auto",
+            frequency_range,
+            sample_rates,
+            gain_range,
+        )
+
+    def _probe_frequency_range(self) -> tuple[float, float] | None:
+        """Overall tunable span; disjoint driver ranges are merged end to end."""
+        assert self._device is not None
+        try:
+            ranges = list(self._device.getFrequencyRange(_SoapySDR.SOAPY_SDR_RX, 0))
+        except (RuntimeError, AttributeError) as e:
+            logger.debug("soapy_get_frequency_range_failed error=%r", e)
+            return None
+        if not ranges:
+            return None
+        return (
+            min(float(r.minimum()) for r in ranges),
+            max(float(r.maximum()) for r in ranges),
+        )
+
+    def _probe_sample_rates(self) -> tuple[float, ...] | None:
+        """Discrete supported rates, or None when the driver accepts a continuous range.
+
+        Drivers with fixed rates (e.g. Airspy: 2.5 / 10 MS/s) report one
+        zero-width range per rate; listing them lets the engine snap the
+        configured rate to a supported one and offer them as completions.
+        """
+        assert self._device is not None
+        try:
+            ranges = list(self._device.getSampleRateRange(_SoapySDR.SOAPY_SDR_RX, 0))
+        except (RuntimeError, AttributeError) as e:
+            logger.debug("soapy_get_sample_rate_range_failed error=%r", e)
+            return None
+        if not ranges or any(r.maximum() > r.minimum() for r in ranges):
+            return None
+        return tuple(sorted({float(r.minimum()) for r in ranges}))
 
     def interrupt(self) -> None:
         # Soapy reads have a 2s timeout, so they unblock on their own.
@@ -305,7 +349,9 @@ class SoapySDRDevice:
             if status == -4:  # SOAPY_SDR_OVERFLOW, skip and retry
                 continue
             if status < 0:
-                raise DeviceError(f"SoapySDR readStream error: {status}")
+                raise DeviceError(
+                    f"SoapySDR readStream error: {_SoapySDR.errToStr(status)} ({status})"
+                )
             if status == 0:
                 raise DeviceError("SoapySDR readStream returned 0 samples")
             offset += status
