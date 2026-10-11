@@ -88,6 +88,8 @@ class SDRDeviceContext:
 
         self.state = DeviceState.STOPPED
         self.error_message: str | None = None
+        # Guards state transitions the I/O worker makes from its own thread.
+        self._state_lock = threading.Lock()
 
         # Runtime counters (written by I/O worker, read by stats stage)
         self.total_samples_read = 0
@@ -172,7 +174,9 @@ class SDRDeviceContext:
             raise RuntimeError(f"Cannot start device in state {self.state}")
 
         logger.info("device_starting device=%s type=%s", self.device_id, self.device_type)
-        self.state = DeviceState.STARTING
+        with self._state_lock:
+            self.state = DeviceState.STARTING
+            self.error_message = None
 
         logger.debug("io_worker_starting device=%s", self.device_id)
         io_worker_instance = IOWorker(device_context=self)
@@ -189,8 +193,25 @@ class SDRDeviceContext:
                 daemon=False,
             )
 
-        self.state = DeviceState.RUNNING
-        logger.info("device_started device=%s", self.device_id)
+        with self._state_lock:
+            # The I/O worker may already have failed to open the device.
+            if self.state == DeviceState.STARTING:
+                self.state = DeviceState.RUNNING
+        logger.info("device_started device=%s state=%s", self.device_id, self.state.value)
+
+    def mark_failed(self, error: str) -> bool:
+        """Record that the I/O worker could not run the device.
+
+        Called from the I/O worker thread. Returns False when a stop is already
+        under way, in which case the failure needs no reporting.
+        """
+        with self._state_lock:
+            if self.state not in (DeviceState.STARTING, DeviceState.RUNNING):
+                return False
+            self.state = DeviceState.ERROR
+            self.error_message = error
+        logger.warning("device_failed device=%s error=%r", self.device_id, error)
+        return True
 
     def stop(self, worker_runner, timeout: float = 5.0) -> None:
         """Stop workers; the I/O worker's teardown closes the device.
@@ -201,10 +222,10 @@ class SDRDeviceContext:
         to break pending I/O without freeing resources, then join.
         Resource cleanup is the I/O worker's job.
         """
-        if self.state == DeviceState.STOPPED:
-            return
-
-        self.state = DeviceState.STOPPING
+        with self._state_lock:
+            if self.state == DeviceState.STOPPED:
+                return
+            self.state = DeviceState.STOPPING
         logger.info("device_stopping device=%s", self.device_id)
 
         # Step 1: signal workers to stop iterating.

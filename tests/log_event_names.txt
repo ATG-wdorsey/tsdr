@@ -53,6 +53,7 @@ device_closed
 device_config_clamped
 device_config_update
 device_entry_invalid
+device_failed
 device_open
 device_read_failed
 device_read_unexpected_error
