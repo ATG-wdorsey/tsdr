@@ -143,6 +143,7 @@ class SoapySDRDevice:
         self._device_args = device_args
         self._device = None
         self._stream = None
+        self._stream_active = False
         self._is_open = False
         self._sample_rate: float = 0.0
         self._sample_format: SampleFormat = SampleFormat.COMPLEX64
@@ -228,7 +229,10 @@ class SoapySDRDevice:
 
         soapy_format = self._select_stream_format()
         self._stream = self._device.setupStream(_SoapySDR.SOAPY_SDR_RX, soapy_format)
-        self._device.activateStream(self._stream)
+        # The first read activates the stream, once the radio is tuned: a
+        # PlutoSDR activated before its rate and gain were set streamed
+        # ~0.4 s of near-full-scale junk (-1.8 dBFS) when reads began.
+        self._stream_active = False
         self._is_open = True
 
         try:
@@ -277,17 +281,22 @@ class SoapySDRDevice:
     def close(self) -> None:
         if self._device and self._stream:
             try:
-                self._device.deactivateStream(self._stream)
+                if self._stream_active:
+                    self._device.deactivateStream(self._stream)
                 self._device.closeStream(self._stream)
             except RuntimeError as e:
                 logger.debug("soapy_stream_close_failed error=%r", e)
             self._stream = None
+        self._stream_active = False
         self._device = None
         self._is_open = False
 
     def read_samples(self, count: int) -> bytes:
         if not self._device or not self._stream:
             raise DeviceError("Device not open")
+        if not self._stream_active:
+            self._device.activateStream(self._stream)
+            self._stream_active = True
 
         # complex64 → 1 element/sample; CU8/CS8 → 2 one-byte components/sample.
         components = self._read_components
