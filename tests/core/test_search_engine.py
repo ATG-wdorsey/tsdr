@@ -374,6 +374,57 @@ def test_search_follows_transmissions_through_the_running_pipeline(tmp_path) -> 
     assert jumps[:2] == [200e3, -250e3]
 
 
+def test_a_jump_decided_before_a_manual_tune_does_not_land(
+    engine: SDREngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pipeline thread checks the run, then applies its jump; a manual tune
+    (which stops SEARCH) can come in between and was then overridden."""
+    search = start_search("pluto")
+    real = engine.update_device_config
+
+    def tune_meanwhile(device_id: str, **kw: object) -> bool:
+        if kw.get("from_search"):
+            real(device_id, tuned_frequency=146.6e6)
+        return real(device_id, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(engine, "update_device_config", tune_meanwhile)
+    engine.event_bus.publish(
+        SearchTuneEvent(device_id="pluto", frequency_hz=147.0e6, run=search.run)
+    )
+    assert (_config(engine).tuned_frequency, _config(engine).search) == (146.6e6, None)
+
+
+def test_the_run_is_checked_with_the_change_itself(
+    engine: SDREngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same race inside the update: SEARCH stops between the engine's
+    checks and the config swap."""
+    search = start_search("pluto")
+    context = engine.devices["pluto"]
+    real = context.update_config
+
+    def stop_meanwhile(**kw: object) -> bool:
+        if kw.get("expect") is not None:
+            real(search=None)
+        return real(**kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(context, "update_config", stop_meanwhile)
+    applied = engine.update_device_config(
+        "pluto", from_search=True, while_search=search, tuned_frequency=147.0e6
+    )
+    assert not applied
+    assert (_config(engine).tuned_frequency, _config(engine).search) == (DIAL, None)
+
+
+def test_a_stale_lockout_update_does_not_restart_search(engine: SDREngine) -> None:
+    search = start_search("pluto")
+    stop_search("pluto")
+    assert not engine.update_device_config(
+        "pluto", while_search=search, search=replace(search, lockouts=frozenset({DIAL}))
+    )
+    assert _config(engine).search is None
+
+
 def test_a_default_trigger_follows_the_squelch(engine: SDREngine) -> None:
     search = start_search("pluto")
     assert search.trigger_for(-50.0) == -47.0

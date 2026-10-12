@@ -39,7 +39,7 @@ from tsdr.core.sdr.config import (
 from tsdr.core.sdr.device_context import DeviceState, SDRDeviceContext, active_mode_of
 from tsdr.core.sdr.exceptions import ConfigurationError, SDRException
 from tsdr.core.sdr.pipeline.stages.search_stage import audio_channel
-from tsdr.core.sdr.search import LOCKOUT_TAG, MAX_CHANNEL_BANDWIDTH_HZ
+from tsdr.core.sdr.search import LOCKOUT_TAG, MAX_CHANNEL_BANDWIDTH_HZ, SearchConfig
 from tsdr.core.sdr.tune_policy import derive_center_frequency, lo_offset_for
 from tsdr.core.sdr.workers.audio_worker import AudioOutputWorker, list_audio_devices
 from tsdr.core.tracing import span, traced
@@ -293,18 +293,24 @@ class SDREngine:
         device_id: str,
         *,
         from_search: bool = False,
+        while_search: SearchConfig | None = None,
         **changes: Unpack[DeviceConfigChanges],
-    ) -> None:
-        """Update per-device configuration.
+    ) -> bool:
+        """Update per-device configuration. Returns whether it was applied.
 
         DeviceContext handles worker notification (both I/O and pipeline workers).
         `from_search` marks SEARCH's own jumps: any other dial move stops SEARCH,
-        and a jump that would move the hardware is dropped.
+        and a jump that would move the hardware is dropped. `while_search`
+        applies the update only while that SEARCH run is still the device's,
+        checked with the change itself: a jump or lockout decided for a run
+        that a manual tune, a stop or a restart has replaced can't land.
         """
         if device_id not in self.devices:
             raise SDRException(f"Device {device_id} not found")
 
         context = self.devices[device_id]
+        if while_search is not None and context.config.search is not while_search:
+            return False
         old_pipelines = context.config.pipelines
 
         caps = context.device.capabilities
@@ -363,7 +369,7 @@ class SDREngine:
                         device_id,
                         changes.get("tuned_frequency", 0.0),
                     )
-                    return
+                    return False
                 changes["center_frequency"] = derived
                 logger.info("tune_recentered device=%s center_hz=%.0f", device_id, derived)
 
@@ -381,8 +387,11 @@ class SDREngine:
                     f"Sample rate {new_rate / 1e6:.3f} MHz not supported (device supports: {valid})"
                 )
 
+        expect = None if while_search is None else (lambda cfg: cfg.search is while_search)
+        if not context.update_config(expect=expect, **changes):
+            logger.info("search_update_dropped device=%s reason=search_changed", device_id)
+            return False
         logger.info("device_config_update device=%s changes=%r", device_id, changes)
-        context.update_config(**changes)
 
         self.event_bus.publish(ConfigChangedEvent(device_id=device_id, source_id=device_id))
 
@@ -397,6 +406,7 @@ class SDREngine:
             for name in set(old_pipelines) | set(new_pipelines):
                 if old_pipelines.get(name) != new_pipelines.get(name):
                     self._publish_pipeline_changed(device_id, name, active=name in new_pipelines)
+        return True
 
     def _derive_center(
         self,
@@ -786,7 +796,10 @@ class SDREngine:
         # Published on the pipeline worker: an error here must not end it.
         try:
             self.update_device_config(
-                event.device_id, from_search=True, tuned_frequency=event.frequency_hz
+                event.device_id,
+                from_search=True,
+                while_search=search,
+                tuned_frequency=event.frequency_hz,
             )
         except SDRException as e:
             logger.warning(
@@ -807,7 +820,9 @@ class SDREngine:
             search = context.config.search
             if search is not None and search.memory_lockouts != lockouts:
                 self.update_device_config(
-                    device_id, search=replace(search, memory_lockouts=lockouts)
+                    device_id,
+                    while_search=search,
+                    search=replace(search, memory_lockouts=lockouts),
                 )
 
     def _on_recording_finished(self, event: Event) -> None:

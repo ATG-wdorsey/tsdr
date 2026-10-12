@@ -157,8 +157,12 @@ def search_jump(device_id: str, frequency_hz: float) -> bool:
     running and holds the channel as if it had found it. False if the move
     would retune the hardware, which SEARCH never does."""
     engine = get_engine()
-    engine.update_device_config(device_id, from_search=True, tuned_frequency=frequency_hz)
-    return engine.get_device(device_id).config.tuned_frequency == frequency_hz
+    search = engine.get_device(device_id).config.search
+    if search is None:
+        return False
+    return engine.update_device_config(
+        device_id, from_search=True, while_search=search, tuned_frequency=frequency_hz
+    )
 
 
 def start_search(
@@ -281,7 +285,9 @@ def set_search_edge(device_id: str, edge: Literal["low", "high"]) -> float:
     channel = audio_channel(context.config)
     if search is not None and channel is not None:
         low, high = _search_range(settings, *search_limits(context, channel))
-        engine.update_device_config(device_id, search=replace(search, low_hz=low, high_hz=high))
+        engine.update_device_config(
+            device_id, while_search=search, search=replace(search, low_hz=low, high_hz=high)
+        )
     logger.info("search_edge_set device=%s edge=%s frequency_hz=%.0f", device_id, edge, frequency)
     return frequency
 
@@ -323,7 +329,9 @@ def lock_out_channel(device_id: str, *, permanent: bool = False) -> float:
         search = context.config.search
         if search is not None:
             engine.update_device_config(
-                device_id, search=replace(search, lockouts=frozenset(settings.lockouts))
+                device_id,
+                while_search=search,
+                search=replace(search, lockouts=frozenset(settings.lockouts)),
             )
     logger.info(
         "search_lockout device=%s frequency_hz=%.0f permanent=%s", device_id, frequency, permanent
@@ -339,7 +347,9 @@ def clear_session_lockouts(device_id: str) -> int:
     settings.lockouts.clear()
     search = engine.get_device(device_id).config.search
     if search is not None and search.lockouts:
-        engine.update_device_config(device_id, search=replace(search, lockouts=frozenset()))
+        engine.update_device_config(
+            device_id, while_search=search, search=replace(search, lockouts=frozenset())
+        )
     return count
 
 
@@ -387,7 +397,9 @@ def unlock(device_id: str) -> Unlocked:
     search = engine.get_device(device_id).config.search
     if search is not None and search.lockouts != frozenset(settings.lockouts):
         engine.update_device_config(
-            device_id, search=replace(search, lockouts=frozenset(settings.lockouts))
+            device_id,
+            while_search=search,
+            search=replace(search, lockouts=frozenset(settings.lockouts)),
         )
     logger.info(
         "search_unlock device=%s frequency_hz=%s session=%d saved=%d",
@@ -404,4 +416,6 @@ def set_search_step(device_id: str, step_hz: float) -> None:
     engine = get_engine()
     search = engine.get_device(device_id).config.search
     if search is not None and search.step_hz != step_hz:
-        engine.update_device_config(device_id, search=replace(search, step_hz=step_hz))
+        engine.update_device_config(
+            device_id, while_search=search, search=replace(search, step_hz=step_hz)
+        )

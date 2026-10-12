@@ -247,14 +247,23 @@ class SDRDeviceContext:
         logger.info("device_stopped device=%s", self.device_id)
 
     @traced("ctx.update_config")
-    def update_config(self, **changes: Unpack[DeviceConfigChanges]) -> None:
+    def update_config(
+        self,
+        *,
+        expect: Callable[[DeviceConfig], bool] | None = None,
+        **changes: Unpack[DeviceConfigChanges],
+    ) -> bool:
         """Update device configuration (triggers hardware reconfiguration).
 
         Thread-safe: protects config reference swap with a lock.
         If pipelines config changed, re-materializes pipeline stages.
+        `expect`, checked against the current config under the same lock,
+        makes the update conditional: False, and nothing changed, if it fails.
         """
         with self._config_lock:
             old_config = self._device_config
+            if expect is not None and not expect(old_config):
+                return False
             new_config = old_config.with_changes(**changes)
             new_config.validate()
             self._device_config = new_config
@@ -272,6 +281,7 @@ class SDRDeviceContext:
                 self.pipeline_control_queue.put(new_config, block=False)
             except queue.Full:
                 pass
+        return True
 
     def _materialize_pipelines(self) -> None:
         """Sync self.pipelines with self.config.pipelines.
