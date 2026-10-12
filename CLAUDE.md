@@ -280,7 +280,8 @@ LO inside its channel.
 SEARCH (`/`, the `search` command) finds activity within the capture and puts
 the dial on it. `DeviceConfig.search` (`SearchConfig` in `core/sdr/search.py`;
 None = off) holds a run: range, step (the tuning step), trigger, hold time, max
-dwell, lockouts. `SearchStage` in the visualization pipeline measures every
+dwell, lockouts; the edges (`{`/`}`, `--low/--high`) and an explicit trigger
+are remembered per device for the session. `SearchStage` in the visualization pipeline measures every
 step-grid channel's in-channel power from the FFT stage's unaveraged
 `instant_spectrum` (dBFS, the squelch's units: summed bins over the window's
 noise bandwidth), `SearchController` decides, and jumps go out as
@@ -288,8 +289,8 @@ noise bandwidth), `SearchController` decides, and jumps go out as
 squelch threshold is the hold threshold. SEARCH never moves the hardware:
 starting it selects free tuning, it skips channels within the LO offset of the
 LO, the engine drops a jump that would recenter, and any other dial move, a
-recenter, a sample rate change, center tuning or a non-narrowband demodulator
-stops it. Starting, stopping and lockouts live in `core/search_control.py`;
+recenter, a sample rate change, center tuning, a non-narrowband demodulator
+or stopping the device stops it. The spectrum shades the range. Starting, stopping and lockouts live in `core/search_control.py`;
 lasting lockouts are memories tagged `lockout` (the engine follows
 `MemoriesChangedEvent`).
 

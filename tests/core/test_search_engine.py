@@ -31,6 +31,7 @@ from tsdr.core.sdr.tune_policy import fitting_offset
 from tsdr.core.search_control import (
     clear_session_lockouts,
     lock_out_channel,
+    set_search_edge,
     set_search_step,
     start_search,
     stop_search,
@@ -78,7 +79,7 @@ def test_start_switches_to_free_tuning_and_turns_the_squelch_on(engine: SDREngin
     assert config.pipelines["audio"].squelch_enabled
     half = fitting_offset(RATE, 12_500.0)
     assert (search.low_hz, search.high_hz) == (center - half, center + half)
-    assert search.trigger_db == config.pipelines["audio"].squelch_threshold_db + 6.0
+    assert search.trigger_db is None  # follows the squelch
     assert search.step_hz == 12_500.0
 
 
@@ -324,3 +325,79 @@ def test_search_follows_transmissions_through_the_running_pipeline(tmp_path) -> 
     center = DeviceConfig().center_frequency
     jumps = [f - center for f in tuned if f != center]
     assert jumps[:2] == [200e3, -250e3]
+
+
+def test_a_default_trigger_follows_the_squelch(engine: SDREngine) -> None:
+    search = start_search("pluto")
+    assert search.trigger_for(-50.0) == -44.0
+    engine.update_squelch("pluto", "audio", threshold_db=-80.0)
+    assert _config(engine).search == search  # a squelch change keeps searching
+    assert search.trigger_for(-80.0) == -74.0
+
+
+def test_a_trigger_set_by_hand_is_kept(engine: SDREngine) -> None:
+    start_search("pluto", trigger_db=-40.0)
+    stop_search("pluto")
+    engine.update_squelch("pluto", "audio", threshold_db=-80.0)
+    search = start_search("pluto")
+    assert search.trigger_db == -40.0
+    assert search.trigger_for(-80.0) == -40.0
+
+
+def test_edges_at_the_dial_move_a_running_search(engine: SDREngine) -> None:
+    search = start_search("pluto")
+    engine.event_bus.publish(
+        SearchTuneEvent(device_id="pluto", frequency_hz=145.0e6, run=search.run)
+    )
+    assert set_search_edge("pluto", "low") == 145.0e6
+    engine.event_bus.publish(
+        SearchTuneEvent(device_id="pluto", frequency_hz=148.0e6, run=search.run)
+    )
+    set_search_edge("pluto", "high")
+    running = _config(engine).search
+    assert (running.low_hz, running.high_hz) == (145.0e6, 148.0e6)
+    assert running.run == search.run
+
+
+def test_edges_set_while_stopped_apply_at_the_next_start(engine: SDREngine) -> None:
+    engine.update_device_config("pluto", tuning_mode="free")
+    engine.update_device_config("pluto", tuned_frequency=145.0e6)
+    set_search_edge("pluto", "low")
+    search = start_search("pluto")
+    assert search.low_hz == 145.0e6
+    assert search.high_hz == _config(engine).center_frequency + fitting_offset(RATE, 12_500.0)
+
+
+def test_an_edge_on_the_wrong_side_drops_the_other(engine: SDREngine) -> None:
+    engine.update_device_config("pluto", tuning_mode="free")
+    engine.update_device_config("pluto", tuned_frequency=145.0e6)
+    set_search_edge("pluto", "high")
+    engine.update_device_config("pluto", tuned_frequency=147.0e6)
+    set_search_edge("pluto", "low")
+    search = start_search("pluto")
+    assert search.low_hz == 147.0e6
+    assert search.high_hz > 147.0e6
+
+
+def test_full_band_forgets_the_edges(engine: SDREngine) -> None:
+    start_search("pluto", low_hz=145e6, high_hz=148e6)
+    search = start_search("pluto", full_band=True)
+    half = fitting_offset(RATE, 12_500.0)
+    center = _config(engine).center_frequency
+    assert (search.low_hz, search.high_hz) == (center - half, center + half)
+
+
+def test_edges_that_no_longer_fit_give_way_to_the_band(engine: SDREngine) -> None:
+    start_search("pluto", low_hz=145e6, high_hz=148e6)
+    stop_search("pluto")
+    engine.update_device_config("pluto", tuning_mode="center")
+    engine.update_device_config("pluto", tuned_frequency=440e6)
+    search = start_search("pluto")
+    center = _config(engine).center_frequency
+    assert search.low_hz == center - fitting_offset(RATE, 12_500.0)
+
+
+def test_stopping_the_radio_stops_search(engine: SDREngine) -> None:
+    start_search("pluto")
+    engine.stop_device("pluto")
+    assert _config(engine).search is None

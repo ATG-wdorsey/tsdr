@@ -31,6 +31,7 @@ from tsdr.tui.widgets.dsp_utils import (
     normalize_spectrum,
     project_spectrum,
     render_spectrum_to_buf,
+    shade_columns,
     span_rbw,
     status_strip,
     status_text,
@@ -57,12 +58,16 @@ _STYLE_NONE = Style()
 _STYLE_DIM = Style(dim=True)
 _STYLE_GREEN = Style(color="green")
 _STYLE_BLUE = Style(color="blue")
+_STYLE_SEARCH = Style(color="yellow")
+_STYLE_SEARCH_BG = Style(bgcolor="#262000")  # text-mode SEARCH range
 
 # Image mode colors (RGBA)
 _TRACE_COLOR = np.array([0x40, 0xA0, 0xFF, 0xFF], dtype=np.uint8)  # bright blue
 _FILL_COLOR = np.array([0x20, 0x50, 0x80, 0x60], dtype=np.uint8)  # semi-transparent blue
 _BW_BOX_COLOR = np.array([40, 40, 40, 255], dtype=np.uint8)  # dark grey bandwidth box
 _CENTER_LINE_COLOR = np.array([255, 0, 0, 200], dtype=np.uint8)  # red center line
+_SEARCH_TINT = np.array([255, 190, 0, 28], dtype=np.uint8)  # faint amber over the SEARCH range
+_SEARCH_EDGE = np.array([255, 190, 0, 120], dtype=np.uint8)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +86,7 @@ class SpectrumFrame:
     bandplan_segments: tuple[
         tuple[int, int, str, str], ...
     ] = ()  # (col_start, col_end_exclusive, label, color_hex)
+    search_range: tuple[int, int] | None = None  # SEARCH (col_low, col_high), or None
 
 
 class SpectrumWidget(ImageModeMixin, Widget):
@@ -106,6 +112,7 @@ class SpectrumWidget(ImageModeMixin, Widget):
         self._capture_center: float = 0.0
         self._provides_spectrum: bool = False
         self._sideband: str | None = None
+        self._search_range: tuple[float, float] | None = None
         self._memories: tuple[Memory, ...] = ()
         self._bandplan: Bandplan | None = None
         self._strips: list[Strip] = []
@@ -159,6 +166,8 @@ class SpectrumWidget(ImageModeMixin, Widget):
         self._tuned_frequency = device.config.tuned_frequency
         self._capture_center = device.config.center_frequency
         self._provides_spectrum = device.device.capabilities.provides_spectrum
+        search = device.config.search
+        self._search_range = None if search is None else (search.low_hz, search.high_hz)
         if device.config.channel_bandwidth is not None:
             self._channel_bandwidth = device.config.channel_bandwidth
         else:
@@ -338,6 +347,9 @@ class SpectrumWidget(ImageModeMixin, Widget):
             center_x,
             _CENTER_LINE_COLOR,
         )
+        search_x = self._search_x(w, freq_min, freq_max)
+        if search_x is not None:
+            shade_columns(buf, *search_x, _SEARCH_TINT, _SEARCH_EDGE)
 
         span = freq_max - freq_min
         if self._memories and span > 0:
@@ -459,6 +471,8 @@ class SpectrumWidget(ImageModeMixin, Widget):
         header = status_text(span_hz, rbw_hz, self.db_min, self.db_max)
         memory_labels = self._compute_memory_labels(width, freq_min, freq_max)
         bandplan_segments = self._compute_bandplan_segments(width, freq_min, freq_max)
+        search_x = self._search_x(width, freq_min, freq_max)
+        search_range = None if search_x is None else (max(0, search_x[0]), min(width, search_x[1]))
 
         return SpectrumFrame(
             header=header,
@@ -469,6 +483,7 @@ class SpectrumWidget(ImageModeMixin, Widget):
             bandwidth_range=bandwidth_range,
             memory_labels=memory_labels,
             bandplan_segments=bandplan_segments,
+            search_range=search_range,
         )
 
     @traced("render_frame")
@@ -486,10 +501,12 @@ class SpectrumWidget(ImageModeMixin, Widget):
                 strips.append(self._render_memory_label_strip(width, label_row))
 
         # Bandwidth indicator strip
-        strips.append(self._render_bandwidth_strip(width, frame.bandwidth_range))
+        strips.append(
+            self._render_bandwidth_strip(width, frame.bandwidth_range, frame.search_range)
+        )
 
         for row_cells in frame.cells:
-            strips.append(self._render_bar_row(row_cells, width))
+            strips.append(self._render_bar_row(row_cells, width, frame.search_range))
 
         # Bandplan row (always present; blank when inactive)
         strips.append(self._render_bandplan_strip(width, frame.bandplan_segments))
@@ -499,17 +516,25 @@ class SpectrumWidget(ImageModeMixin, Widget):
 
         return strips
 
-    def _render_bar_row(self, cells: tuple[int, ...], width: int) -> Strip:
-        """Render a single bar row with run-length encoding."""
+    def _render_bar_row(
+        self, cells: tuple[int, ...], width: int, search: tuple[int, int] | None = None
+    ) -> Strip:
+        """Render a single bar row with run-length encoding; `search` shades
+        the SEARCH range's columns."""
         segments: list[Segment] = []
         base = self.rich_style
+        shaded, lit_shaded = base + _STYLE_SEARCH_BG, _STYLE_BLUE + _STYLE_SEARCH_BG
+        search_low, search_high = search if search is not None else (0, 0)
         run_char: str | None = None
         run_style: Style | None = None
         run_len = 0
 
-        for cell_idx in cells:
+        for col, cell_idx in enumerate(cells):
             char = _BRAILLE_CHARS[cell_idx]
-            style = _STYLE_BLUE if cell_idx != 0 else base
+            if search_low <= col < search_high:
+                style = lit_shaded if cell_idx != 0 else shaded
+            else:
+                style = _STYLE_BLUE if cell_idx != 0 else base
 
             if char == run_char and style is run_style:
                 run_len += 1
@@ -531,22 +556,29 @@ class SpectrumWidget(ImageModeMixin, Widget):
 
         return Strip(segments, width)
 
-    def _render_bandwidth_strip(self, width: int, bandwidth_range: tuple[int, int] | None) -> Strip:
-        """Render bandwidth indicator strip."""
+    def _render_bandwidth_strip(
+        self,
+        width: int,
+        bandwidth_range: tuple[int, int] | None,
+        search: tuple[int, int] | None = None,
+    ) -> Strip:
+        """Render bandwidth indicator strip; the SEARCH range's line is yellow."""
         base = self.rich_style
         dim = base + _STYLE_DIM
-        if bandwidth_range is None:
-            return Strip([Segment("─" * width, dim)], width)
-
-        col_low, col_high = bandwidth_range
+        searched = base + _STYLE_SEARCH
+        channel = base + _STYLE_GREEN
+        bw_low, bw_high = bandwidth_range if bandwidth_range is not None else (0, 0)
+        search_low, search_high = search if search is not None else (0, 0)
         segments: list[Segment] = []
-        if col_low > 0:
-            segments.append(Segment("─" * col_low, dim))
-        if col_high > col_low:
-            segments.append(Segment("█" * (col_high - col_low), base + _STYLE_GREEN))
-        if col_high < width:
-            segments.append(Segment("─" * (width - col_high), dim))
-
+        for col in range(width):
+            if bw_low <= col < bw_high:
+                char, style = "█", channel
+            else:
+                char, style = "─", searched if search_low <= col < search_high else dim
+            if segments and segments[-1].style is style:
+                segments[-1] = Segment(segments[-1].text + char, style)
+            else:
+                segments.append(Segment(char, style))
         return Strip(segments, width)
 
     def _render_bandplan_strip(
@@ -861,6 +893,18 @@ class SpectrumWidget(ImageModeMixin, Widget):
 
         raw.sort(key=lambda t: -t[4])
         return tuple((cs, ce, name, color) for cs, ce, name, color, _ in raw)
+
+    def _search_x(self, width: int, freq_min: float, freq_max: float) -> tuple[int, int] | None:
+        """Unclamped columns of the SEARCH range's edges, or None (off, or out of view)."""
+        span = freq_max - freq_min
+        if self._search_range is None or span <= 0:
+            return None
+        low, high = self._search_range
+        x_low = int((low - freq_min) / span * width)
+        x_high = int((high - freq_min) / span * width)
+        if x_high <= 0 or x_low >= width:
+            return None
+        return x_low, x_high
 
     def _compute_bandwidth_range(
         self, width: int, freq_min: float, freq_max: float

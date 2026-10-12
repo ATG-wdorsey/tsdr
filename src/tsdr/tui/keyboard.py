@@ -132,6 +132,10 @@ class KeyboardMixin(MixinBase):
                 self._toggle_lo_offset("above")
             case Action.SEARCH_TOGGLE:
                 self._toggle_search()
+            case Action.SEARCH_EDGE_LOW:
+                self._set_search_edge("low")
+            case Action.SEARCH_EDGE_HIGH:
+                self._set_search_edge("high")
             case Action.SEARCH_LOCKOUT:
                 self._lock_out_channel(permanent=False)
             case Action.SEARCH_LOCKOUT_SAVE:

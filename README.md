@@ -194,18 +194,23 @@ Search (find activity within the captured band):
 
 - `/`: start / stop SEARCH. It switches to free tuning and turns the squelch on,
   then puts the dial on the strongest channel that stays above the trigger for
-  100 ms (channels on the tuning-step grid, within the captured band). The
-  squelch threshold holds the channel: SEARCH moves on only after the channel
-  has stayed below the squelch for the hold time (2 s), so replies are heard,
-  and between hits it stays on the last channel. Tuning by hand stops it. For
-  narrowband modes only (not WFM).
+  100 ms (channels on the tuning-step grid, within the captured band; the
+  range is shaded on the spectrum). The squelch threshold holds the channel:
+  SEARCH moves on only after the channel has stayed below the squelch for the
+  hold time (2 s), so replies are heard, and between hits it stays on the last
+  channel. Tuning by hand or stopping the radio stops it. For narrowband modes
+  only (not WFM).
+- `{` / `}`: put SEARCH's lower / upper edge at the dial (without edges it
+  searches the whole captured band; an edge outside the band is ignored).
 - `x`: lock out the current channel for this session.
 - `X`: lock out the current channel for good (a memory tagged `lockout`).
 
 `search on --low 144M --high 148M --threshold -60 --hold 2 --dwell 30` sets the
-range, the trigger (dBFS within the channel, as the squelch measures it), the
-hold time and the most time on one active channel (`--dwell 0`: unlimited, the
-default). `search` shows the settings, `search off` stops, `search lockout
+edges, the trigger (dBFS within the channel, as the squelch measures it;
+by default 6 dB above the squelch, following it, so `u` / `U` set both), the
+hold time and the most time on one
+active channel (`--dwell 0`: unlimited, the default); `--full` forgets the
+edges. `search` shows the settings, `search off` stops, `search lockout
 [--permanent]` locks out the current channel, and `search unlock` drops this
 session's lockouts.
 

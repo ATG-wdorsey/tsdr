@@ -60,6 +60,28 @@ def render_spectrum_to_buf(
                     buf[row, x, c] = center_color[c]
 
 
+def shade_columns(
+    buf: np.ndarray,
+    x_low: int,
+    x_high: int,
+    tint: np.ndarray,
+    edge: np.ndarray,
+) -> None:
+    """Tint the empty pixels (above the trace) of columns [x_low, x_high) of
+    an RGBA plot, and mark each edge that falls inside the plot. The x values
+    may lie outside it."""
+    width = buf.shape[1]
+    lo, hi = max(0, x_low), min(width, x_high)
+    if hi <= lo:
+        return
+    region = buf[:, lo:hi]
+    region[region[..., 3] == 0] = tint
+    for x in (x_low, x_high - 1):
+        if 0 <= x < width:
+            column = buf[:, x]
+            column[column[..., 3] <= tint[3]] = edge
+
+
 def decimate_spectrum(spectrum: NDArray[np.float32], target: int) -> NDArray[np.float32]:
     """Resample spectrum to exactly *target* bins.
 

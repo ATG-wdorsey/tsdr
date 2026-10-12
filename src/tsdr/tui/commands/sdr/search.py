@@ -1,7 +1,7 @@
 from argparse import Namespace
 
 from tsdr.core.sdr.engine import get_engine
-from tsdr.core.sdr.search import LOCKOUT_TAG, SearchConfig
+from tsdr.core.sdr.search import LOCKOUT_TAG, TRIGGER_ABOVE_SQUELCH_DB, SearchConfig
 from tsdr.core.search_control import (
     clear_session_lockouts,
     lock_out_channel,
@@ -26,7 +26,11 @@ def describe(search: SearchConfig, squelch_db: float) -> str:
         {
             "range": f"{freq_mhz(search.low_hz, precision=4)}-{freq_mhz(search.high_hz, precision=4)}",
             "step": f"[yellow]{search.step_hz / 1e3:g} kHz[/]",
-            "trigger": _dbfs(search.trigger_db),
+            "trigger": (
+                f"squelch + {TRIGGER_ABOVE_SQUELCH_DB:g} dB"
+                if search.trigger_db is None
+                else _dbfs(search.trigger_db)
+            ),
             "hold": f"{_dbfs(squelch_db)} for {search.hold_s:g} s",
             "dwell": dwell,
             "lockouts": str(lockouts),
@@ -56,10 +60,16 @@ class SDRSearchCommand(Command):
             "--high", help="Upper edge with SI suffix (default: the captured band's)"
         )
         parser.add_argument(
+            "--full",
+            action="store_true",
+            help="Search the whole captured band: forget the edges set with --low/--high or { }",
+        )
+        parser.add_argument(
             "--threshold",
             type=float,
             help="Trigger in dBFS within the channel, as the squelch measures; must be above "
-            "the squelch, which holds the channel (default: squelch + 6 dB)",
+            "the squelch, which holds the channel (default: 6 dB above the squelch, "
+            "following it as it changes)",
         )
         parser.add_argument(
             "--hold",
@@ -80,7 +90,7 @@ class SDRSearchCommand(Command):
 
     def run(self, args: Namespace) -> str:
         did = args.device_id or get_focused_device_id()
-        settings_given = any(
+        settings_given = args.full or any(
             v is not None for v in (args.low, args.high, args.threshold, args.hold, args.dwell)
         )
         if args.action == "off":
@@ -100,6 +110,7 @@ class SDRSearchCommand(Command):
                 trigger_db=args.threshold,
                 hold_s=args.hold,
                 max_dwell_s=args.dwell,
+                full_band=args.full,
             )
             squelch_db = get_engine().get_device(did).config.pipelines["audio"].squelch_threshold_db
             return success(f"SEARCH {state('on')} ({describe(search, squelch_db)})")

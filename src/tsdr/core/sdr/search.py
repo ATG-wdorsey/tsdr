@@ -19,6 +19,8 @@ import numpy as np
 
 LOCKOUT_TAG = "lockout"
 DEFAULT_HOLD_S = 2.0
+# Without a trigger set, SEARCH stops on channels this far above the squelch.
+TRIGGER_ABOVE_SQUELCH_DB = 6.0
 # A channel must stay above the trigger this long before SEARCH jumps to it.
 ATTACK_S = 0.1
 # SEARCH is for narrowband channels: not broadcast FM, DAB or ADS-B.
@@ -36,7 +38,7 @@ class SearchConfig:
     low_hz: float
     high_hz: float
     step_hz: float
-    trigger_db: float
+    trigger_db: float | None = None  # None = TRIGGER_ABOVE_SQUELCH_DB over the squelch, live
     hold_s: float = DEFAULT_HOLD_S
     max_dwell_s: float | None = None  # None = unlimited
     lockouts: frozenset[float] = frozenset()  # this session's, Hz
@@ -52,6 +54,11 @@ class SearchConfig:
             raise ValueError(f"search hold must not be negative, got {self.hold_s}")
         if self.max_dwell_s is not None and self.max_dwell_s <= 0:
             raise ValueError(f"search max dwell must be positive, got {self.max_dwell_s}")
+
+    def trigger_for(self, squelch_db: float) -> float:
+        if self.trigger_db is None:
+            return squelch_db + TRIGGER_ABOVE_SQUELCH_DB
+        return self.trigger_db
 
     def channels(self) -> np.ndarray:
         """Channel centers: the step grid within [low_hz, high_hz]."""
@@ -133,7 +140,7 @@ class SearchController:
         *,
         tuned_hz: float,
         current_db: float,
-        hold_db: float,
+        hold_db: float,  # the squelch threshold
         bandwidth_hz: float,
         lo_hz: float,
         lo_exclusion_hz: float,
@@ -142,7 +149,8 @@ class SearchController:
         if not np.array_equal(channels_hz, self._channels):
             self._channels = channels_hz
             self._above_since = np.full(len(channels_hz), np.nan)
-        hold_db = min(hold_db, config.trigger_db)
+        trigger_db = config.trigger_for(hold_db)
+        hold_db = min(hold_db, trigger_db)
         is_open = current_db >= hold_db
 
         if tuned_hz != self._current:
@@ -160,7 +168,7 @@ class SearchController:
         )
         dwelt = config.max_dwell_s is not None and now - self._arrived_at >= config.max_dwell_s
 
-        above = levels_db >= config.trigger_db
+        above = levels_db >= trigger_db
         self._above_since[above & np.isnan(self._above_since)] = now
         self._above_since[~above] = np.nan
 

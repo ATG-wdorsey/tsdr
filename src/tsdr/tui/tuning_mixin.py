@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from textual import on
 
@@ -23,10 +24,12 @@ from tsdr.core.sdr.config import LoOffset, TuningMode
 from tsdr.core.sdr.device_context import SDRDeviceContext
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
+from tsdr.core.sdr.search import TRIGGER_ABOVE_SQUELCH_DB
 from tsdr.core.sdr.spectrum_view import adjusted_span
 from tsdr.core.sdr.tune_policy import effective_lo_side
 from tsdr.core.search_control import (
     lock_out_channel,
+    set_search_edge,
     set_search_step,
     start_search,
     stop_search,
@@ -189,7 +192,23 @@ class TuningMixin(MixinBase):
             return
         low = format_hz(search.low_hz, decimals=3, long_suffix=True)
         high = format_hz(search.high_hz, decimals=3, long_suffix=True)
-        self.show_status(f"SEARCH {low} to {high}, trigger {search.trigger_db:.0f} dBFS")
+        trigger = (
+            f"squelch + {TRIGGER_ABOVE_SQUELCH_DB:g} dB"
+            if search.trigger_db is None
+            else f"{search.trigger_db:.0f} dBFS"
+        )
+        self.show_status(f"SEARCH {low} to {high}, trigger {trigger}")
+
+    def _set_search_edge(self, edge: Literal["low", "high"]) -> None:
+        """`{`/`}`: put SEARCH's lower/upper edge at the dial."""
+        device = self._focused()
+        if device is None:
+            return
+        frequency = set_search_edge(device.device_id, edge)
+        where = "lower" if edge == "low" else "upper"
+        self.show_status(
+            f"SEARCH {where} edge: {format_hz(frequency, decimals=4, long_suffix=True)}"
+        )
 
     def _lock_out_channel(self, *, permanent: bool) -> None:
         """`x`/`X`: skip the dial's channel, for this session or as a memory."""

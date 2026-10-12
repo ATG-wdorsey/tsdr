@@ -48,6 +48,8 @@ class Action(StrEnum):
     SEARCH_TOGGLE = "search.toggle"
     SEARCH_LOCKOUT = "search.lockout"
     SEARCH_LOCKOUT_SAVE = "search.lockout-save"
+    SEARCH_EDGE_LOW = "search.edge-low"
+    SEARCH_EDGE_HIGH = "search.edge-high"
     BANDWIDTH_UP = "bandwidth.up"
     BANDWIDTH_DOWN = "bandwidth.down"
     BANDWIDTH_UP_FINE = "bandwidth.up-fine"
@@ -166,6 +168,8 @@ BINDINGS: tuple[Binding, ...] = (
         Context.GLOBAL,
         SEARCH,
         (Action.SEARCH_TOGGLE, ("slash",), "Start / stop SEARCH for active channels in the band"),
+        (Action.SEARCH_EDGE_LOW, ("left_curly_bracket",), "Put SEARCH's lower edge at the dial"),
+        (Action.SEARCH_EDGE_HIGH, ("right_curly_bracket",), "Put SEARCH's upper edge at the dial"),
         (Action.SEARCH_LOCKOUT, ("x",), "Lock out the current channel for this session"),
         (
             Action.SEARCH_LOCKOUT_SAVE,

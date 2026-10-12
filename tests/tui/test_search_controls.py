@@ -64,6 +64,16 @@ def test_search_keys_are_bound() -> None:
     assert lookup[(Context.GLOBAL, "slash")] is Action.SEARCH_TOGGLE
     assert lookup[(Context.GLOBAL, "x")] is Action.SEARCH_LOCKOUT
     assert lookup[(Context.GLOBAL, "X")] is Action.SEARCH_LOCKOUT_SAVE
+    assert lookup[(Context.GLOBAL, "left_curly_bracket")] is Action.SEARCH_EDGE_LOW
+    assert lookup[(Context.GLOBAL, "right_curly_bracket")] is Action.SEARCH_EDGE_HIGH
+
+
+def test_braces_set_the_edges_at_the_dial(engine: SDREngine) -> None:
+    keys = _keys(engine)
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    TuningMixin._set_search_edge(keys, "low")  # type: ignore[arg-type]
+    assert _search(engine).low_hz == DIAL
+    assert keys.statuses[-1] == "SEARCH lower edge: 146.52 MHz"
 
 
 def test_slash_starts_and_stops_search(engine: SDREngine) -> None:
@@ -147,3 +157,10 @@ def test_tuner_shows_search_state_and_level() -> None:
     assert "-62" in level
     assert "WAIT" in _search_lines(SearchStatus("waiting", DIAL, float("-inf"), 0.0, 0))[0]
     assert _search_lines(SearchStatus("waiting", DIAL, float("-inf"), 0.0, 0))[1] == ""
+
+
+def test_command_full_forgets_the_edges(engine: SDREngine) -> None:
+    cmd = SDRSearchCommand()
+    cmd.execute(["on", "--device", "pluto", "--low", "144M", "--high", "148M"])
+    cmd.execute(["--full", "--device", "pluto"])
+    assert _search(engine).low_hz < 144e6

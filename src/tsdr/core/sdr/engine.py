@@ -273,6 +273,10 @@ class SDREngine:
 
         context = self.devices[device_id]
 
+        if context.config.search is not None:
+            self.update_device_config(device_id, search=None)
+            logger.info("search_stopped device=%s reason=device_stopped", device_id)
+
         # Stop audio output
         self.stop_audio_output(device_id)
 
