@@ -305,10 +305,10 @@ def test_the_hold_never_sits_above_the_trigger() -> None:
 
 
 def test_without_a_trigger_it_follows_the_squelch() -> None:
-    """The squelch is the one control: SEARCH stops on channels 6 dB above it."""
+    """The squelch is the one control: SEARCH stops on channels 3 dB above it."""
     run = _Run(_config(trigger_db=None))
-    run.signals[round(144.5e6)] = SQUELCH + 3.0  # opens the squelch, under the trigger
-    run.signals[round(145.5e6)] = SQUELCH + 7.0
+    run.signals[round(144.5e6)] = SQUELCH + 2.0  # opens the squelch, under the trigger
+    run.signals[round(145.5e6)] = SQUELCH + 4.0
     run.tick(0.3)
     assert run.jumps == [145.5e6]
 

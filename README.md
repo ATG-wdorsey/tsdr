@@ -211,7 +211,7 @@ Search (find activity within the captured band):
 
 `search on --low 144M --high 148M --threshold -60 --hold 2 --dwell 30` sets the
 edges, the trigger (dBFS within the channel, as the squelch measures it;
-by default 6 dB above the squelch, following it, so `u` / `U` set both), the
+by default 3 dB above the squelch, following it, so `u` / `U` set both), the
 hold time and the most time on one
 active channel (`--dwell 0`: unlimited, the default); `--full` forgets the
 edges. `search` shows the settings, `search off` stops, `search lockout

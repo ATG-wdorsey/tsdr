@@ -20,7 +20,7 @@ import numpy as np
 LOCKOUT_TAG = "lockout"
 DEFAULT_HOLD_S = 2.0
 # Without a trigger set, SEARCH stops on channels this far above the squelch.
-TRIGGER_ABOVE_SQUELCH_DB = 6.0
+TRIGGER_ABOVE_SQUELCH_DB = 3.0
 # A channel must stay above the trigger this long before SEARCH jumps to it.
 ATTACK_S = 0.1
 # SEARCH is for narrowband channels: not broadcast FM, DAB or ADS-B.

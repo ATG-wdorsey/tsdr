@@ -18,6 +18,7 @@ from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import SDREngine
 from tsdr.core.sdr.processing import compute_fft, fft_window
+from tsdr.core.sdr.search import TRIGGER_ABOVE_SQUELCH_DB
 from tsdr.core.search_control import start_search
 from tsdr.core.tuning_state import init_tuning_state
 from tsdr.devices import MockParams
@@ -134,7 +135,7 @@ def test_reference_lines_follow_the_squelch_and_search(engine: SDREngine) -> Non
     engine.devices["radio"].state = DeviceState.RUNNING
     start_search("radio")
     w._read_config()
-    assert w._trigger_line_db == pytest.approx(expected + 6.0)
+    assert w._trigger_line_db == pytest.approx(expected + TRIGGER_ABOVE_SQUELCH_DB)
 
 
 def test_text_mode_labels_the_grid_in_its_own_column(engine: SDREngine) -> None:

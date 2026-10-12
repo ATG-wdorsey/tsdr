@@ -68,7 +68,7 @@ class SDRSearchCommand(Command):
             "--threshold",
             type=float,
             help="Trigger in dBFS within the channel, as the squelch measures; must be above "
-            "the squelch, which holds the channel (default: 6 dB above the squelch, "
+            "the squelch, which holds the channel (default: 3 dB above the squelch, "
             "following it as it changes)",
         )
         parser.add_argument(
