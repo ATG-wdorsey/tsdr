@@ -243,7 +243,8 @@ Display:
 
 The spectrum has a dB grid (every 10 dB, or 5 dB in a narrow window), labeled
 in a column on the left; the waterfall's column is its color key, strongest at
-the top. With the squelch on, a dashed orange line (`SQ`) marks the squelch,
+the top. Each label is in the color a signal at that level takes on the
+waterfall (grey for the noise floor's dark blues). With the squelch on, a dashed orange line (`SQ`) marks the squelch,
 and while SEARCH runs a yellow line (`TR`) over the search range marks its
 trigger. The trace is power per FFT bin while the squelch measures the whole
 channel, so the lines sit where noise at those levels shows: a squelch set

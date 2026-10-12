@@ -18,11 +18,22 @@ import math
 from tsdr.core.sdr.processing import window_enbw_bins
 
 GUTTER_COLS = 5
+# The waterfall's color key: this wide, centered in the label column.
+KEY_COLS = 3
 # Below this many plot columns the labels cost too much: no label column.
 _MIN_PLOT_COLS = 20
 # Mean of 10*log10(X) for exponentially distributed X (a noise bin's power)
 # is 10*log10(E[X]) minus 10*log10(e) times Euler's gamma.
 DB_MEAN_NOISE_BIAS = 10.0 * math.log10(math.e) * 0.5772156649015329
+# The grid, and the dB labels the waterfall's colors don't suit.
+GRID_GREY = "grey35"
+# dB labels take the waterfall's color for their level, brightened to at
+# least this luma (0-255; grey35 is 89) so the colormap's dark reds stay
+# legible on a dark background...
+LABEL_MIN_LUMA = 110.0
+# ...but low in the window, colors darker than this are the noise floor's on
+# the waterfall (Classic's navy): those labels stay grey.
+LABEL_GREY_LUMA = 60.0
 
 
 def gutter_cols(width: int) -> int:
@@ -49,6 +60,37 @@ def grid_levels(db_min: float, db_max: float, rows: float | None = None) -> list
 
 def grid_label(level: float) -> str:
     return f"{level:4.0f} "[:GUTTER_COLS]
+
+
+def _luma(rgb: tuple[float, float, float]) -> float:
+    return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+
+
+def label_color(rgb: tuple[int, int, int], position: float) -> str:
+    """The color of a dB label whose level shows as `rgb` on the waterfall,
+    `position` (0-1) of the way up the dB window."""
+    if position < 0.5 and _luma(rgb) < LABEL_GREY_LUMA:
+        return GRID_GREY
+    r, g, b = legible(rgb)
+    return f"rgb({r},{g},{b})"
+
+
+def legible(rgb: tuple[int, int, int], min_luma: float = LABEL_MIN_LUMA) -> tuple[int, int, int]:
+    """`rgb` brightened to at least `min_luma` for text on a dark background:
+    scaled up, keeping its hue, then mixed with white where full brightness
+    isn't enough (pure blue reaches only 29)."""
+    r, g, b = (float(c) for c in rgb)
+    luma = _luma((r, g, b))
+    if luma >= min_luma:
+        return rgb
+    peak = max(r, g, b)
+    if peak > 0:
+        scale = min(min_luma / luma, 255.0 / peak)
+        r, g, b, luma = r * scale, g * scale, b * scale, luma * scale
+    if luma < min_luma:
+        mix = (min_luma - luma) / (255.0 - luma)
+        r, g, b = (c + mix * (255.0 - c) for c in (r, g, b))
+    return round(r), round(g), round(b)
 
 
 def noise_equivalent_db(

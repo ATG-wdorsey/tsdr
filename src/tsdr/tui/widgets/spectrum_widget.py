@@ -2,6 +2,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from math import ceil, floor
 
 import numpy as np
@@ -30,6 +31,7 @@ from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import axis_si_prefix
 from tsdr.tui.inline_edit import InlineEditor
 from tsdr.tui.widgets.db_scale import (
+    GRID_GREY,
     grid_label,
     grid_levels,
     gutter_cols,
@@ -48,6 +50,7 @@ from tsdr.tui.widgets.dsp_utils import (
     transient_view_shift,
 )
 from tsdr.tui.widgets.image_mode_mixin import ImageModeMixin
+from tsdr.tui.widgets.waterfall_widget import level_label_color
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +75,7 @@ _STYLE_SEARCH = Style(color="yellow")
 _STYLE_SEARCH_BG = Style(bgcolor="#262000")  # text-mode SEARCH range
 # dB grid and reference lines, and their labels in the left column.
 _LINE_STYLES = {
-    "grid": Style(color="grey35"),
+    "grid": Style(color=GRID_GREY),
     "squelch": Style(color="dark_orange"),
     "trigger": Style(color="yellow"),
 }
@@ -84,6 +87,12 @@ _OFF_WINDOW_LABELS = {
     ("trigger", True): " TR↑ ",
     ("trigger", False): " TR↓ ",
 }
+
+
+@lru_cache(maxsize=256)
+def _grid_label_style(level: float, db_min: float, db_max: float) -> Style:
+    return Style(color=level_label_color(level, db_min, db_max))
+
 
 # Image mode colors (RGBA)
 _TRACE_COLOR = np.array([0x40, 0xA0, 0xFF, 0xFF], dtype=np.uint8)  # bright blue
@@ -121,8 +130,8 @@ class SpectrumFrame:
     ] = ()  # (col_start, col_end_exclusive, label, color_hex)
     search_range: tuple[int, int] | None = None  # SEARCH (col_low, col_high), or None
     gutter_cols: int = 0  # dB label columns left of the plot
-    # Grid and reference lines: (dot row, kind, col_low, col_high, label).
-    lines: tuple[tuple[int, str, int, int, str], ...] = ()
+    # Grid and reference lines: (dot row, kind, col_low, col_high, (label, style)).
+    lines: tuple[tuple[int, str, int, int, tuple[str, Style]], ...] = ()
 
 
 class SpectrumWidget(ImageModeMixin, Widget):
@@ -152,7 +161,7 @@ class SpectrumWidget(ImageModeMixin, Widget):
         # Where the squelch and SEARCH trigger read on the trace (None = not shown).
         self._squelch_line_db: float | None = None
         self._trigger_line_db: float | None = None
-        self._image_gutter: dict[int, tuple[str, str]] = {}
+        self._image_gutter: dict[int, tuple[str, Style]] = {}
         self._memories: tuple[Memory, ...] = ()
         self._bandplan: Bandplan | None = None
         self._strips: list[Strip] = []
@@ -240,10 +249,12 @@ class SpectrumWidget(ImageModeMixin, Widget):
 
     def _scale_lines(
         self, width: int, freq_min: float, freq_max: float, span: int, *, text: bool
-    ) -> list[tuple[int, str, int, int, str]]:
+    ) -> list[tuple[int, str, int, int, tuple[str, Style]]]:
         """Grid and reference lines as (row, kind, col_low, col_high, label)
-        on a plot with rows 0 (db_max) to `span`, in drawing order. The row
-        rounding matches the trace's in each mode."""
+        on a plot with rows 0 (db_max) to `span`, in drawing order; a label is
+        (text, style): grid labels in the waterfall's color for their level,
+        the squelch's and trigger's in their lines'. The row rounding matches
+        the trace's in each mode."""
         db_min, db_max = self.db_min, self.db_max
 
         def row(level: float) -> int | None:
@@ -252,12 +263,13 @@ class SpectrumWidget(ImageModeMixin, Widget):
             norm = (level - db_min) / (db_max - db_min)
             return round((1.0 - norm) * span) if text else span - int(norm * span)
 
-        lines: list[tuple[int, str, int, int, str]] = []
+        lines: list[tuple[int, str, int, int, tuple[str, Style]]] = []
         rows = (span + 1) / (4 if text else self._kitty.cell_height_px)
         for level in grid_levels(db_min, db_max, rows):
             r = row(level)
             if r is not None:
-                lines.append((r, "grid", 0, width, grid_label(level)))
+                label = (grid_label(level), _grid_label_style(level, db_min, db_max))
+                lines.append((r, "grid", 0, width, label))
         search_x = self._search_x(width, freq_min, freq_max)
         references = (
             ("squelch", self._squelch_line_db, (0, width)),
@@ -273,17 +285,17 @@ class SpectrumWidget(ImageModeMixin, Widget):
             r = row(ref_level)
             if r is None:
                 above = ref_level >= db_max
-                lines.append((0 if above else span, kind, 0, 0, _OFF_WINDOW_LABELS[(kind, above)]))
+                label = (_OFF_WINDOW_LABELS[(kind, above)], _LINE_STYLES[kind])
+                lines.append((0 if above else span, kind, 0, 0, label))
             else:
-                lines.append((r, kind, cols[0], cols[1], _LINE_LABELS[kind]))
+                lines.append((r, kind, cols[0], cols[1], (_LINE_LABELS[kind], _LINE_STYLES[kind])))
         return lines
 
-    def _gutter_strip(self, cols: int, label: tuple[str, str] | None) -> Strip:
+    def _gutter_strip(self, cols: int, label: tuple[str, Style] | None) -> Strip:
         if label is None:
             return Strip.blank(cols, self.rich_style)
-        text, kind = label
-        style = self.rich_style + _LINE_STYLES[kind]
-        return Strip([Segment(text.rjust(cols)[:cols], style)], cols)
+        text, style = label
+        return Strip([Segment(text.rjust(cols)[:cols], self.rich_style + style)], cols)
 
     def update_config(self) -> None:
         """Config changed - bars shift within visible range, overlays follow new config."""
@@ -477,7 +489,7 @@ class SpectrumWidget(ImageModeMixin, Widget):
         if search_x is not None:
             shade_columns(buf, *search_x, _SEARCH_TINT, _SEARCH_EDGE)
 
-        gutter: dict[int, tuple[str, str]] = {}
+        gutter: dict[int, tuple[str, Style]] = {}
         for row, kind, col_low, col_high, label in self._scale_lines(
             w, freq_min, freq_max, plot_h - 1, text=False
         ):
@@ -490,7 +502,7 @@ class SpectrumWidget(ImageModeMixin, Widget):
                 draw_hline(
                     buf, row, col_low, col_high, _LINE_COLORS[kind], keep=_TRACE_COLOR, dash=dash
                 )
-            gutter[top_rows + (row + occ.top) // cell_h] = (label, kind)
+            gutter[top_rows + (row + occ.top) // cell_h] = label
         self._image_gutter = gutter
 
         span = freq_max - freq_min
@@ -645,7 +657,7 @@ class SpectrumWidget(ImageModeMixin, Widget):
         full = width + gutter
         strips.append(Strip([Segment(frame.header.ljust(full)[:full], base)], full))
 
-        def plot_row(strip: Strip, label: tuple[str, str] | None = None) -> Strip:
+        def plot_row(strip: Strip, label: tuple[str, Style] | None = None) -> Strip:
             if not gutter:
                 return strip
             return Strip.join([self._gutter_strip(gutter, label), strip])
@@ -660,10 +672,10 @@ class SpectrumWidget(ImageModeMixin, Widget):
         )
 
         row_lines: dict[int, list[tuple[int, str, int, int]]] = {}
-        labels: dict[int, tuple[str, str]] = {}
+        labels: dict[int, tuple[str, Style]] = {}
         for dot, kind, col_low, col_high, label in frame.lines:
             row_lines.setdefault(dot // 4, []).append((dot % 4, kind, col_low, col_high))
-            labels[dot // 4] = (label, kind)
+            labels[dot // 4] = label
         for i, row_cells in enumerate(frame.cells):
             row = self._render_bar_row(row_cells, width, frame.search_range, row_lines.get(i, ()))
             strips.append(plot_row(row, labels.get(i)))

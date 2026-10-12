@@ -12,7 +12,7 @@ from tsdr.core.events.events import FFTUpdateEvent
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.spectrum_view import view_range
 from tsdr.core.tracing import traced
-from tsdr.tui.widgets.db_scale import grid_label, gutter_cols
+from tsdr.tui.widgets.db_scale import KEY_COLS, grid_label, gutter_cols, label_color
 from tsdr.tui.widgets.dsp_utils import (
     normalize_spectrum,
     project_spectrum,
@@ -60,6 +60,22 @@ def _build_luts() -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
 
 
 _RGB_LUT, _RGBA_LUT = _build_luts()
+
+
+def _position(level: float, db_min: float, db_max: float) -> float:
+    return min(1.0, max(0.0, (level - db_min) / (db_max - db_min)))
+
+
+def level_color(level: float, db_min: float, db_max: float) -> tuple[int, int, int]:
+    """The color a signal at `level` dB takes on the waterfall."""
+    r, g, b = (int(c) for c in _RGB_LUT[int(_position(level, db_min, db_max) * 255)])
+    return r, g, b
+
+
+def level_label_color(level: float, db_min: float, db_max: float) -> str:
+    """A dB label's color: `level`'s on the waterfall, kept legible."""
+    return label_color(level_color(level, db_min, db_max), _position(level, db_min, db_max))
+
 
 _STYLE_NONE = Style()
 
@@ -521,20 +537,27 @@ class WaterfallWidget(ImageModeMixin, Widget):
 
     def _color_key_strip(self, row: int, rows: int, cols: int) -> Strip:
         """Row `row` of a `rows`-row color key for the label column: the
-        colormap from db_max (top) to db_min (bottom), two steps per row, with
-        both ends labeled."""
+        colormap from db_max (top) to db_min (bottom), two steps per row,
+        KEY_COLS wide and centered, with both ends labeled in their colors."""
+        if row in (0, rows - 1):
+            level = self.db_max if row == 0 else self.db_min
+            color = level_label_color(level, self.db_min, self.db_max)
+            style = self.rich_style + Style(color=color)
+            return Strip([Segment(grid_label(level).rjust(cols)[:cols], style)], cols)
         span = max(1, 2 * rows - 1)
         top = max(1, round(255 * (1.0 - 2 * row / span)))
         bottom = max(1, round(255 * (1.0 - (2 * row + 1) / span)))
-        if row in (0, rows - 1):
-            index = (top + bottom) // 2
-            r, g, b = (int(c) for c in _RGB_LUT[index])
-            fg = "black" if 0.299 * r + 0.587 * g + 0.114 * b > 128 else "white"
-            style = Style(color=fg, bgcolor=_COLOR_STRINGS[index])
-            label = grid_label(self.db_max if row == 0 else self.db_min)
-            return Strip([Segment(label.rjust(cols)[:cols], style)], cols)
         char, style = _get_cell(top, bottom)
-        return Strip([Segment(char * cols, self.rich_style + style)], cols)
+        width = min(KEY_COLS, cols)
+        left = (cols - width) // 2
+        return Strip(
+            [
+                Segment(" " * left, self.rich_style),
+                Segment(char * width, self.rich_style + style),
+                Segment(" " * (cols - left - width), self.rich_style),
+            ],
+            cols,
+        )
 
     def _render_half_block_row(
         self,

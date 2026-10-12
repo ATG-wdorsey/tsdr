@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from rich.style import Style
 from textual.geometry import Size
 
 from tsdr.core.demod_spec import DemodSpec
@@ -24,15 +25,20 @@ from tsdr.core.tuning_state import init_tuning_state
 from tsdr.devices import MockParams
 from tsdr.tui.widgets import waterfall_widget as waterfall_module
 from tsdr.tui.widgets.db_scale import (
+    GRID_GREY,
     GUTTER_COLS,
+    KEY_COLS,
+    LABEL_MIN_LUMA,
     grid_label,
     grid_levels,
     gutter_cols,
+    label_color,
+    legible,
     noise_equivalent_db,
 )
 from tsdr.tui.widgets.dsp_utils import draw_hline, project_spectrum
 from tsdr.tui.widgets.spectrum_widget import _TRACE_COLOR, SpectrumWidget
-from tsdr.tui.widgets.waterfall_widget import WaterfallWidget
+from tsdr.tui.widgets.waterfall_widget import WaterfallWidget, level_color, level_label_color
 
 RATE = 10e6
 CENTER = 146.0e6
@@ -54,6 +60,38 @@ def test_labels_fit_the_column() -> None:
     assert grid_label(-110.0) == "-110 "
     assert len(grid_label(-5.0)) == GUTTER_COLS
     assert gutter_cols(100) == GUTTER_COLS and gutter_cols(20) == 0
+
+
+def _luma(rgb: tuple[int, int, int]) -> float:
+    return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+
+
+def test_label_colors_are_brightened_only_as_far_as_needed() -> None:
+    navy = (0, 0, 0x2C)
+    lifted = legible(navy)
+    assert _luma(lifted) >= LABEL_MIN_LUMA - 0.5
+    assert lifted[2] == 255 and lifted[0] == lifted[1] < lifted[2]  # still blue
+    dark_red = legible((0x4A, 0, 0))
+    assert dark_red[0] == 255 and dark_red[1] == dark_red[2] < 100  # still red
+    assert legible((0, 0, 0)) == (110, 110, 110)
+    assert legible((0xFF, 0xFF, 0x00)) == (0xFF, 0xFF, 0x00)  # already legible: unchanged
+
+
+def _css(rgb: tuple[int, int, int]) -> str:
+    r, g, b = rgb
+    return f"rgb({r},{g},{b})"
+
+
+def test_the_noise_floors_dark_colors_label_in_grey() -> None:
+    assert label_color((0, 0, 100), 0.17) == GRID_GREY  # Classic's navy, low in the window
+    assert label_color((17, 82, 208), 0.25) == _css(legible((17, 82, 208)))
+    # Dark red high in the window is a strong signal: brightened, never grey.
+    assert label_color((0x4A, 0, 0), 1.0) == _css(legible((0x4A, 0, 0)))
+
+
+def _rgb(style) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
+    triplet = style.color.get_truecolor()
+    return triplet.red, triplet.green, triplet.blue
 
 
 def test_the_squelch_line_sits_on_noise_the_squelch_reads_at_that_level() -> None:
@@ -146,6 +184,22 @@ def test_text_mode_labels_the_grid_in_its_own_column(engine: SDREngine) -> None:
     assert not any("SQ" in row for row in rows)
 
 
+def test_grid_labels_take_the_waterfalls_color_for_their_level(engine: SDREngine) -> None:
+    labels = {}
+    for strip in _strips(_widget())[1:]:  # past the header
+        seg = list(strip)[0]
+        if seg.text.strip():
+            labels[seg.text] = _rgb(seg.style)
+    assert len(labels) == 9
+    for text, rgb in labels.items():
+        assert rgb == _rgb(Style(color=level_label_color(float(text), -115.0, -25.0)))
+    grey = _rgb(Style(color=GRID_GREY))
+    assert labels["-110 "] == labels["-100 "] == grey  # the noise floor's navy
+    assert labels[" -90 "] == legible(level_color(-90.0, -115.0, -25.0))  # azure
+    assert labels[" -70 "][0] >= 250 and labels[" -70 "][2] < 60  # orange
+    assert labels[" -30 "][0] == 255 > labels[" -30 "][1]  # dark red, as red
+
+
 def test_text_mode_marks_the_squelch_and_trigger(engine: SDREngine) -> None:
     engine.update_squelch("radio", "audio", enabled=True, threshold_db=-82.0)
     engine.devices["radio"].state = DeviceState.RUNNING
@@ -153,6 +207,9 @@ def test_text_mode_marks_the_squelch_and_trigger(engine: SDREngine) -> None:
     strips = _strips(_widget())
     labels = ["".join(seg.text for seg in strip)[:GUTTER_COLS] for strip in strips]
     assert "  SQ " in labels and "  TR " in labels
+    # The squelch and trigger labels keep their lines' colors.
+    assert list(strips[labels.index("  SQ ")])[0].style.color.name == "dark_orange"
+    assert list(strips[labels.index("  TR ")])[0].style.color.name == "yellow"
     yellow = []
     col = 0
     for seg in strips[labels.index("  TR ")]:
@@ -210,9 +267,10 @@ def test_the_waterfall_lines_up_with_the_plot(
     data_rows = w._strips[2:]
     assert all(strip.cell_length == 100 for strip in data_rows)
     keys = ["".join(s.text for s in strip)[:GUTTER_COLS] for strip in data_rows]
-    # The color key: strongest (db_max) at the top, weakest (db_min) at the bottom.
+    # The color key: strongest (db_max) at the top, weakest (db_min) at the bottom,
+    # KEY_COLS wide and centered in the label column.
     assert keys[0] == " -25 " and keys[-1] == "-115 "
-    assert all(k == "▀" * GUTTER_COLS for k in keys[1:-1])
+    assert KEY_COLS == 3 and all(k == " ▀▀▀ " for k in keys[1:-1])
 
 
 def test_the_color_key_runs_from_the_strongest_color_down() -> None:
@@ -220,11 +278,26 @@ def test_the_color_key_runs_from_the_strongest_color_down() -> None:
     w.set_reactive(WaterfallWidget.db_min, -115.0)
     w.set_reactive(WaterfallWidget.db_max, -25.0)
     colors = [
-        w._color_key_strip(row, 10, GUTTER_COLS)._segments[0].style.color for row in range(1, 9)
+        next(s for s in w._color_key_strip(row, 10, GUTTER_COLS) if s.text.strip()).style.color
+        for row in range(1, 9)
     ]
     lut = {f"rgb({r},{g},{b})": i for i, (r, g, b) in enumerate(waterfall_module._RGB_LUT)}
     indices = [lut[f"rgb({c.triplet.red},{c.triplet.green},{c.triplet.blue})"] for c in colors]
     assert indices == sorted(indices, reverse=True) and indices[0] > 200 and indices[-1] < 60
+
+
+def test_the_color_keys_end_labels_are_in_their_colors() -> None:
+    w = WaterfallWidget()
+    w.set_reactive(WaterfallWidget.db_min, -115.0)
+    w.set_reactive(WaterfallWidget.db_max, -25.0)
+    for row, level, color in (
+        (0, -25.0, _css(legible(level_color(-25.0, -115.0, -25.0)))),
+        (9, -115.0, GRID_GREY),
+    ):
+        (seg,) = list(w._color_key_strip(row, 10, GUTTER_COLS))
+        assert seg.text == grid_label(level)
+        assert seg.style.color == Style(color=color).color
+        assert seg.style.bgcolor is None
 
 
 def test_a_reference_line_off_the_window_is_labeled_at_its_edge(engine: SDREngine) -> None:
