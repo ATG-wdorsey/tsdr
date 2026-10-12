@@ -25,6 +25,12 @@ from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
 from tsdr.core.sdr.spectrum_view import adjusted_span
 from tsdr.core.sdr.tune_policy import effective_lo_side
+from tsdr.core.search_control import (
+    lock_out_channel,
+    set_search_step,
+    start_search,
+    stop_search,
+)
 from tsdr.core.tuning import (
     STEP_LADDER,
     bandwidth_step,
@@ -168,6 +174,38 @@ class TuningMixin(MixinBase):
         else:
             self.show_status(f"LO offset: {new} the dial (no room at this sample rate)")
 
+    def _toggle_search(self) -> None:
+        """`/`: start SEARCH with the last settings, or stop it."""
+        device = self._focused()
+        if device is None:
+            return
+        try:
+            if stop_search(device.device_id):
+                self.show_status("SEARCH off")
+                return
+            search = start_search(device.device_id)
+        except SDRException as e:
+            self._show_error(str(e))
+            return
+        low = format_hz(search.low_hz, decimals=3, long_suffix=True)
+        high = format_hz(search.high_hz, decimals=3, long_suffix=True)
+        self.show_status(f"SEARCH {low} to {high}, trigger {search.trigger_db:.0f} dBFS")
+
+    def _lock_out_channel(self, *, permanent: bool) -> None:
+        """`x`/`X`: skip the dial's channel, for this session or as a memory."""
+        device = self._focused()
+        if device is None:
+            return
+        try:
+            frequency = lock_out_channel(device.device_id, permanent=permanent)
+        except SDRException as e:
+            self._show_error(str(e))
+            return
+        where = "saved as a memory" if permanent else "this session"
+        self.show_status(
+            f"Locked out {format_hz(frequency, decimals=4, long_suffix=True)} ({where})"
+        )
+
     def _center_view_on_dial(self) -> None:
         device = self._focused()
         if device is None:
@@ -189,6 +227,9 @@ class TuningMixin(MixinBase):
         self._publish_tuning_state_changed()
 
         device = self._focused()
+        if device is not None and device.config.search is not None:
+            step = ts.step or resolve_auto_step(device.active_mode, device.config.tuned_frequency)
+            set_search_step(device.device_id, step)
         if ts.step is None and device is not None:
             resolved = resolve_auto_step(device.active_mode, device.config.tuned_frequency)
             self.show_status(f"Step: auto ({format_hz(resolved, decimals=1, long_suffix=True)})")

@@ -7,6 +7,7 @@ from tsdr.core.sdr.processing import (
     apply_dc_offset_correction,
     apply_iq_imbalance_correction,
     compute_fft,
+    fft_window,
 )
 from tsdr.core.sdr.samples_batch import SamplesBatch
 from tsdr.core.tracing import span, traced
@@ -53,14 +54,7 @@ class FFTStage:
             or self._cached_window_size != self.fft_size
             or self._cached_window_type != self.window_type
         ):
-            if self.window_type == "hanning":
-                self._cached_window = np.hanning(self.fft_size).astype(np.float32)
-            elif self.window_type == "hamming":
-                self._cached_window = np.hamming(self.fft_size).astype(np.float32)
-            elif self.window_type == "blackman":
-                self._cached_window = np.blackman(self.fft_size).astype(np.float32)
-            else:
-                self._cached_window = np.ones(self.fft_size, dtype=np.float32)
+            self._cached_window = fft_window(self.window_type, self.fft_size)
 
             coherent_gain = float(np.sum(self._cached_window)) / self.fft_size
             self._cached_inv_norm_sq = 1.0 / (coherent_gain * self.fft_size) ** 2
@@ -119,6 +113,7 @@ class FFTStage:
         with span("compute_fft"):
             window, inv_norm_sq = self._get_or_create_window()
             spectrum = compute_fft(iq_window, window, inv_norm_sq, self._fft_plan)
+        instant_spectrum = spectrum
 
         # Apply exponential moving average for spectrum smoothing
         # alpha = 1/N where N is spectrum_averaging: N=1 means no averaging, higher = more smoothing
@@ -146,7 +141,12 @@ class FFTStage:
         freq_bins = self._get_or_create_fftfreq(data.sample_rate)
         frequencies: np.ndarray = (data.center_frequency + freq_bins).astype(np.float32)  # type: ignore[assignment]
 
-        return data.with_changes(spectrum=spectrum, frequencies=frequencies, stage_name="fft")
+        return data.with_changes(
+            spectrum=spectrum,
+            instant_spectrum=instant_spectrum,
+            frequencies=frequencies,
+            stage_name="fft",
+        )
 
     def on_config_change(self, config) -> None:
         if not isinstance(config, DeviceConfig):

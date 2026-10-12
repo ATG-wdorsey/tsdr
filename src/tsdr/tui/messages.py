@@ -28,6 +28,7 @@ from tsdr.core.events.events import (
     PipelineErrorEvent,
     RecordingFinishedEvent,
     SamplesDroppedEvent,
+    SearchStatusEvent,
     StatsUpdateEvent,
     TuningStateChangedEvent,
 )
@@ -157,6 +158,14 @@ class DemodStatusUpdate(Message):
     """Wrapper for DemodStatusEvent."""
 
     def __init__(self, event: DemodStatusEvent) -> None:
+        super().__init__()
+        self.event = event
+
+
+class SearchStatusUpdate(Message):
+    """Wrapper for SearchStatusEvent."""
+
+    def __init__(self, event: SearchStatusEvent) -> None:
         super().__init__()
         self.event = event
 

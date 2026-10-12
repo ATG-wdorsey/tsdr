@@ -9,6 +9,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from tsdr.core.sdr.datatypes import DemodStatus
+from tsdr.core.sdr.search import SearchStatus
 from tsdr.devices.base import DeviceCapabilities, SpectrumViewStatus
 
 
@@ -185,6 +186,23 @@ class AGCGainChangeEvent(Event):
 
     device_id: str
     rf_gain: float
+
+
+@dataclass(frozen=True)
+class SearchTuneEvent(Event):
+    """SEARCH asking to put the dial on an active channel."""
+
+    device_id: str
+    frequency_hz: float
+    run: int  # SearchConfig.run that asked; a later run drops it
+
+
+@dataclass(frozen=True)
+class SearchStatusEvent(Event):
+    """What SEARCH is doing on a device (published by the search stage)."""
+
+    device_id: str
+    status: SearchStatus
 
 
 # Decoder Events

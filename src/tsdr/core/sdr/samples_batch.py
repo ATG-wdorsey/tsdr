@@ -55,6 +55,7 @@ class SamplesBatch:
     iq_samples: np.ndarray | None = None
     audio_samples: np.ndarray | None = None
     spectrum: np.ndarray | None = None
+    instant_spectrum: np.ndarray | None = None  # `spectrum` before averaging
     frequencies: np.ndarray | None = None
     constellation_points: np.ndarray | None = None
     constellation_modulation: str = ""  # e.g. "BPSK", "QPSK"

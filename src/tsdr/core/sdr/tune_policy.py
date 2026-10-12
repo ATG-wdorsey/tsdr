@@ -28,6 +28,12 @@ _EDGE_MARGIN_FRACTION = 0.05
 MIN_LO_OFFSET_HZ = 50e3
 
 
+def fitting_offset(sample_rate: float, channel_bandwidth: float) -> float:
+    """Largest dial offset from the capture center that keeps the channel
+    clear of the capture's edges."""
+    return sample_rate / 2 - _EDGE_MARGIN_FRACTION * sample_rate - channel_bandwidth / 2
+
+
 def effective_lo_side(setting: LoOffset, caps: DeviceCapabilities) -> LoOffset:
     """`setting` with auto resolved: below on zero-IF radios, off otherwise."""
     if setting == "auto":
@@ -96,7 +102,6 @@ def derive_center_frequency(
     target = _offset_center(tuned, lo_offset, caps)
     if mode == "center" or not running or recenter:
         return target
-    margin = _EDGE_MARGIN_FRACTION * sample_rate
-    if abs(tuned - center) + channel_bandwidth / 2 <= sample_rate / 2 - margin:
+    if abs(tuned - center) <= fitting_offset(sample_rate, channel_bandwidth):
         return center
     return target

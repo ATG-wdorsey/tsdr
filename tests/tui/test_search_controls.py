@@ -1,0 +1,149 @@
+"""SEARCH controls: `/` starts and stops it, `x`/`X` lock out the current
+channel, `s` changes its step, the `search` command, and the tuner's status."""
+
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+
+from tsdr.core import search_control
+from tsdr.core.demod_spec import DemodSpec
+from tsdr.core.memories import get_memory_store, init_memory_store
+from tsdr.core.sdr import engine as engine_module
+from tsdr.core.sdr.config import DeviceConfig
+from tsdr.core.sdr.device_context import DeviceState
+from tsdr.core.sdr.engine import SDREngine
+from tsdr.core.sdr.search import LOCKOUT_TAG, SearchStatus
+from tsdr.core.tuning_state import get_tuning_state, init_tuning_state
+from tsdr.devices import MockParams, mock
+from tsdr.tui.commands.sdr.search import SDRSearchCommand
+from tsdr.tui.keybindings import Action, Context, build_lookup
+from tsdr.tui.tuning_mixin import TuningMixin
+from tsdr.tui.widgets.tuner_widget import _search_lines
+
+DIAL = 146.52e6
+
+
+@pytest.fixture
+def engine(monkeypatch: pytest.MonkeyPatch) -> SDREngine:
+    caps = replace(mock._MOCK_CAPABILITIES, zero_if=True, frequency_range=(70e6, 6e9))
+    monkeypatch.setattr(mock, "_MOCK_CAPABILITIES", caps)
+    init_memory_store()
+    init_tuning_state()
+    monkeypatch.setattr(search_control, "_settings", {})
+    engine = SDREngine()
+    engine.add_device(
+        "pluto",
+        "mock",
+        MockParams(),
+        DeviceConfig(tuned_frequency=DIAL, center_frequency=DIAL, sample_rate=10e6),
+    )
+    engine.set_audio_demod("pluto", DemodSpec(mode="NFM"))
+    engine.devices["pluto"].state = DeviceState.RUNNING
+    monkeypatch.setattr(engine_module, "_active_engine", engine)
+    yield engine
+    engine.devices["pluto"].state = DeviceState.STOPPED
+    engine.shutdown(timeout=2.0)
+
+
+def _keys(engine: SDREngine) -> SimpleNamespace:
+    keys = SimpleNamespace(statuses=[], errors=[])
+    keys._focused = lambda: engine.devices["pluto"]
+    keys.show_status = keys.statuses.append
+    keys._show_error = keys.errors.append
+    keys._publish_tuning_state_changed = lambda: None
+    return keys
+
+
+def _search(engine: SDREngine):
+    return engine.devices["pluto"].config.search
+
+
+def test_search_keys_are_bound() -> None:
+    lookup = build_lookup()
+    assert lookup[(Context.GLOBAL, "slash")] is Action.SEARCH_TOGGLE
+    assert lookup[(Context.GLOBAL, "x")] is Action.SEARCH_LOCKOUT
+    assert lookup[(Context.GLOBAL, "X")] is Action.SEARCH_LOCKOUT_SAVE
+
+
+def test_slash_starts_and_stops_search(engine: SDREngine) -> None:
+    keys = _keys(engine)
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    assert _search(engine) is not None
+    assert keys.statuses[-1].startswith("SEARCH 141.")
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    assert _search(engine) is None
+    assert keys.statuses[-1] == "SEARCH off"
+
+
+def test_slash_explains_why_search_cannot_start(engine: SDREngine) -> None:
+    engine.set_audio_demod("pluto", DemodSpec(mode="WFM"))
+    keys = _keys(engine)
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    assert _search(engine) is None
+    assert "narrowband" in keys.errors[-1]
+
+
+def test_x_locks_out_for_the_session_and_shift_x_for_good(engine: SDREngine) -> None:
+    keys = _keys(engine)
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    TuningMixin._lock_out_channel(keys, permanent=False)  # type: ignore[arg-type]
+    assert _search(engine).lockouts == frozenset({DIAL})
+    assert "this session" in keys.statuses[-1]
+    TuningMixin._lock_out_channel(keys, permanent=True)  # type: ignore[arg-type]
+    assert [m.frequency for m in get_memory_store().find_by_tag(LOCKOUT_TAG)] == [int(DIAL)]
+    assert _search(engine).memory_lockouts == frozenset({DIAL})
+
+
+def test_the_step_key_changes_the_search_step(engine: SDREngine) -> None:
+    keys = _keys(engine)
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    TuningMixin._cycle_step(keys, True)  # type: ignore[arg-type]
+    assert _search(engine).step_hz == get_tuning_state().step
+
+
+def test_command_starts_reports_and_stops(engine: SDREngine) -> None:
+    cmd = SDRSearchCommand()
+    out = cmd.execute(
+        ["on", "--device", "pluto", "--low", "144M", "--high", "148M", "--threshold", "-40"]
+    )
+    assert "SEARCH" in out and "144.0000 MHz" in out
+    search = _search(engine)
+    assert (search.low_hz, search.high_hz, search.trigger_db) == (144e6, 148e6, -40.0)
+    assert "trigger" in cmd.execute(["--device", "pluto"])
+    assert "stopped" in cmd.execute(["off", "--device", "pluto"])
+    assert _search(engine) is None
+    assert "off" in cmd.execute(["--device", "pluto"])
+
+
+def test_command_settings_alone_restart_search(engine: SDREngine) -> None:
+    cmd = SDRSearchCommand()
+    cmd.execute(["on", "--device", "pluto"])
+    cmd.execute(["--device", "pluto", "--hold", "4", "--dwell", "30"])
+    search = _search(engine)
+    assert (search.hold_s, search.max_dwell_s) == (4.0, 30.0)
+
+
+def test_command_rejects_a_trigger_under_the_squelch(engine: SDREngine) -> None:
+    out = SDRSearchCommand().execute(["on", "--device", "pluto", "--threshold", "-70"])
+    assert "above the squelch" in out
+    assert _search(engine) is None
+
+
+def test_command_lockouts(engine: SDREngine) -> None:
+    cmd = SDRSearchCommand()
+    cmd.execute(["on", "--device", "pluto"])
+    assert "this session" in cmd.execute(["lockout", "--device", "pluto"])
+    assert "1 session lockout" in cmd.execute(["unlock", "--device", "pluto"])
+    assert "memory" in cmd.execute(["lockout", "--permanent", "--device", "pluto"])
+    assert _search(engine).memory_lockouts == frozenset({DIAL})
+
+
+def test_tuner_shows_search_state_and_level() -> None:
+    assert "SEARCH" in _search_lines(None)[0]
+    holding = SearchStatus("holding", DIAL, -62.4, 1.5, 1)
+    badge, level = _search_lines(holding)
+    assert "HOLD" in badge and "1.5s" in badge
+    assert "-62" in level
+    assert "WAIT" in _search_lines(SearchStatus("waiting", DIAL, float("-inf"), 0.0, 0))[0]
+    assert _search_lines(SearchStatus("waiting", DIAL, float("-inf"), 0.0, 0))[1] == ""

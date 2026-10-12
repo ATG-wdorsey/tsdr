@@ -12,6 +12,7 @@ from typing import Literal, TypedDict, Unpack, get_args
 
 from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.sdr.samples_batch import SampleFormat
+from tsdr.core.sdr.search import SearchConfig
 
 TuningMode = Literal["center", "free"]
 # Where the LO sits relative to the dial while demodulating; auto = below
@@ -37,6 +38,7 @@ class StageType(Enum):
 
     AGC = "agc"
     FFT = "fft"
+    SEARCH = "search"
     EVENT_EMITTER = "event_emitter"
     DEMODULATOR = "demodulator"
     DENOISER = "denoiser"
@@ -64,7 +66,7 @@ class PipelineConfig:
 DEFAULT_PIPELINES: MappingProxyType[str, PipelineConfig] = MappingProxyType(
     {
         "visualization": PipelineConfig(
-            stages=(StageType.AGC, StageType.FFT, StageType.EVENT_EMITTER)
+            stages=(StageType.AGC, StageType.FFT, StageType.SEARCH, StageType.EVENT_EMITTER)
         ),
     }
 )
@@ -97,6 +99,7 @@ class DeviceConfigChanges(TypedDict, total=False):
     calculate_constellation: bool
     network_buffer_seconds: float
     pipelines: MappingProxyType[str, PipelineConfig]
+    search: SearchConfig | None
 
 
 class GlobalConfigChanges(TypedDict, total=False):
@@ -151,6 +154,7 @@ class DeviceConfig:
     # tolerance; higher → more latency, more tolerance.
     network_buffer_seconds: float = 0.5
     pipelines: MappingProxyType[str, PipelineConfig] = field(default=DEFAULT_PIPELINES)
+    search: SearchConfig | None = None  # an active SEARCH (core/sdr/search.py)
 
     def buffer_samples_for(self, delivered_rate: float) -> int:
         """Samples per read to hit `target_fps` at the device's delivered rate.
@@ -213,6 +217,8 @@ class DeviceConfig:
             )
         if self.fft_size & (self.fft_size - 1) != 0:
             raise ValueError(f"fft_size must be power of 2, got {self.fft_size}")
+        if self.search is not None:
+            self.search.validate()
         if not 64 <= self.fft_size <= 65536:
             raise ValueError(f"fft_size must be between 64 and 65536, got {self.fft_size}")
         valid_windows = get_args(FFTWindow)

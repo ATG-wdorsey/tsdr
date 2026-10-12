@@ -1,0 +1,197 @@
+"""SEARCH: find activity within the capture and put the dial on it.
+
+The dial jumps between channels on the tuning-step grid inside the captured
+band while the hardware stays put (free tuning). Levels are in-channel power
+in dBFS, the squelch's units, summed from the unaveraged spectrum. A channel
+that stays above the trigger for ATTACK_S is eligible, and the strongest
+eligible channel wins. The squelch threshold is the hold threshold: SEARCH
+leaves the current channel only after it has stayed below the squelch for
+longer than the hold time, or after the maximum dwell time.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Literal
+
+import numpy as np
+
+LOCKOUT_TAG = "lockout"
+DEFAULT_HOLD_S = 2.0
+# A channel must stay above the trigger this long before SEARCH jumps to it.
+ATTACK_S = 0.1
+# SEARCH is for narrowband channels: not broadcast FM, DAB or ADS-B.
+MAX_CHANNEL_BANDWIDTH_HZ = 50e3
+# A jump not yet seen in the config after this long may be requested again.
+_PENDING_TIMEOUT_S = 0.5
+
+SearchState = Literal["searching", "holding", "waiting"]
+
+
+@dataclass(frozen=True)
+class SearchConfig:
+    """An active SEARCH (`DeviceConfig.search`; None = off)."""
+
+    low_hz: float
+    high_hz: float
+    step_hz: float
+    trigger_db: float
+    hold_s: float = DEFAULT_HOLD_S
+    max_dwell_s: float | None = None  # None = unlimited
+    lockouts: frozenset[float] = frozenset()  # this session's, Hz
+    memory_lockouts: frozenset[float] = frozenset()  # memories tagged LOCKOUT_TAG, Hz
+    run: int = 0  # bumped by each start, so a jump requested by an earlier run is dropped
+
+    def validate(self) -> None:
+        if not 0 < self.low_hz < self.high_hz:
+            raise ValueError(f"search range must be increasing, got {self.low_hz}-{self.high_hz}")
+        if self.step_hz <= 0:
+            raise ValueError(f"search step must be positive, got {self.step_hz}")
+        if self.hold_s < 0:
+            raise ValueError(f"search hold must not be negative, got {self.hold_s}")
+        if self.max_dwell_s is not None and self.max_dwell_s <= 0:
+            raise ValueError(f"search max dwell must be positive, got {self.max_dwell_s}")
+
+    def channels(self) -> np.ndarray:
+        """Channel centers: the step grid within [low_hz, high_hz]."""
+        first = math.ceil(self.low_hz / self.step_hz - 1e-9)
+        last = math.floor(self.high_hz / self.step_hz + 1e-9)
+        return np.arange(first, last + 1, dtype=np.float64) * self.step_hz
+
+    def is_locked_out(self, frequency_hz: float, bandwidth_hz: float) -> bool:
+        half = max(self.step_hz, bandwidth_hz) / 2
+        return any(abs(frequency_hz - f) < half for f in self.lockouts | self.memory_lockouts)
+
+
+@dataclass(frozen=True)
+class SearchStatus:
+    state: SearchState
+    channel_hz: float
+    level_db: float
+    hold_left_s: float
+    active: int  # channels above the trigger
+
+
+def channel_powers_db(
+    spectrum_db: np.ndarray,
+    center_hz: float,
+    sample_rate: float,
+    channels_hz: np.ndarray,
+    bandwidth_hz: float,
+    enbw_bins: float,
+) -> np.ndarray:
+    """In-channel power of each channel in dBFS, the squelch's units.
+
+    `spectrum_db` is compute_fft's output: fftshifted, scaled so a tone reads
+    its amplitude. The bins a channel covers, summed and divided by the
+    window's noise bandwidth, give the power a `bandwidth_hz` channel filter
+    passes. Channels outside the spectrum read -inf.
+    """
+    n = len(spectrum_db)
+    out = np.full(len(channels_hz), -np.inf)
+    if n == 0 or len(channels_hz) == 0:
+        return out
+    bin_hz = sample_rate / n
+    # Bin k is centered at center_hz + (k - n/2) * bin_hz.
+    lo = np.ceil((channels_hz - bandwidth_hz / 2 - center_hz) / bin_hz + n / 2)
+    hi = np.ceil((channels_hz + bandwidth_hz / 2 - center_hz) / bin_hz + n / 2)
+    lo = np.clip(lo, 0, n).astype(np.intp)
+    hi = np.clip(np.maximum(hi, lo + 1), 0, n).astype(np.intp)
+    inside = hi > lo
+    if not inside.any():
+        return out
+    first, last = int(lo[inside].min()), int(hi[inside].max())
+    power = np.power(10.0, spectrum_db[first:last].astype(np.float64) / 10.0)
+    sums = np.concatenate(([0.0], np.cumsum(power)))
+    total = sums[hi[inside] - first] - sums[lo[inside] - first]
+    out[inside] = 10.0 * np.log10(total / enbw_bins + 1e-20)
+    return out
+
+
+class SearchController:
+    """SEARCH decisions from channel levels, for one run."""
+
+    def __init__(self) -> None:
+        self._channels = np.empty(0)
+        self._above_since = np.empty(0)
+        self._current: float | None = None
+        self._arrived_at = 0.0
+        self._last_open = -math.inf
+        self._heard = False
+        # Channels left at the maximum dwell: not eligible until they drop below the hold.
+        self._disarmed: set[float] = set()
+        self._pending: float | None = None
+        self._pending_at = 0.0
+
+    def update(
+        self,
+        now: float,
+        config: SearchConfig,
+        channels_hz: np.ndarray,
+        levels_db: np.ndarray,
+        *,
+        tuned_hz: float,
+        current_db: float,
+        hold_db: float,
+        bandwidth_hz: float,
+        lo_hz: float,
+        lo_exclusion_hz: float,
+    ) -> tuple[float | None, SearchStatus]:
+        """Returns the channel to jump to (or None) and the status."""
+        if not np.array_equal(channels_hz, self._channels):
+            self._channels = channels_hz
+            self._above_since = np.full(len(channels_hz), np.nan)
+        hold_db = min(hold_db, config.trigger_db)
+        is_open = current_db >= hold_db
+
+        if tuned_hz != self._current:
+            arrived = self._pending is not None and abs(tuned_hz - self._pending) < 1.0
+            self._current = tuned_hz
+            self._arrived_at = now
+            self._last_open = now if arrived else -math.inf
+            self._pending = None
+        if is_open:
+            self._last_open = now
+        self._heard = self._heard or self._last_open > -math.inf
+
+        released = (
+            config.is_locked_out(tuned_hz, bandwidth_hz) or now - self._last_open > config.hold_s
+        )
+        dwelt = config.max_dwell_s is not None and now - self._arrived_at >= config.max_dwell_s
+
+        above = levels_db >= config.trigger_db
+        self._above_since[above & np.isnan(self._above_since)] = now
+        self._above_since[~above] = np.nan
+
+        half = max(config.step_hz, bandwidth_hz) / 2
+        self._disarmed = {
+            f
+            for f in self._disarmed
+            if np.any(levels_db[np.abs(channels_hz - f) < half] >= hold_db)
+        }
+        eligible = above & (now - self._above_since >= ATTACK_S)
+        eligible &= np.abs(channels_hz - tuned_hz) >= half
+        eligible &= np.abs(channels_hz - lo_hz) >= lo_exclusion_hz
+        for f in config.lockouts | config.memory_lockouts | self._disarmed:
+            eligible &= np.abs(channels_hz - f) >= half
+
+        target: float | None = None
+        waiting_on_jump = self._pending is not None and now - self._pending_at < _PENDING_TIMEOUT_S
+        if (released or dwelt) and not waiting_on_jump and eligible.any():
+            target = float(channels_hz[np.argmax(np.where(eligible, levels_db, -np.inf))])
+            if dwelt and not released:
+                self._disarmed.add(tuned_hz)
+            self._pending = target
+            self._pending_at = now
+
+        if not released:
+            state: SearchState = "holding"
+            hold_left = (
+                max(0.0, config.hold_s - (now - self._last_open)) if not is_open else config.hold_s
+            )
+        else:
+            state = "waiting" if self._heard else "searching"
+            hold_left = 0.0
+        status = SearchStatus(state, tuned_hz, current_db, hold_left, int(np.count_nonzero(above)))
+        return target, status

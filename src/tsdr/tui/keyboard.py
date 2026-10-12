@@ -130,6 +130,12 @@ class KeyboardMixin(MixinBase):
                 self._toggle_lo_offset("below")
             case Action.LO_OFFSET_ABOVE:
                 self._toggle_lo_offset("above")
+            case Action.SEARCH_TOGGLE:
+                self._toggle_search()
+            case Action.SEARCH_LOCKOUT:
+                self._lock_out_channel(permanent=False)
+            case Action.SEARCH_LOCKOUT_SAVE:
+                self._lock_out_channel(permanent=True)
             case Action.BANDWIDTH_UP:
                 self._adjust_channel_bandwidth(1)
             case Action.BANDWIDTH_DOWN:

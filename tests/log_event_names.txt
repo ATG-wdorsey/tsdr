@@ -182,6 +182,12 @@ rtltcp_set_bias_tee
 rtltcp_set_gain
 rtltcp_shutdown_skipped
 rtltcp_socket_close_failed
+search_jump
+search_jump_dropped
+search_jump_failed
+search_lockout
+search_started
+search_stopped
 signal_exit_failed
 signal_received
 soapy_found_system_path

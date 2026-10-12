@@ -165,8 +165,8 @@ demod wfm
 
 Common commands include `add`, `remove`, `start`, `stop`, `list`, `use`, and
 `config` (device management); `f` (tune), `demod` (select a demodulator or
-decoder), `squelch`, `denoise`, and `audio` (audio); `memory` and `bandplan`
-(frequency presets); `record` (IQ capture); and `pipeline` (inspect or modify
+decoder), `squelch`, `denoise`, and `audio` (audio); `search` (find active
+channels); `memory` and `bandplan` (frequency presets); `record` (IQ capture); and `pipeline` (inspect or modify
 processing stages). See `help` for the full list.
 
 ### Keyboard controls
@@ -189,6 +189,25 @@ Tuning:
   channel. In center mode the spectrum is trimmed by twice the offset to keep
   the dial centered. `config --lo-offset` and `--lo-offset-size` set it from the
   console.
+
+Search (find activity within the captured band):
+
+- `/`: start / stop SEARCH. It switches to free tuning and turns the squelch on,
+  then puts the dial on the strongest channel that stays above the trigger for
+  100 ms (channels on the tuning-step grid, within the captured band). The
+  squelch threshold holds the channel: SEARCH moves on only after the channel
+  has stayed below the squelch for the hold time (2 s), so replies are heard,
+  and between hits it stays on the last channel. Tuning by hand stops it. For
+  narrowband modes only (not WFM).
+- `x`: lock out the current channel for this session.
+- `X`: lock out the current channel for good (a memory tagged `lockout`).
+
+`search on --low 144M --high 148M --threshold -60 --hold 2 --dwell 30` sets the
+range, the trigger (dBFS within the channel, as the squelch measures it), the
+hold time and the most time on one active channel (`--dwell 0`: unlimited, the
+default). `search` shows the settings, `search off` stops, `search lockout
+[--permanent]` locks out the current channel, and `search unlock` drops this
+session's lockouts.
 
 Reception:
 

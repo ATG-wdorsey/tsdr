@@ -26,6 +26,7 @@ from tsdr.core.events.events import (
     PipelineErrorEvent,
     RecordingFinishedEvent,
     SamplesDroppedEvent,
+    SearchStatusEvent,
     StatsUpdateEvent,
     TuningStateChangedEvent,
 )
@@ -52,6 +53,7 @@ from tsdr.tui.messages import (
     PipelineError,
     RecordingFinished,
     SamplesDropped,
+    SearchStatusUpdate,
     StatsUpdate,
     TuningStateChanged,
 )
@@ -132,6 +134,9 @@ class TextualEventAdapter:
         )
         self._subscriptions.append(
             self.event_bus.subscribe(DemodStatusEvent, self._on_demod_status)
+        )
+        self._subscriptions.append(
+            self.event_bus.subscribe(SearchStatusEvent, self._on_search_status)
         )
         self._subscriptions.append(
             self.event_bus.subscribe(DecoderOutputEvent, self._on_decoder_output)
@@ -269,6 +274,11 @@ class TextualEventAdapter:
         if not isinstance(event, DemodStatusEvent):
             return
         self.app.post_message(DemodStatusUpdate(event))
+
+    def _on_search_status(self, event: Event) -> None:
+        if not isinstance(event, SearchStatusEvent):
+            return
+        self.app.post_message(SearchStatusUpdate(event))
 
     def _on_decoder_output(self, event: Event) -> None:
         if not isinstance(event, DecoderOutputEvent):

@@ -45,6 +45,9 @@ class Action(StrEnum):
     TUNE_MODE_TOGGLE = "tune.mode-toggle"
     LO_OFFSET_BELOW = "tune.lo-below"
     LO_OFFSET_ABOVE = "tune.lo-above"
+    SEARCH_TOGGLE = "search.toggle"
+    SEARCH_LOCKOUT = "search.lockout"
+    SEARCH_LOCKOUT_SAVE = "search.lockout-save"
     BANDWIDTH_UP = "bandwidth.up"
     BANDWIDTH_DOWN = "bandwidth.down"
     BANDWIDTH_UP_FINE = "bandwidth.up-fine"
@@ -92,6 +95,7 @@ class Binding:
 
 
 TUNING = "Tuning"
+SEARCH = "Search"
 RECEPTION = "Reception"
 DISPLAY = "Display"
 MEMORIES = "Memories & panels"
@@ -157,6 +161,17 @@ BINDINGS: tuple[Binding, ...] = (
         (Action.LO_OFFSET_ABOVE, ("O",), "Put the LO above the dial (again: no offset)"),
         (None, ("Ctrl+1-9",), "Recall a band-stack slot"),
         (None, ("Ctrl+0",), "Swap the A/B band stack"),
+    ),
+    *_section(
+        Context.GLOBAL,
+        SEARCH,
+        (Action.SEARCH_TOGGLE, ("slash",), "Start / stop SEARCH for active channels in the band"),
+        (Action.SEARCH_LOCKOUT, ("x",), "Lock out the current channel for this session"),
+        (
+            Action.SEARCH_LOCKOUT_SAVE,
+            ("X",),
+            "Lock out the current channel for good (a memory tagged lockout)",
+        ),
     ),
     *_section(
         Context.GLOBAL,

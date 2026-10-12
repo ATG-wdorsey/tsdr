@@ -231,7 +231,7 @@ Each device owns multiple peer pipelines via `SDRDeviceContext.pipelines: dict[s
 
 ```
 SDRDeviceContext.pipelines
-    "visualization" → AGC → FFT → EventEmitter
+    "visualization" → AGC → FFT → Search → EventEmitter
     "audio"         → FrequencyShift → Demodulator → Denoiser → EventEmitter   (added on demod)
 ```
 
@@ -275,6 +275,24 @@ the dial. Free mode applies the offset when it recenters, when `o`/`O`
 (`config --lo-offset`) change it, and when a new demodulator would find the
 LO inside its channel.
 
+## Search
+
+SEARCH (`/`, the `search` command) finds activity within the capture and puts
+the dial on it. `DeviceConfig.search` (`SearchConfig` in `core/sdr/search.py`;
+None = off) holds a run: range, step (the tuning step), trigger, hold time, max
+dwell, lockouts. `SearchStage` in the visualization pipeline measures every
+step-grid channel's in-channel power from the FFT stage's unaveraged
+`instant_spectrum` (dBFS, the squelch's units: summed bins over the window's
+noise bandwidth), `SearchController` decides, and jumps go out as
+`SearchTuneEvent`, which the engine applies with `from_search=True`. The
+squelch threshold is the hold threshold. SEARCH never moves the hardware:
+starting it selects free tuning, it skips channels within the LO offset of the
+LO, the engine drops a jump that would recenter, and any other dial move, a
+recenter, a sample rate change, center tuning or a non-narrowband demodulator
+stops it. Starting, stopping and lockouts live in `core/search_control.py`;
+lasting lockouts are memories tagged `lockout` (the engine follows
+`MemoriesChangedEvent`).
+
 ## Analog filter
 
 `DeviceConfig.analog_filter` (auto/track/fixed/off), `analog_filter_hz` and
@@ -312,7 +330,7 @@ devices the displayable band is `capabilities.frequency_range`, not
 
 Stages can be listed, added, or removed dynamically at runtime via the `pipeline` command.
 
-Available stages: `agc`, `demodulator`, `event_emitter`, `fft`, `frequency_shift`, `record` (see `StageType` in `core/sdr/config.py`).
+Available stages: `agc`, `demodulator`, `event_emitter`, `fft`, `frequency_shift`, `record`, `search` (see `StageType` in `core/sdr/config.py`).
 
 ## Demodulators
 

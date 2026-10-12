@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from queue import Empty, Queue
 from types import MappingProxyType
-from typing import Any, Unpack
+from typing import TYPE_CHECKING, Any, Unpack, cast
 
 from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.events.bus import EventBus
@@ -23,8 +23,10 @@ from tsdr.core.events.events import (
     DeviceStateChangedEvent,
     Event,
     FocusChangedEvent,
+    MemoriesChangedEvent,
     PipelineChangedEvent,
     RecordingFinishedEvent,
+    SearchTuneEvent,
 )
 from tsdr.core.sdr.config import (
     DeviceConfig,
@@ -36,6 +38,8 @@ from tsdr.core.sdr.config import (
 )
 from tsdr.core.sdr.device_context import DeviceState, SDRDeviceContext, active_mode_of
 from tsdr.core.sdr.exceptions import ConfigurationError, SDRException
+from tsdr.core.sdr.pipeline.stages.search_stage import audio_channel
+from tsdr.core.sdr.search import LOCKOUT_TAG, MAX_CHANNEL_BANDWIDTH_HZ
 from tsdr.core.sdr.tune_policy import derive_center_frequency, lo_offset_for
 from tsdr.core.sdr.workers.audio_worker import AudioOutputWorker, list_audio_devices
 from tsdr.core.tracing import span, traced
@@ -45,6 +49,9 @@ from tsdr.devices import DeviceParams, create_device
 from tsdr.devices.base import DeviceCapabilities
 from tsdr.radio.registry import DEMODULATOR_CLASSES
 from tsdr.radio.registry import demod_profile as build_profile
+
+if TYPE_CHECKING:
+    from tsdr.core.memories import Memory
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +101,8 @@ class SDREngine:
                 DeviceCapabilitiesChangedEvent, self._on_device_capabilities_changed
             )
             self.event_bus.subscribe(DecoderOutputEvent, self._on_decoder_output)
+            self.event_bus.subscribe(SearchTuneEvent, self._on_search_tune)
+            self.event_bus.subscribe(MemoriesChangedEvent, self._on_memories_changed)
 
     def add_device(
         self,
@@ -275,10 +284,18 @@ class SDREngine:
         )
 
     @traced("engine.update_device_config")
-    def update_device_config(self, device_id: str, **changes: Unpack[DeviceConfigChanges]) -> None:
+    def update_device_config(
+        self,
+        device_id: str,
+        *,
+        from_search: bool = False,
+        **changes: Unpack[DeviceConfigChanges],
+    ) -> None:
         """Update per-device configuration.
 
         DeviceContext handles worker notification (both I/O and pipeline workers).
+        `from_search` marks SEARCH's own jumps: any other dial move stops SEARCH,
+        and a jump that would move the hardware is dropped.
         """
         if device_id not in self.devices:
             raise SDRException(f"Device {device_id} not found")
@@ -309,6 +326,13 @@ class SDREngine:
         if changes.get("tuning_mode") == "center" and "spectrum_center" not in changes:
             changes["spectrum_center"] = None
 
+        searching = context.config.search is not None and "search" not in changes
+        stop_reason = (
+            _search_stop_reason(context.config, changes, from_search=from_search)
+            if searching
+            else None
+        )
+
         # sample_rate/channel_bandwidth are fit-test inputs: the channel can
         # leave the captured band without any dial move. A demodulator change
         # (pipelines) and the LO offset settings move the LO beside the dial.
@@ -329,8 +353,21 @@ class SDREngine:
         ):
             derived = self._derive_center(context, changes, caps)
             if derived != context.config.center_frequency:
+                if from_search:
+                    logger.info(
+                        "search_jump_dropped device=%s to_hz=%.0f reason=would_recenter",
+                        device_id,
+                        changes.get("tuned_frequency", 0.0),
+                    )
+                    return
                 changes["center_frequency"] = derived
                 logger.info("tune_recentered device=%s center_hz=%.0f", device_id, derived)
+
+        if searching and stop_reason is None and "center_frequency" in changes:
+            stop_reason = "recentered"
+        if stop_reason is not None:
+            changes["search"] = None
+            logger.info("search_stopped device=%s reason=%s", device_id, stop_reason)
 
         if "sample_rate" in changes and caps.sample_rates is not None:
             new_rate = changes["sample_rate"]
@@ -734,6 +771,41 @@ class SDREngine:
         if event.device_id in self.devices:
             self.update_device_config(event.device_id, rf_gain=event.rf_gain)
 
+    def _on_search_tune(self, event: Event) -> None:
+        assert isinstance(event, SearchTuneEvent)
+        context = self.devices.get(event.device_id)
+        if context is None:
+            return
+        search = context.config.search
+        if search is None or search.run != event.run:
+            return
+        # Published on the pipeline worker: an error here must not end it.
+        try:
+            self.update_device_config(
+                event.device_id, from_search=True, tuned_frequency=event.frequency_hz
+            )
+        except SDRException as e:
+            logger.warning(
+                "search_jump_failed device=%s to_hz=%.0f error=%r",
+                event.device_id,
+                event.frequency_hz,
+                e,
+            )
+
+    def _on_memories_changed(self, event: Event) -> None:
+        assert isinstance(event, MemoriesChangedEvent)
+        lockouts = frozenset(
+            float(m.frequency)
+            for m in cast("tuple[Memory, ...]", event.memories)
+            if LOCKOUT_TAG in (tag.lower() for tag in m.tags)
+        )
+        for device_id, context in list(self.devices.items()):
+            search = context.config.search
+            if search is not None and search.memory_lockouts != lockouts:
+                self.update_device_config(
+                    device_id, search=replace(search, memory_lockouts=lockouts)
+                )
+
     def _on_recording_finished(self, event: Event) -> None:
         assert isinstance(event, RecordingFinishedEvent)
         if event.device_id in self.devices:
@@ -849,3 +921,29 @@ class SDREngine:
             logger.error("engine_stop_workers_failed error=%r", e, exc_info=True)
 
         logger.info("engine_shutdown_complete")
+
+
+def _search_stop_reason(
+    config: DeviceConfig, changes: Mapping[str, Any], *, from_search: bool
+) -> str | None:
+    """Why `changes` end a running SEARCH, or None."""
+    if "tuned_frequency" in changes and not from_search:
+        return "tuned"
+    if "center_frequency" in changes:
+        return "recentered"
+    if "sample_rate" in changes:
+        return "sample_rate"
+    if changes.get("tuning_mode") == "center":
+        return "center_tuning"
+    channel = audio_channel(
+        replace(
+            config,
+            pipelines=changes.get("pipelines", config.pipelines),
+            channel_bandwidth=changes.get("channel_bandwidth", config.channel_bandwidth),
+        )
+    )
+    if channel is None:
+        return "no_demodulator"
+    if channel.bandwidth_hz > MAX_CHANNEL_BANDWIDTH_HZ:
+        return "wideband_channel"
+    return None
