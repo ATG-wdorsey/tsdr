@@ -968,4 +968,6 @@ def _search_stop_reason(
         return "no_demodulator"
     if channel.bandwidth_hz > MAX_CHANNEL_BANDWIDTH_HZ:
         return "wideband_channel"
+    if not channel.squelch_enabled:
+        return "squelch_off"  # the squelch holds the channel
     return None

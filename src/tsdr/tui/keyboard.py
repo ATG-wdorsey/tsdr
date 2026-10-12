@@ -379,8 +379,9 @@ class KeyboardMixin(MixinBase):
             self._show_error("No audio demodulator active")
             return
 
+        searching = device.config.search is not None
         engine.update_squelch(device.device_id, "audio", enabled=False)
-        self.show_status("Squelch off")
+        self.show_status("Squelch off (SEARCH stopped)" if searching else "Squelch off")
 
     def _quick_add_memory(self) -> None:
         engine = get_engine()

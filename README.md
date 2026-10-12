@@ -206,7 +206,8 @@ Search (find activity within the captured band):
   hold time (2 s), so replies are heard, and between hits it stays on the last
   channel. `[` / `]` move it on to the previous / next signal within its range
   (skipping locked-out channels) without stopping it, so you can leave a channel
-  before its hold ends; other tuning by hand, or stopping the radio, stops it.
+  before its hold ends; other tuning by hand, turning the squelch off (`Ctrl+U`)
+  or stopping the radio stops it.
   For narrowband modes only (not WFM).
 - `{` / `}`: put SEARCH's lower / upper edge at the dial (without edges it
   searches the whole captured band; an edge outside the band is ignored, and

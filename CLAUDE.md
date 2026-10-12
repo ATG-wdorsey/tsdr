@@ -296,8 +296,8 @@ not, are never targets. The
 squelch threshold is the hold threshold. SEARCH never moves the hardware:
 starting it selects free tuning, it skips channels within the LO offset of the
 LO, the engine drops a jump that would recenter, and any other dial move, a
-recenter, a sample rate change, center tuning, a non-narrowband demodulator
-or stopping the device stops it. The spectrum shades the range. Starting, stopping and lockouts live in `core/search_control.py`;
+recenter, a sample rate change, center tuning, a non-narrowband demodulator,
+turning the squelch off or stopping the device stops it. The spectrum shades the range. Starting, stopping and lockouts live in `core/search_control.py`;
 lasting lockouts are memories tagged `lockout` (the engine follows
 `MemoriesChangedEvent`).
 

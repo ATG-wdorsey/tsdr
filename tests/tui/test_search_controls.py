@@ -21,6 +21,7 @@ from tsdr.devices import MockParams, mock
 from tsdr.tui import tuning_mixin as tuning_mixin_module
 from tsdr.tui.commands.sdr.search import SDRSearchCommand
 from tsdr.tui.keybindings import Action, Context, build_lookup
+from tsdr.tui.keyboard import KeyboardMixin
 from tsdr.tui.tuning_mixin import TuningMixin
 from tsdr.tui.widgets.tuner_widget import _search_lines
 
@@ -202,6 +203,16 @@ def test_a_refused_jump_leaves_the_ab_state_alone(
     assert keys.statuses[-1] == "That target would move the LO; the dial stays"
     assert engine.devices["pluto"].config.center_frequency == lo
     assert get_tuning_state().previous is None
+
+
+def test_turning_the_squelch_off_stops_search(engine: SDREngine) -> None:
+    """SEARCH holds a channel by the squelch: with it off, SEARCH kept running
+    with the noise open between transmissions."""
+    keys = _keys(engine)
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    KeyboardMixin._disable_squelch(keys)  # type: ignore[arg-type]
+    assert _search(engine) is None
+    assert keys.statuses[-1] == "Squelch off (SEARCH stopped)"
 
 
 def test_command_starts_reports_and_stops(engine: SDREngine) -> None:
