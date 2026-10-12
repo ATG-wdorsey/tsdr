@@ -1,5 +1,37 @@
 # TSDR
 
+> **About this fork.** This fork of [floens/tsdr](https://github.com/floens/tsdr)
+> carries fixes and enhancements made while using TSDR with a PlutoSDR and an
+> Airspy on Linux, all meant for upstream as pull requests. The original
+> README follows this note.
+>
+> **Fixes**
+> - Audio dropouts on Linux with the TUI running: a real device buffer and
+>   paced writes ([floens/tsdr#3](https://github.com/floens/tsdr/pull/3)).
+> - Phantom signals while tuning: multistage decimation with channel
+>   selection; WSJT upper sideband
+>   ([#7](https://github.com/floens/tsdr/pull/7)).
+> - Kitty graphics crash (SIGBUS) and leaked shared-memory frames
+>   ([#4](https://github.com/floens/tsdr/pull/4)).
+> - Garbage-collection pauses that stalled device reads
+>   ([#5](https://github.com/floens/tsdr/pull/5)).
+> - Demod mode case, shortcut errors, failed opens, click snapping, stale
+>   configs ([#2](https://github.com/floens/tsdr/pull/2)).
+>
+> **Enhancements**
+> - SoapySDR: driver capabilities, overflow counts and a low-throughput warning
+>   ([#6](https://github.com/floens/tsdr/pull/6)).
+> - SoapySDR: the stream is read on a native thread, out of reach of Python's
+>   pauses (to be offered upstream).
+> - Zero-IF radios (PlutoSDR, HackRF and similar): the LO sits beside the
+>   channel instead of on it, and the Pluto's analog filter follows the sample
+>   rate (to be offered upstream).
+>
+> Install this fork with
+> `uv tool install --from git+https://github.com/ATG-wdorsey/tsdr@main tsdr`.
+> Branch `main` is this fork; `master` mirrors upstream. The git log records
+> who changed what, and when.
+
 TSDR is a terminal user interface for software-defined radio. It provides a
 real-time spectrum display, a waterfall, audio demodulation, and a set of
 protocol decoders, all driven from the keyboard.
