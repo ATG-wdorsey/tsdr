@@ -118,7 +118,7 @@ class _StripPlacement:
 
 
 class WaterfallWidget(ImageModeMixin, Widget):
-    """Display waterfall visualization with SDR#-style color gradient.
+    """Display waterfall visualization with a cold-to-hot color gradient.
 
     Supports two rendering modes via ImageModeMixin:
 
@@ -132,7 +132,7 @@ class WaterfallWidget(ImageModeMixin, Widget):
       top and freezes when full, creating a linked list of immutable strips that
       are cropped/removed as they scroll off-screen.
 
-    Both modes share dB range controls and the SDR# Classic colormap LUT.
+    Both modes share dB range controls and the colormap LUT.
 
     Reactive props:
       db_min, db_max: float — invalidates text-mode buffer when any change.
