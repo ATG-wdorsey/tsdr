@@ -10,17 +10,18 @@ from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.engine import SDREngine
 from tsdr.devices import MockParams
 from tsdr.tui.widgets import spectrum_widget
+from tsdr.tui.widgets.db_scale import GUTTER_COLS
 from tsdr.tui.widgets.spectrum_widget import SpectrumWidget
 
 DIAL = 151e6
 VIEW = (150e6, 152e6)
-WIDTH = 200  # columns: 10 kHz each
+WIDTH = 200  # plot columns, past the dB labels: 10 kHz each
 
 
 class _Spectrum(SpectrumWidget):
     @property
     def size(self):  # type: ignore[override]
-        return SimpleNamespace(width=WIDTH, height=10)
+        return SimpleNamespace(width=GUTTER_COLS + WIDTH, height=10)
 
     def _display_range(self) -> tuple[float, float]:
         return VIEW
@@ -48,7 +49,8 @@ def _click(column: int) -> list[float]:
     original = spectrum_widget.save_previous_tune_state
     spectrum_widget.save_previous_tune_state = lambda d: saved.append(d.config.tuned_frequency)
     try:
-        w.on_click(SimpleNamespace(x=column, stop=lambda: None))  # type: ignore[arg-type]
+        event = SimpleNamespace(x=GUTTER_COLS + column, stop=lambda: None)
+        w.on_click(event)  # type: ignore[arg-type]
     finally:
         spectrum_widget.save_previous_tune_state = original
     return saved
