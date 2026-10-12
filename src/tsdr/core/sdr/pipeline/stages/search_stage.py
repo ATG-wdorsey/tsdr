@@ -47,8 +47,10 @@ def audio_channel(config: DeviceConfig) -> AudioChannel | None:
     if audio is None or audio.audio_spec is None:
         return None
     mode = audio.audio_spec.mode
+    # The profile's width: the setting for audio modes, a decoder's own fixed
+    # width (ADS-B, DAB, RTTY) whatever the setting says.
     profile = demod_profile(mode, config.channel_bandwidth)
-    bandwidth = float(config.channel_bandwidth or profile.channel_bandwidth)
+    bandwidth = float(profile.channel_bandwidth)
     offset = {"upper": bandwidth / 2, "lower": -bandwidth / 2}.get(profile.sideband or "", 0.0)
     return AudioChannel(
         mode=mode,

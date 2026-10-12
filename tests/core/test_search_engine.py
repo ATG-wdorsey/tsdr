@@ -26,7 +26,7 @@ from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import SDREngine
 from tsdr.core.sdr.exceptions import SDRException
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
-from tsdr.core.sdr.pipeline.stages.search_stage import SearchStage
+from tsdr.core.sdr.pipeline.stages.search_stage import SearchStage, audio_channel
 from tsdr.core.sdr.samples_batch import SamplesBatch
 from tsdr.core.sdr.search import LOCKOUT_TAG
 from tsdr.core.sdr.tune_policy import fitting_offset
@@ -72,6 +72,16 @@ def engine() -> SDREngine:
 
 def _config(engine: SDREngine) -> DeviceConfig:
     return engine.devices["pluto"].config
+
+
+def test_a_fixed_width_decoder_is_measured_at_its_own_width(engine: SDREngine) -> None:
+    """ADS-B is 2 MHz wide whatever the bandwidth setting says: SEARCH took a
+    12.5 kHz setting left from NFM as its width and searched it."""
+    engine.update_device_config("pluto", channel_bandwidth=12_500.0)
+    engine.set_audio_demod("pluto", DemodSpec(mode="ADSB"))
+    assert audio_channel(_config(engine)).bandwidth_hz == 2_000_000
+    with pytest.raises(SDRException, match="narrowband"):
+        start_search("pluto")
 
 
 def test_start_switches_to_free_tuning_and_turns_the_squelch_on(engine: SDREngine) -> None:
