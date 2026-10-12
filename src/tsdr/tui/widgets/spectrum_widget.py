@@ -77,6 +77,13 @@ _LINE_STYLES = {
     "trigger": Style(color="yellow"),
 }
 _LINE_LABELS = {"squelch": "  SQ ", "trigger": "  TR "}
+# A reference line off the dB window: its label at that edge, no line.
+_OFF_WINDOW_LABELS = {
+    ("squelch", True): " SQ↑ ",
+    ("squelch", False): " SQ↓ ",
+    ("trigger", True): " TR↑ ",
+    ("trigger", False): " TR↓ ",
+}
 
 # Image mode colors (RGBA)
 _TRACE_COLOR = np.array([0x40, 0xA0, 0xFF, 0xFF], dtype=np.uint8)  # bright blue
@@ -251,16 +258,24 @@ class SpectrumWidget(ImageModeMixin, Widget):
             r = row(level)
             if r is not None:
                 lines.append((r, "grid", 0, width, grid_label(level)))
-        if self._squelch_line_db is not None:
-            r = row(self._squelch_line_db)
-            if r is not None:
-                lines.append((r, "squelch", 0, width, _LINE_LABELS["squelch"]))
-        if self._trigger_line_db is not None:
-            r = row(self._trigger_line_db)
-            search_x = self._search_x(width, freq_min, freq_max)
-            if r is not None and search_x is not None:
-                lo, hi = max(0, search_x[0]), min(width, search_x[1])
-                lines.append((r, "trigger", lo, hi, _LINE_LABELS["trigger"]))
+        search_x = self._search_x(width, freq_min, freq_max)
+        references = (
+            ("squelch", self._squelch_line_db, (0, width)),
+            (
+                "trigger",
+                self._trigger_line_db,
+                None if search_x is None else (max(0, search_x[0]), min(width, search_x[1])),
+            ),
+        )
+        for kind, ref_level, cols in references:
+            if ref_level is None or cols is None:
+                continue
+            r = row(ref_level)
+            if r is None:
+                above = ref_level >= db_max
+                lines.append((0 if above else span, kind, 0, 0, _OFF_WINDOW_LABELS[(kind, above)]))
+            else:
+                lines.append((r, kind, cols[0], cols[1], _LINE_LABELS[kind]))
         return lines
 
     def _gutter_strip(self, cols: int, label: tuple[str, str] | None) -> Strip:

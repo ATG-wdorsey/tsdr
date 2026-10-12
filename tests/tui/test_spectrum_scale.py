@@ -224,3 +224,16 @@ def test_the_color_key_runs_from_the_strongest_color_down() -> None:
     lut = {f"rgb({r},{g},{b})": i for i, (r, g, b) in enumerate(waterfall_module._RGB_LUT)}
     indices = [lut[f"rgb({c.triplet.red},{c.triplet.green},{c.triplet.blue})"] for c in colors]
     assert indices == sorted(indices, reverse=True) and indices[0] > 200 and indices[-1] < 60
+
+
+def test_a_reference_line_off_the_window_is_labeled_at_its_edge(engine: SDREngine) -> None:
+    """A -75 dBFS squelch on a 30 Hz-bin trace sits near -102: below a -100
+    floor. Its label waits at the bottom with an arrow, with no line drawn."""
+    engine.update_squelch("radio", "audio", enabled=True, threshold_db=-75.0)
+    w = _widget()
+    w.set_reactive(SpectrumWidget.db_min, -80.0)
+    rows = _text_rows(w)
+    labels = [row[:GUTTER_COLS] for row in rows]
+    bar_rows = [i for i, label in enumerate(labels) if label == " SQ↓ "]
+    assert bar_rows and bar_rows[0] == len(rows) - 3  # the last plot row
+    assert "  SQ " not in labels
