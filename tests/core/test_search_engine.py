@@ -223,23 +223,31 @@ def test_a_step_change_follows_into_search(engine: SDREngine) -> None:
 # --- the stage --------------------------------------------------------------
 
 
-def _batch(config: DeviceConfig, t: float, tones: dict[float, float]) -> SamplesBatch:
-    """An unaveraged spectrum with a noise floor and carriers at given dBFS."""
+def _batch(
+    config: DeviceConfig, t: float, tones: dict[float, float], rate: float = RATE
+) -> SamplesBatch:
+    """An unaveraged spectrum with a noise floor and carriers at given dBFS;
+    `rate` is the rate the device reports."""
     n = config.fft_size
     spectrum = np.full(n, -120.0, dtype=np.float32)
     for f, level in tones.items():
-        k = int(round((f - config.center_frequency) / RATE * n + n / 2))
+        k = int(round((f - config.center_frequency) / rate * n + n / 2))
         spectrum[k] = level
     return SamplesBatch(
         instant_spectrum=spectrum,
         spectrum=spectrum,
         center_frequency=config.center_frequency,
-        sample_rate=RATE,
+        sample_rate=rate,
         capture_utc_s=t,
     )
 
 
-def test_the_stage_finds_a_carrier_and_the_engine_tunes_to_it(engine: SDREngine) -> None:
+@pytest.mark.parametrize("reported_rate", [RATE, RATE - 2.0], ids=["exact", "pluto-9999998"])
+def test_the_stage_finds_a_carrier_and_the_engine_tunes_to_it(
+    engine: SDREngine, reported_rate: float
+) -> None:
+    """A PlutoSDR set to 10 MS/s reports 9999998: batches carry that, and SEARCH
+    once skipped every one of them."""
     search = start_search("pluto", trigger_db=-40.0)
     context = engine.devices["pluto"]
     events: list[Event] = []
@@ -251,7 +259,8 @@ def test_the_stage_finds_a_carrier_and_the_engine_tunes_to_it(engine: SDREngine)
     carrier = 147.0e6
     for i in range(4):
         stage.on_config_change(context.config)
-        stage.process(_batch(context.config, 1000.0 + 0.05 * i, {carrier: -30.0}), pipeline_context)
+        batch = _batch(context.config, 1000.0 + 0.05 * i, {carrier: -30.0}, reported_rate)
+        stage.process(batch, pipeline_context)
     config = _config(engine)
     assert config.tuned_frequency == carrier
     assert config.search == search

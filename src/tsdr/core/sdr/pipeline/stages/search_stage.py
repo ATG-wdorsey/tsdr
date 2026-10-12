@@ -89,12 +89,14 @@ class SearchStage:
             self._last_status = None
         spectrum = data.instant_spectrum
         channel = audio_channel(config)
-        # A batch captured before a retune or rate change measures the wrong band.
+        if spectrum is None or channel is None or len(spectrum) == 0:
+            return data
+        # A batch captured before a retune or rate change measures the wrong
+        # band. Batches carry the rate the device reports (a PlutoSDR set to
+        # 10 MS/s reports 9999998), so compare loosely.
         if (
-            spectrum is None
-            or channel is None
-            or data.center_frequency != config.center_frequency
-            or data.sample_rate != config.sample_rate
+            abs(data.center_frequency - config.center_frequency) > data.sample_rate / len(spectrum)
+            or abs(data.sample_rate - config.sample_rate) > 1e-3 * config.sample_rate
         ):
             return data
 
