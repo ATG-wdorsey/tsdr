@@ -1,5 +1,6 @@
 from argparse import Namespace
 
+from tsdr.core.memories import get_memory_store
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.search import LOCKOUT_TAG, TRIGGER_ABOVE_SQUELCH_DB, SearchConfig
 from tsdr.core.search_control import (
@@ -19,9 +20,18 @@ def _dbfs(value: float) -> str:
     return f"[yellow]{value:.1f} dBFS[/]"
 
 
+def lockout_list(session: frozenset[float], saved: frozenset[float]) -> str:
+    """The lockouts by frequency: this session's (`x`) and saved (`X`)."""
+    parts = [
+        ", ".join(f"{f / 1e6:.4f}" for f in sorted(group)) + f" MHz ({kind})"
+        for group, kind in ((session, "session"), (saved, "saved"))
+        if group
+    ]
+    return "; ".join(parts) or "none"
+
+
 def describe(search: SearchConfig, squelch_db: float) -> str:
     dwell = "unlimited" if search.max_dwell_s is None else f"{search.max_dwell_s:g} s"
-    lockouts = len(search.lockouts) + len(search.memory_lockouts)
     return fields(
         {
             "range": f"{freq_mhz(search.low_hz, precision=4)}-{freq_mhz(search.high_hz, precision=4)}",
@@ -33,7 +43,7 @@ def describe(search: SearchConfig, squelch_db: float) -> str:
             ),
             "hold": f"{_dbfs(squelch_db)} for {search.hold_s:g} s",
             "dwell": dwell,
-            "lockouts": str(lockouts),
+            "lockouts": lockout_list(search.lockouts, search.memory_lockouts),
         }
     )
 
@@ -117,8 +127,11 @@ class SDRSearchCommand(Command):
 
         config = get_engine().get_device(did).config
         if config.search is None:
-            lockouts = len(search_settings(did).lockouts)
-            return f"SEARCH {state('off')} ({lockouts} session lockouts)"
+            session = frozenset(search_settings(did).lockouts)
+            saved = frozenset(
+                float(m.frequency) for m in get_memory_store().find_by_tag(LOCKOUT_TAG)
+            )
+            return f"SEARCH {state('off')} (lockouts: {lockout_list(session, saved)})"
         squelch_db = config.pipelines["audio"].squelch_threshold_db
         return f"SEARCH {state('on')} ({describe(config.search, squelch_db)})"
 

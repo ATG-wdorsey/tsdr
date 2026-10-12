@@ -195,6 +195,9 @@ def test_command_lockouts(engine: SDREngine) -> None:
     assert "1 session lockout" in cmd.execute(["unlock", "--device", "pluto"])
     assert "memory" in cmd.execute(["lockout", "--permanent", "--device", "pluto"])
     assert _search(engine).memory_lockouts == frozenset({DIAL})
+    assert "146.5200 MHz (saved)" in cmd.execute(["--device", "pluto"])
+    cmd.execute(["off", "--device", "pluto"])
+    assert "146.5200 MHz (saved)" in cmd.execute(["--device", "pluto"])
 
 
 def test_tuner_shows_search_state_and_level() -> None:
