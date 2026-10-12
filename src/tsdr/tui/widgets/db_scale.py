@@ -28,11 +28,11 @@ DB_MEAN_NOISE_BIAS = 10.0 * math.log10(math.e) * 0.5772156649015329
 # The grid, and the dB labels the waterfall's colors don't suit.
 GRID_GREY = "grey35"
 # dB labels take the waterfall's color for their level, brightened to at
-# least this luma (0-255; grey35 is 89) so the colormap's dark reds stay
+# least this luma (0-255; grey35 is 89) so the colormap's dark colors stay
 # legible on a dark background...
 LABEL_MIN_LUMA = 110.0
 # ...but low in the window, colors darker than this are the noise floor's on
-# the waterfall (Classic's navy): those labels stay grey.
+# the waterfall (its dark blues): those labels stay grey.
 LABEL_GREY_LUMA = 60.0
 
 

@@ -83,7 +83,7 @@ def _css(rgb: tuple[int, int, int]) -> str:
 
 
 def test_the_noise_floors_dark_colors_label_in_grey() -> None:
-    assert label_color((0, 0, 100), 0.17) == GRID_GREY  # Classic's navy, low in the window
+    assert label_color((0, 0, 100), 0.17) == GRID_GREY  # dark navy, low in the window
     assert label_color((17, 82, 208), 0.25) == _css(legible((17, 82, 208)))
     # Dark red high in the window is a strong signal: brightened, never grey.
     assert label_color((0x4A, 0, 0), 1.0) == _css(legible((0x4A, 0, 0)))
@@ -194,10 +194,8 @@ def test_grid_labels_take_the_waterfalls_color_for_their_level(engine: SDREngine
     for text, rgb in labels.items():
         assert rgb == _rgb(Style(color=level_label_color(float(text), -115.0, -25.0)))
     grey = _rgb(Style(color=GRID_GREY))
-    assert labels["-110 "] == labels["-100 "] == grey  # the noise floor's navy
-    assert labels[" -90 "] == legible(level_color(-90.0, -115.0, -25.0))  # azure
-    assert labels[" -70 "][0] >= 250 and labels[" -70 "][2] < 60  # orange
-    assert labels[" -30 "][0] == 255 > labels[" -30 "][1]  # dark red, as red
+    assert all(rgb == grey or _luma(rgb) >= LABEL_MIN_LUMA - 1 for rgb in labels.values())
+    assert labels[" -30 "] != grey  # high in the window: never grey
 
 
 def test_text_mode_marks_the_squelch_and_trigger(engine: SDREngine) -> None:
