@@ -39,7 +39,7 @@ from tsdr.core.search_control import (
     start_search,
     stop_search,
 )
-from tsdr.core.tuning_state import init_tuning_state
+from tsdr.core.tuning_state import get_tuning_state, init_tuning_state
 from tsdr.devices import MockParams, mock
 from tsdr.devices.iq_file import IQFileParams
 
@@ -453,3 +453,30 @@ def test_jump_targets_without_a_demodulator_use_spectrum_peaks(engine: SDREngine
     context = engine.devices["pluto"]
     targets, _ = jump_targets(context, _fft(context.config, {147.0031e6: -30.0}))
     assert any(abs(t - 147.0031e6) < RATE / context.config.fft_size for t in targets)
+
+
+def _stage_run(engine: SDREngine, tones: dict[float, float], batches: int = 4) -> None:
+    context = engine.devices["pluto"]
+    stage = SearchStage(context.config)
+    pipeline_context = PipelineContext(
+        device_context=context, event_bus=engine.event_bus, config=engine.config
+    )
+    for i in range(batches):
+        stage.on_config_change(context.config)
+        stage.process(_batch(context.config, 2000.0 + 0.05 * i, tones), pipeline_context)
+
+
+def test_search_lands_on_the_signal_not_a_step_beside_it(engine: SDREngine) -> None:
+    """5 kHz steps, 12.5 kHz NFM channels: a carrier fills the channels a step
+    either side as fully as its own, and SEARCH landed 5 kHz low."""
+    start_search("pluto", trigger_db=-40.0, step_hz=5_000.0)
+    _stage_run(engine, {147.0e6: -30.0})
+    assert _config(engine).tuned_frequency == 147.0e6
+
+
+def test_jump_targets_land_on_the_signal_with_a_fine_step(engine: SDREngine) -> None:
+    get_tuning_state().step = 5_000.0
+    engine.update_squelch("pluto", "audio", threshold_db=-80.0)
+    context = engine.devices["pluto"]
+    targets, limits = jump_targets(context, _fft(context.config, {147.0e6: -30.0}))
+    assert next_target(1, DIAL, targets, limits) == 147.0e6

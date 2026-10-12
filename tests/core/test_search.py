@@ -326,3 +326,29 @@ def test_signal_peaks_leave_out_the_signal_the_dial_is_on() -> None:
     assert signal_peaks(channels, levels, -80.0, around_hz=15_000.0, half_width_hz=6_250.0) == [
         30_000.0
     ]
+
+
+def test_the_locating_levels_pick_among_channels_that_read_alike() -> None:
+    """Channels a step either side of a narrow signal read as high as its own
+    (their wider windows hold it whole); the step-wide levels tell them apart."""
+    config = _config(step_hz=5_000.0)
+    channels = config.channels()
+    levels = np.full(len(channels), NOISE)
+    locate = np.full(len(channels), NOISE)
+    k = int(np.searchsorted(channels, 145.5e6))
+    levels[k - 1 : k + 2] = -60.0
+    locate[k] = -60.0
+    controller = SearchController()
+    kwargs = {
+        "tuned_hz": START,
+        "current_db": NOISE,
+        "hold_db": SQUELCH,
+        "bandwidth_hz": BW,
+        "lo_hz": 0.0,
+        "lo_exclusion_hz": 0.0,
+        "locate_db": locate,
+    }
+    targets = [
+        controller.update(t, config, channels, levels, **kwargs)[0] for t in (0.0, 0.05, 0.1)
+    ]
+    assert targets[-1] == 145.5e6

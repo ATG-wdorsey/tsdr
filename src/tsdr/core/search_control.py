@@ -21,6 +21,7 @@ from tsdr.core.sdr.search import (
     MAX_CHANNEL_BANDWIDTH_HZ,
     SearchConfig,
     channel_powers_db,
+    locating_bandwidth,
     signal_peaks,
     step_grid,
 )
@@ -102,18 +103,24 @@ def jump_targets(
         return targets + peak_frequencies(fft), limits
     step = search_step(context, channel.mode)
     channels = step_grid(*limits, step)
+    measured = channels + channel.passband_offset_hz
+    enbw = window_enbw_bins(config.fft_window, len(fft.spectrum))
     levels = channel_powers_db(
+        fft.spectrum, fft.center_frequency, fft.sample_rate, measured, channel.bandwidth_hz, enbw
+    )
+    locate = channel_powers_db(
         fft.spectrum,
         fft.center_frequency,
         fft.sample_rate,
-        channels + channel.passband_offset_hz,
-        channel.bandwidth_hz,
-        window_enbw_bins(config.fft_window, len(fft.spectrum)),
+        measured,
+        locating_bandwidth(step, channel.bandwidth_hz),
+        enbw,
     )
     signals = signal_peaks(
         channels,
         levels,
         channel.squelch_db,
+        locate_db=locate,
         around_hz=config.tuned_frequency,
         half_width_hz=max(step, channel.bandwidth_hz) / 2,
     )

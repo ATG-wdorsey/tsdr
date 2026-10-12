@@ -76,17 +76,31 @@ def step_grid(low_hz: float, high_hz: float, step_hz: float) -> np.ndarray:
     return np.arange(first, last + 1, dtype=np.float64) * step_hz
 
 
+def locating_bandwidth(step_hz: float, bandwidth_hz: float) -> float:
+    """Measuring width for placing a signal on the step grid.
+
+    A channel wider than the step (12.5 kHz NFM on a 5 kHz grid) holds a
+    narrow signal whole at several grid points, which then read alike, and
+    the strongest of them was as likely one step off as on the signal.
+    Windows one step wide put it at a single grid point.
+    """
+    return min(step_hz, bandwidth_hz)
+
+
 def signal_peaks(
     channels_hz: np.ndarray,
     levels_db: np.ndarray,
     threshold_db: float,
     *,
+    locate_db: np.ndarray | None = None,
     around_hz: float | None = None,
     half_width_hz: float = 0.0,
 ) -> list[float]:
-    """One frequency per signal: the strongest channel of each run of adjacent
-    channels at or above `threshold_db`. A run with a channel within
+    """One frequency per signal: within each run of adjacent channels at or
+    above `threshold_db`, the channel strongest in `locate_db` (levels over
+    locating_bandwidth; default `levels_db`). A run with a channel within
     `half_width_hz` of `around_hz` (the signal the dial is on) is left out."""
+    locate = levels_db if locate_db is None else locate_db
     active = levels_db >= threshold_db
     peaks: list[float] = []
     i, n = 0, len(channels_hz)
@@ -99,7 +113,7 @@ def signal_peaks(
             j += 1
         run = slice(i, j + 1)
         if around_hz is None or not np.any(np.abs(channels_hz[run] - around_hz) < half_width_hz):
-            peaks.append(float(channels_hz[i + int(np.argmax(levels_db[run]))]))
+            peaks.append(float(channels_hz[i + int(np.argmax(locate[run]))]))
         i = j + 1
     return peaks
 
@@ -177,8 +191,10 @@ class SearchController:
         bandwidth_hz: float,
         lo_hz: float,
         lo_exclusion_hz: float,
+        locate_db: np.ndarray | None = None,
     ) -> tuple[float | None, SearchStatus]:
-        """Returns the channel to jump to (or None) and the status."""
+        """Returns the channel to jump to (or None) and the status. `locate_db`
+        (levels over locating_bandwidth) picks among eligible channels."""
         if not np.array_equal(channels_hz, self._channels):
             self._channels = channels_hz
             self._above_since = np.full(len(channels_hz), np.nan)
@@ -220,7 +236,8 @@ class SearchController:
         target: float | None = None
         waiting_on_jump = self._pending is not None and now - self._pending_at < _PENDING_TIMEOUT_S
         if (released or dwelt) and not waiting_on_jump and eligible.any():
-            target = float(channels_hz[np.argmax(np.where(eligible, levels_db, -np.inf))])
+            pick = levels_db if locate_db is None else locate_db
+            target = float(channels_hz[np.argmax(np.where(eligible, pick, -np.inf))])
             if dwelt and not released:
                 self._disarmed.add(tuned_hz)
             self._pending = target

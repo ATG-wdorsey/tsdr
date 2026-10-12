@@ -13,7 +13,12 @@ from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
 from tsdr.core.sdr.processing import window_enbw_bins
 from tsdr.core.sdr.samples_batch import SamplesBatch
-from tsdr.core.sdr.search import SearchController, SearchStatus, channel_powers_db
+from tsdr.core.sdr.search import (
+    SearchController,
+    SearchStatus,
+    channel_powers_db,
+    locating_bandwidth,
+)
 from tsdr.core.sdr.tune_policy import lo_offset_for
 from tsdr.core.tracing import traced
 from tsdr.radio.registry import demod_profile
@@ -110,6 +115,14 @@ class SearchStage:
         levels = channel_powers_db(
             spectrum, data.center_frequency, data.sample_rate, measured, channel.bandwidth_hz, enbw
         )
+        locate = channel_powers_db(
+            spectrum,
+            data.center_frequency,
+            data.sample_rate,
+            measured[:-1],
+            locating_bandwidth(search.step_hz, channel.bandwidth_hz),
+            enbw,
+        )
         lo_offset = lo_offset_for(
             setting=config.lo_offset,
             size_hz=config.lo_offset_hz,
@@ -129,6 +142,7 @@ class SearchStage:
             bandwidth_hz=channel.bandwidth_hz,
             lo_hz=data.center_frequency,
             lo_exclusion_hz=abs(lo_offset),
+            locate_db=locate,
         )
         device_id = context.device_context.device_id
         if target is not None:
