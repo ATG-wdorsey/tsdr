@@ -263,14 +263,19 @@ class TuningMixin(MixinBase):
         self._publish_tuning_state_changed()
 
         device = self._focused()
+        searched = ""
         if device is not None and device.config.search is not None:
             step = ts.step or resolve_auto_step(device.active_mode, device.config.tuned_frequency)
-            set_search_step(device.device_id, step)
+            used = set_search_step(device.device_id, step)
+            if used != step:
+                searched = f" (SEARCH: {format_hz(used, decimals=1, long_suffix=True)})"
         if ts.step is None and device is not None:
             resolved = resolve_auto_step(device.active_mode, device.config.tuned_frequency)
-            self.show_status(f"Step: auto ({format_hz(resolved, decimals=1, long_suffix=True)})")
+            self.show_status(
+                f"Step: auto ({format_hz(resolved, decimals=1, long_suffix=True)}){searched}"
+            )
         elif ts.step is not None:
-            self.show_status(f"Step: {format_hz(ts.step, decimals=1, long_suffix=True)}")
+            self.show_status(f"Step: {format_hz(ts.step, decimals=1, long_suffix=True)}{searched}")
 
     def _reset_step_to_auto(self) -> None:
         ts = get_tuning_state()

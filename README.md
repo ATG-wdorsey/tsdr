@@ -200,7 +200,8 @@ Search (find activity within the captured band):
 - `/`: start / stop SEARCH. It switches to free tuning and turns the squelch on,
   then puts the dial on the strongest channel that stays above the trigger for
   100 ms (channels on the tuning-step grid, within the captured band; the
-  range is shaded on the spectrum). The squelch threshold holds the channel:
+  range is shaded on the spectrum). Its grid is never finer than 1 kHz, or than
+  the FFT resolves: with the tuning step at 10 Hz it searches 1 kHz steps. The squelch threshold holds the channel:
   SEARCH moves on only after the channel has stayed below the squelch for the
   hold time (2 s), so replies are heard, and between hits it stays on the last
   channel. `[` / `]` move it on to the previous / next signal within its range

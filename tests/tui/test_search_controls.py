@@ -109,11 +109,18 @@ def test_x_locks_out_for_the_session_and_shift_x_for_good(engine: SDREngine) -> 
     assert _search(engine).memory_lockouts == frozenset({DIAL})
 
 
-def test_the_step_key_changes_the_search_step(engine: SDREngine) -> None:
+def test_the_step_key_changes_the_search_step_down_to_its_floor(engine: SDREngine) -> None:
+    """A 10 Hz step over 9 MHz is 890,000 channels a batch and stalled the
+    audio: SEARCH stays at 1 kHz or coarser, and says so."""
     keys = _keys(engine)
     TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
     TuningMixin._cycle_step(keys, True)  # type: ignore[arg-type]
-    assert _search(engine).step_hz == get_tuning_state().step
+    assert get_tuning_state().step == 10
+    assert _search(engine).step_hz == 1_000.0
+    assert keys.statuses[-1] == "Step: 10 Hz (SEARCH: 1 kHz)"
+    for _ in range(3):  # 100 Hz, 1 kHz, 5 kHz
+        TuningMixin._cycle_step(keys, True)  # type: ignore[arg-type]
+    assert _search(engine).step_hz == get_tuning_state().step == 5_000
 
 
 def _fft(config: DeviceConfig, tones: dict[float, float]) -> FFTUpdateEvent:

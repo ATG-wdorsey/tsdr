@@ -10,6 +10,7 @@ from typing import Literal
 from tsdr.core.events.events import FFTUpdateEvent, MemoriesChangedEvent
 from tsdr.core.landmarks import peak_frequencies
 from tsdr.core.memories import get_memory_store
+from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.device_context import DeviceState, SDRDeviceContext
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
@@ -27,12 +28,16 @@ from tsdr.core.sdr.search import (
     step_grid,
 )
 from tsdr.core.sdr.tune_policy import fitting_offset, lo_offset_for
-from tsdr.core.tuning import resolve_auto_step
+from tsdr.core.tuning import STEP_LADDER, resolve_auto_step
 from tsdr.core.tuning_state import get_tuning_state
 
 logger = logging.getLogger(__name__)
 
 _runs = itertools.count(1)
+# SEARCH (and `[` / `]`) measure every grid channel each batch: a 10 Hz step
+# over 9 MHz is 890,000 channels, 127 ms a batch against a 50 ms budget
+# (i7-8700). The grid is never finer than this.
+MIN_SEARCH_STEP_HZ = 1_000.0
 
 
 @dataclass
@@ -79,10 +84,21 @@ def _search_range(
     return low, high
 
 
+def search_step_floor(config: DeviceConfig) -> float:
+    """The finest grid SEARCH and `[` / `]` use: MIN_SEARCH_STEP_HZ, and at
+    least one FFT bin (finer grid points read alike), rounded up to a step on
+    the tuning ladder."""
+    floor = max(MIN_SEARCH_STEP_HZ, config.sample_rate / config.fft_size)
+    return min((float(s) for s in STEP_LADDER if s is not None and s >= floor), default=floor)
+
+
 def search_step(context: SDRDeviceContext, mode: str) -> float:
-    """The tuning step (`s`), or the mode's channel raster when it is on auto."""
+    """The tuning step (`s`), or the mode's channel raster when it is on auto,
+    no finer than search_step_floor."""
     step = get_tuning_state().step
-    return step if step is not None else resolve_auto_step(mode, context.config.tuned_frequency)
+    if step is None:
+        step = resolve_auto_step(mode, context.config.tuned_frequency)
+    return max(float(step), search_step_floor(context.config))
 
 
 def jump_targets(
@@ -233,7 +249,11 @@ def start_search(
     config = SearchConfig(
         low_hz=low,
         high_hz=high,
-        step_hz=step_hz or search_step(context, channel.mode),
+        step_hz=(
+            search_step(context, channel.mode)
+            if step_hz is None
+            else max(step_hz, search_step_floor(context.config))
+        ),
         trigger_db=trigger_db,
         hold_s=hold,
         max_dwell_s=max_dwell_s,
@@ -411,11 +431,15 @@ def unlock(device_id: str) -> Unlocked:
     return result
 
 
-def set_search_step(device_id: str, step_hz: float) -> None:
-    """Follow a tuning-step change (`s`) in a running SEARCH."""
+def set_search_step(device_id: str, step_hz: float) -> float:
+    """Follow a tuning-step change (`s`) in a running SEARCH, no finer than
+    search_step_floor. Returns the step SEARCH uses."""
     engine = get_engine()
-    search = engine.get_device(device_id).config.search
+    config = engine.get_device(device_id).config
+    step_hz = max(step_hz, search_step_floor(config))
+    search = config.search
     if search is not None and search.step_hz != step_hz:
         engine.update_device_config(
             device_id, while_search=search, search=replace(search, step_hz=step_hz)
         )
+    return step_hz

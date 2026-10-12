@@ -204,6 +204,14 @@ def test_restart_keeps_the_last_settings(engine: SDREngine) -> None:
     assert start_search("pluto", max_dwell_s=0).max_dwell_s is None
 
 
+def test_the_grid_is_never_finer_than_1_khz_or_an_fft_bin(engine: SDREngine) -> None:
+    get_tuning_state().step = 10.0
+    assert start_search("pluto").step_hz == 1_000.0
+    assert start_search("pluto", step_hz=100.0).step_hz == 1_000.0
+    engine.update_device_config("pluto", fft_size=4096)  # 2.4 kHz bins at 10 MS/s
+    assert start_search("pluto").step_hz == 5_000.0  # the next ladder step
+
+
 def test_session_lockout(engine: SDREngine) -> None:
     start_search("pluto")
     assert lock_out_channel("pluto") == DIAL
