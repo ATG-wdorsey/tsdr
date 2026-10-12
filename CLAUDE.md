@@ -285,7 +285,13 @@ are remembered per device for the session. `SearchStage` in the visualization pi
 step-grid channel's in-channel power from the FFT stage's unaveraged
 `instant_spectrum` (dBFS, the squelch's units: summed bins over the window's
 noise bandwidth), `SearchController` decides, and jumps go out as
-`SearchTuneEvent`, which the engine applies with `from_search=True`. The
+`SearchTuneEvent`, which the engine applies with `from_search=True`, as it
+does `[` / `]` while SEARCH runs (`search_jump`: signals within the range,
+not locked out, not at the LO; the new channel gets a full hold). Both stop
+only on local peaks of the step-wide locating levels (`local_peaks`, with the
+grid channel past each end measured too): a strong signal's leakage into the
+channels beside it slopes down from its center, so its edges, locked out or
+not, are never targets. The
 squelch threshold is the hold threshold. SEARCH never moves the hardware:
 starting it selects free tuning, it skips channels within the LO offset of the
 LO, the engine drops a jump that would recenter, and any other dial move, a

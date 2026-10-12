@@ -149,12 +149,14 @@ BINDINGS: tuple[Binding, ...] = (
         (
             Action.TUNE_TARGET_PREV,
             ("left_square_bracket",),
-            "Jump to the previous signal or memory in the captured band",
+            "Jump to the previous signal or memory in the captured band "
+            "(while SEARCH runs: signal in its range, SEARCH keeps running)",
         ),
         (
             Action.TUNE_TARGET_NEXT,
             ("right_square_bracket",),
-            "Jump to the next signal or memory in the captured band",
+            "Jump to the next signal or memory in the captured band "
+            "(while SEARCH runs: signal in its range, SEARCH keeps running)",
         ),
         (Action.TUNE_STEP_NEXT, ("s",), "Cycle the tuning step size forward"),
         (Action.TUNE_STEP_PREV, ("S",), "Cycle the tuning step size backward"),

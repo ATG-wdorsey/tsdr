@@ -87,35 +87,63 @@ def locating_bandwidth(step_hz: float, bandwidth_hz: float) -> float:
     return min(step_hz, bandwidth_hz)
 
 
+def locate_levels(
+    spectrum_db: np.ndarray,
+    center_hz: float,
+    sample_rate: float,
+    channels_hz: np.ndarray,
+    step_hz: float,
+    bandwidth_hz: float,
+    enbw_bins: float,
+) -> tuple[np.ndarray, tuple[float, float]]:
+    """Levels over locating_bandwidth for a step grid of channels, and for
+    the grid channels just past each end (for local_peaks)."""
+    if len(channels_hz) == 0:
+        return np.empty(0), (-np.inf, -np.inf)
+    grid = np.concatenate(([channels_hz[0] - step_hz], channels_hz, [channels_hz[-1] + step_hz]))
+    levels = channel_powers_db(
+        spectrum_db,
+        center_hz,
+        sample_rate,
+        grid,
+        locating_bandwidth(step_hz, bandwidth_hz),
+        enbw_bins,
+    )
+    return levels[1:-1], (float(levels[0]), float(levels[-1]))
+
+
+def local_peaks(
+    locate_db: np.ndarray, outer_db: tuple[float, float] = (-np.inf, -np.inf)
+) -> np.ndarray:
+    """Channels at a signal's center: at least as strong as the channel below
+    and stronger than the one above (`outer_db`: the grid channels just past
+    each end, so a signal beyond an edge doesn't make the edge a peak). A
+    strong signal leaks into the channels beside it, 13-15 dB down 10 kHz away
+    for NFM; those slope down from its center and are never peaks."""
+    padded = np.concatenate(([outer_db[0]], locate_db, [outer_db[1]]))
+    peaks: np.ndarray = (locate_db >= padded[:-2]) & (locate_db > padded[2:])
+    return peaks
+
+
 def signal_peaks(
     channels_hz: np.ndarray,
     levels_db: np.ndarray,
     threshold_db: float,
     *,
     locate_db: np.ndarray | None = None,
+    outer_db: tuple[float, float] = (-np.inf, -np.inf),
     around_hz: float | None = None,
     half_width_hz: float = 0.0,
 ) -> list[float]:
-    """One frequency per signal: within each run of adjacent channels at or
-    above `threshold_db`, the channel strongest in `locate_db` (levels over
-    locating_bandwidth; default `levels_db`). A run with a channel within
-    `half_width_hz` of `around_hz` (the signal the dial is on) is left out."""
+    """One frequency per signal: channels at or above `threshold_db` that are
+    local peaks of `locate_db` (levels over locating_bandwidth; default
+    `levels_db`), leaving out a peak within `half_width_hz` of `around_hz`
+    (the signal the dial is on)."""
     locate = levels_db if locate_db is None else locate_db
-    active = levels_db >= threshold_db
-    peaks: list[float] = []
-    i, n = 0, len(channels_hz)
-    while i < n:
-        if not active[i]:
-            i += 1
-            continue
-        j = i
-        while j + 1 < n and active[j + 1]:
-            j += 1
-        run = slice(i, j + 1)
-        if around_hz is None or not np.any(np.abs(channels_hz[run] - around_hz) < half_width_hz):
-            peaks.append(float(channels_hz[i + int(np.argmax(locate[run]))]))
-        i = j + 1
-    return peaks
+    found = (levels_db >= threshold_db) & local_peaks(locate, outer_db)
+    if around_hz is not None:
+        found &= np.abs(channels_hz - around_hz) >= half_width_hz
+    return [float(f) for f in channels_hz[found]]
 
 
 @dataclass(frozen=True)
@@ -192,9 +220,13 @@ class SearchController:
         lo_hz: float,
         lo_exclusion_hz: float,
         locate_db: np.ndarray | None = None,
+        outer_locate_db: tuple[float, float] = (-np.inf, -np.inf),
     ) -> tuple[float | None, SearchStatus]:
         """Returns the channel to jump to (or None) and the status. `locate_db`
-        (levels over locating_bandwidth) picks among eligible channels."""
+        (levels over locating_bandwidth) picks among eligible channels, which
+        must be local peaks of it (`outer_locate_db`: the grid channels just
+        past each end): SEARCH stops on a signal's center, never on the edge of
+        a strong signal, locked out or not."""
         if not np.array_equal(channels_hz, self._channels):
             self._channels = channels_hz
             self._above_since = np.full(len(channels_hz), np.nan)
@@ -203,7 +235,10 @@ class SearchController:
         is_open = current_db >= hold_db
 
         if tuned_hz != self._current:
-            arrived = self._pending is not None and abs(tuned_hz - self._pending) < 1.0
+            # Within a run the dial moves only by SEARCH's jumps and `[` / `]`
+            # (any other move stops it): each new channel gets a full hold. The
+            # channel the dial is on at the start is held only if open.
+            arrived = self._current is not None
             self._current = tuned_hz
             self._arrived_at = now
             self._last_open = now if arrived else -math.inf
@@ -227,7 +262,9 @@ class SearchController:
             for f in self._disarmed
             if np.any(levels_db[np.abs(channels_hz - f) < half] >= hold_db)
         }
+        pick = levels_db if locate_db is None else locate_db
         eligible = above & (now - self._above_since >= ATTACK_S)
+        eligible &= local_peaks(pick, outer_locate_db)
         eligible &= np.abs(channels_hz - tuned_hz) >= half
         eligible &= np.abs(channels_hz - lo_hz) >= lo_exclusion_hz
         for f in config.lockouts | config.memory_lockouts | self._disarmed:
@@ -236,7 +273,6 @@ class SearchController:
         target: float | None = None
         waiting_on_jump = self._pending is not None and now - self._pending_at < _PENDING_TIMEOUT_S
         if (released or dwelt) and not waiting_on_jump and eligible.any():
-            pick = levels_db if locate_db is None else locate_db
             target = float(channels_hz[np.argmax(np.where(eligible, pick, -np.inf))])
             if dwelt and not released:
                 self._disarmed.add(tuned_hz)

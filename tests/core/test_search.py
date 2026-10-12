@@ -102,6 +102,8 @@ class _Run:
         end = self.now + seconds
         while self.now < end - 1e-9:
             levels = np.array([self.level(f) for f in self.channels])
+            step = self.config.step_hz
+            outer = (self.level(self.channels[0] - step), self.level(self.channels[-1] + step))
             target, self.status = self.controller.update(
                 self.now,
                 self.config,
@@ -113,6 +115,7 @@ class _Run:
                 bandwidth_hz=BW,
                 lo_hz=self.lo_hz,
                 lo_exclusion_hz=self.lo_exclusion,
+                outer_locate_db=outer,
             )
             if target is not None:
                 self.jumps.append(target)
@@ -304,6 +307,47 @@ def test_the_hold_never_sits_above_the_trigger() -> None:
     assert status.state == "holding"
 
 
+def test_a_channel_reached_by_a_jump_key_is_held_like_one_it_found() -> None:
+    """`[` / `]` move the dial mid-run: the new channel gets a full hold even
+    while quiet, so SEARCH doesn't jump straight back to the channel left."""
+    run = _Run()
+    run.signals[round(144.5e6)] = -60.0
+    run.tick(0.3)
+    assert run.jumps == [144.5e6]
+    run.tuned = 145.5e6  # a jump key, to a quiet channel; 144.5 MHz is still active
+    run.tick(run.config.hold_s - 0.1)
+    assert run.jumps == [144.5e6]
+    assert run.status is not None and run.status.state == "holding"
+    run.tick(0.3)
+    assert run.jumps == [144.5e6, 144.5e6]
+
+
+def test_a_locked_out_signals_edges_are_not_stopped_on() -> None:
+    """A strong signal leaks into the channels beside it, well over the trigger
+    (an NFM signal at -40 dBFS reads about -55 two 5 kHz steps away): with its
+    center locked out, SEARCH landed on those edges. A separate signal nearby
+    is still found."""
+    run = _Run(_config(lockouts=frozenset({144.5e6})))
+    run.signals |= {
+        round(144.4875e6): -55.0,
+        round(144.5e6): -40.0,  # locked out
+        round(144.5125e6): -55.0,
+        round(144.525e6): -68.0,
+    }
+    run.tick(1.0)
+    assert run.jumps == []
+    run.signals[round(144.55e6)] = -65.0  # a station of its own, beside the edge
+    run.tick(0.5)
+    assert run.jumps == [144.55e6]
+
+
+def test_a_signal_past_an_edge_does_not_pull_search_to_the_edge() -> None:
+    run = _Run()
+    run.signals |= {round(143.9875e6): -40.0, round(144.0e6): -55.0}  # range starts at 144 MHz
+    run.tick(1.0)
+    assert run.jumps == []
+
+
 def test_without_a_trigger_it_follows_the_squelch() -> None:
     """The squelch is the one control: SEARCH stops on channels 3 dB above it."""
     run = _Run(_config(trigger_db=None))
@@ -317,6 +361,12 @@ def test_signal_peaks_take_each_signals_strongest_channel() -> None:
     channels = np.arange(10) * 5_000.0
     levels = np.array([-99, -70, -60, -75, -99, -99, -65, -99, -72, -71], dtype=float)
     assert signal_peaks(channels, levels, -80.0) == [10_000.0, 30_000.0, 45_000.0]
+
+
+def test_signal_peaks_find_a_signal_beside_a_stronger_one() -> None:
+    channels = np.arange(8) * 5_000.0
+    levels = np.array([-99, -60, -40, -55, -50, -62, -99, -99], dtype=float)
+    assert signal_peaks(channels, levels, -80.0) == [10_000.0, 20_000.0]
 
 
 def test_signal_peaks_leave_out_the_signal_the_dial_is_on() -> None:

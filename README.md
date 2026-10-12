@@ -182,7 +182,8 @@ Tuning:
   band. A signal is what SEARCH would stop on: channels on the tuning-step grid
   at or above the squelch, taken once each at the strongest channel (without a
   demodulator, spectrum peaks). They stop at the band's edge, so in free
-  tuning they never move the LO.
+  tuning they never move the LO. While SEARCH runs they stay within its range
+  and keep it running (see below).
 - `s` / `S`: cycle the tuning step size forward / backward.
 - `c`: toggle center / free tuning (center: hardware follows every dial move;
   free: DSP offset until the band edge; entering center recenters).
@@ -202,11 +203,16 @@ Search (find activity within the captured band):
   range is shaded on the spectrum). The squelch threshold holds the channel:
   SEARCH moves on only after the channel has stayed below the squelch for the
   hold time (2 s), so replies are heard, and between hits it stays on the last
-  channel. Tuning by hand or stopping the radio stops it. For narrowband modes
-  only (not WFM).
+  channel. `[` / `]` move it on to the previous / next signal within its range
+  (skipping locked-out channels) without stopping it, so you can leave a channel
+  before its hold ends; other tuning by hand, or stopping the radio, stops it.
+  For narrowband modes only (not WFM).
 - `{` / `}`: put SEARCH's lower / upper edge at the dial (without edges it
   searches the whole captured band; an edge outside the band is ignored).
-- `x`: lock out the current channel for this session.
+- `x`: lock out the current channel for this session. SEARCH stops only on a
+  signal's center (a channel stronger than its neighbors), so the edges of a
+  locked-out signal, which a strong one pushes over the trigger 10-15 kHz
+  away, are passed over too, while a station of its own beside it is not.
 - `X`: lock out the current channel for good (a memory tagged `lockout`).
 
 `search on --low 144M --high 148M --threshold -60 --hold 2 --dwell 30` sets the

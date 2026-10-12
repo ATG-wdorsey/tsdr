@@ -21,11 +21,11 @@ from tsdr.core.sdr.search import (
     MAX_CHANNEL_BANDWIDTH_HZ,
     SearchConfig,
     channel_powers_db,
-    locating_bandwidth,
+    locate_levels,
     signal_peaks,
     step_grid,
 )
-from tsdr.core.sdr.tune_policy import fitting_offset
+from tsdr.core.sdr.tune_policy import fitting_offset, lo_offset_for
 from tsdr.core.tuning import resolve_auto_step
 from tsdr.core.tuning_state import get_tuning_state
 
@@ -90,30 +90,37 @@ def jump_targets(
     """Targets for `[` / `]` and the band they stay in: memories, and signals
     as SEARCH sees them (channels on the step grid at or above the squelch,
     one per signal, not the one the dial is on). Without a demodulated channel,
-    spectrum peaks stand in for signals."""
+    spectrum peaks stand in for signals. While SEARCH runs, only signals within
+    its range that it could stop on: not locked out, not at the LO."""
     config = context.config
     channel = audio_channel(config)
-    limits = search_limits(context, channel)
-    targets = [float(m.frequency) for m in get_memory_store().all()]
+    search = config.search
+    if search is not None:
+        limits = (search.low_hz, search.high_hz)
+        targets: list[float] = []
+    else:
+        limits = search_limits(context, channel)
+        targets = [float(m.frequency) for m in get_memory_store().all()]
     if fft is None or len(fft.spectrum) == 0:
         return targets, limits
     if abs(fft.center_frequency - config.center_frequency) > fft.sample_rate / len(fft.spectrum):
         return targets, limits  # a frame from before a retune
     if channel is None or context.device.capabilities.provides_spectrum:
         return targets + peak_frequencies(fft), limits
-    step = search_step(context, channel.mode)
+    step = search.step_hz if search is not None else search_step(context, channel.mode)
     channels = step_grid(*limits, step)
     measured = channels + channel.passband_offset_hz
     enbw = window_enbw_bins(config.fft_window, len(fft.spectrum))
     levels = channel_powers_db(
         fft.spectrum, fft.center_frequency, fft.sample_rate, measured, channel.bandwidth_hz, enbw
     )
-    locate = channel_powers_db(
+    locate, outer = locate_levels(
         fft.spectrum,
         fft.center_frequency,
         fft.sample_rate,
         measured,
-        locating_bandwidth(step, channel.bandwidth_hz),
+        step,
+        channel.bandwidth_hz,
         enbw,
     )
     signals = signal_peaks(
@@ -121,10 +128,36 @@ def jump_targets(
         levels,
         channel.squelch_db,
         locate_db=locate,
+        outer_db=outer,
         around_hz=config.tuned_frequency,
         half_width_hz=max(step, channel.bandwidth_hz) / 2,
     )
+    if search is not None:
+        lo_exclusion = abs(
+            lo_offset_for(
+                setting=config.lo_offset,
+                size_hz=config.lo_offset_hz,
+                channel_bandwidth=channel.bandwidth_hz,
+                sample_rate=config.sample_rate,
+                caps=context.device.capabilities,
+            )
+        )
+        signals = [
+            f
+            for f in signals
+            if not search.is_locked_out(f, channel.bandwidth_hz)
+            and abs(f - config.center_frequency) >= lo_exclusion
+        ]
     return targets + signals, limits
+
+
+def search_jump(device_id: str, frequency_hz: float) -> bool:
+    """Move a running SEARCH's dial to `frequency_hz` (`[` / `]`): SEARCH keeps
+    running and holds the channel as if it had found it. False if the move
+    would retune the hardware, which SEARCH never does."""
+    engine = get_engine()
+    engine.update_device_config(device_id, from_search=True, tuned_frequency=frequency_hz)
+    return engine.get_device(device_id).config.tuned_frequency == frequency_hz
 
 
 def start_search(

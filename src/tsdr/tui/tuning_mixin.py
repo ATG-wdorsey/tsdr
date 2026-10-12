@@ -28,6 +28,7 @@ from tsdr.core.sdr.tune_policy import effective_lo_side
 from tsdr.core.search_control import (
     jump_targets,
     lock_out_channel,
+    search_jump,
     set_search_edge,
     set_search_step,
     start_search,
@@ -266,11 +267,22 @@ class TuningMixin(MixinBase):
             return
         targets, limits = jump_targets(device, self._latest_fft_by_device.get(device.device_id))
         target = next_target(direction, float(device.config.tuned_frequency), targets, limits)
+        searching = device.config.search is not None
         if target is None:
-            self.show_status("No signal or memory further in the band")
+            where = (
+                "signal further in the search range"
+                if searching
+                else "signal or memory further in the band"
+            )
+            self.show_status(f"No {where}")
             return
         save_previous_tune_state(device)
-        self._apply_freq(device, target)
+        if searching:
+            if not search_jump(device.device_id, target):
+                self.show_status("That signal would move the LO; SEARCH keeps the dial")
+                return
+        else:
+            self._apply_freq(device, target)
         self.show_status(f"Jump: {format_hz(target, interval=1.0, long_suffix=True)}")
 
     def _swap_ab(self) -> None:

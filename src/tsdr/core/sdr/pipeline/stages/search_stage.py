@@ -17,7 +17,7 @@ from tsdr.core.sdr.search import (
     SearchController,
     SearchStatus,
     channel_powers_db,
-    locating_bandwidth,
+    locate_levels,
 )
 from tsdr.core.sdr.tune_policy import lo_offset_for
 from tsdr.core.tracing import traced
@@ -115,12 +115,13 @@ class SearchStage:
         levels = channel_powers_db(
             spectrum, data.center_frequency, data.sample_rate, measured, channel.bandwidth_hz, enbw
         )
-        locate = channel_powers_db(
+        locate, outer = locate_levels(
             spectrum,
             data.center_frequency,
             data.sample_rate,
             measured[:-1],
-            locating_bandwidth(search.step_hz, channel.bandwidth_hz),
+            search.step_hz,
+            channel.bandwidth_hz,
             enbw,
         )
         lo_offset = lo_offset_for(
@@ -143,6 +144,7 @@ class SearchStage:
             lo_hz=data.center_frequency,
             lo_exclusion_hz=abs(lo_offset),
             locate_db=locate,
+            outer_locate_db=outer,
         )
         device_id = context.device_context.device_id
         if target is not None:

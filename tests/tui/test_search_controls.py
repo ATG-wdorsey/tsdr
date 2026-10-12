@@ -4,10 +4,12 @@ channel, `s` changes its step, the `search` command, and the tuner's status."""
 from dataclasses import replace
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from tsdr.core import search_control
 from tsdr.core.demod_spec import DemodSpec
+from tsdr.core.events.events import FFTUpdateEvent
 from tsdr.core.memories import get_memory_store, init_memory_store
 from tsdr.core.sdr import engine as engine_module
 from tsdr.core.sdr.config import DeviceConfig
@@ -22,6 +24,7 @@ from tsdr.tui.tuning_mixin import TuningMixin
 from tsdr.tui.widgets.tuner_widget import _search_lines
 
 DIAL = 146.52e6
+TONE = 146.625e6  # on the 12.5 kHz grid
 
 
 @pytest.fixture
@@ -110,6 +113,39 @@ def test_the_step_key_changes_the_search_step(engine: SDREngine) -> None:
     TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
     TuningMixin._cycle_step(keys, True)  # type: ignore[arg-type]
     assert _search(engine).step_hz == get_tuning_state().step
+
+
+def _fft(config: DeviceConfig, tones: dict[float, float]) -> FFTUpdateEvent:
+    n = config.fft_size
+    spectrum = np.full(n, -130.0, dtype=np.float32)
+    for f, level in tones.items():
+        spectrum[round((f - config.center_frequency) / config.sample_rate * n) + n // 2] = level
+    return FFTUpdateEvent(
+        device_id="pluto",
+        spectrum=spectrum,
+        frequencies=None,
+        center_frequency=config.center_frequency,
+        sample_rate=config.sample_rate,
+    )
+
+
+def test_brackets_move_search_on_without_stopping_it(engine: SDREngine) -> None:
+    """While SEARCH runs, `[` / `]` jump to the next signal in its range, not
+    one at the LO, and SEARCH keeps running."""
+    engine.update_squelch("pluto", "audio", threshold_db=-80.0)
+    keys = _keys(engine)
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    config = engine.devices["pluto"].config
+    lo = config.center_frequency  # the zero-IF radio's LO, beside the dial
+    assert lo < DIAL
+    keys._latest_fft_by_device = {"pluto": _fft(config, {lo: -30.0, TONE: -30.0})}
+    TuningMixin._jump_target(keys, 1)  # type: ignore[arg-type]
+    assert engine.devices["pluto"].config.tuned_frequency == TONE
+    assert _search(engine) is not None
+    assert keys.statuses[-1].startswith("Jump:")
+    TuningMixin._jump_target(keys, -1)  # type: ignore[arg-type]
+    assert engine.devices["pluto"].config.tuned_frequency == TONE  # not the LO
+    assert keys.statuses[-1] == "No signal further in the search range"
 
 
 def test_command_starts_reports_and_stops(engine: SDREngine) -> None:

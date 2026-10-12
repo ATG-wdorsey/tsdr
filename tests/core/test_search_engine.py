@@ -34,6 +34,7 @@ from tsdr.core.search_control import (
     clear_session_lockouts,
     jump_targets,
     lock_out_channel,
+    search_jump,
     set_search_edge,
     set_search_step,
     start_search,
@@ -448,6 +449,28 @@ def test_jump_targets_are_signals_on_the_grid_and_memories_in_the_band(engine: S
     assert next_target(1, 147.0e6, targets, limits) is None  # 160 MHz is beyond the band
 
 
+def test_while_searching_jump_targets_are_signals_in_its_range(engine: SDREngine) -> None:
+    engine.update_squelch("pluto", "audio", threshold_db=-80.0)
+    search = start_search("pluto", low_hz=146.0e6, high_hz=147.5e6)
+    engine.update_device_config("pluto", search=replace(search, lockouts=frozenset({147.0e6})))
+    get_memory_store().add(146_250_000, "in range", DemodSpec(mode="NFM"), 12_500)
+    context = engine.devices["pluto"]
+    fft = _fft(context.config, {145.5e6: -30.0, 147.0e6: -30.0, 147.25e6: -30.0})
+    targets, limits = jump_targets(context, fft)
+    assert limits == (146.0e6, 147.5e6)
+    assert next_target(1, DIAL, targets, limits) == 147.25e6  # past the locked-out channel
+    assert next_target(-1, DIAL, targets, limits) is None  # 145.5 MHz is outside; no memories
+
+
+def test_a_jump_key_keeps_search_running(engine: SDREngine) -> None:
+    search = start_search("pluto")
+    assert search_jump("pluto", 147.0e6)
+    assert _config(engine).tuned_frequency == 147.0e6
+    assert _config(engine).search == search
+    assert not search_jump("pluto", DIAL + 20e6)  # would retune the hardware: dropped
+    assert _config(engine).tuned_frequency == 147.0e6
+
+
 def test_jump_targets_without_a_demodulator_use_spectrum_peaks(engine: SDREngine) -> None:
     engine.remove_pipeline("pluto", "audio")
     context = engine.devices["pluto"]
@@ -472,6 +495,14 @@ def test_search_lands_on_the_signal_not_a_step_beside_it(engine: SDREngine) -> N
     start_search("pluto", trigger_db=-40.0, step_hz=5_000.0)
     _stage_run(engine, {147.0e6: -30.0})
     assert _config(engine).tuned_frequency == 147.0e6
+
+
+def test_search_does_not_stop_on_its_edge_for_a_signal_beyond_it(engine: SDREngine) -> None:
+    """A carrier 4 kHz below the lower edge fills the edge channel's 12.5 kHz
+    window; the grid channel past the edge, measured too, shows whose it is."""
+    start_search("pluto", low_hz=146.0e6, high_hz=147.0e6, trigger_db=-40.0, step_hz=5_000.0)
+    _stage_run(engine, {145.996e6: -30.0})
+    assert _config(engine).tuned_frequency == DIAL
 
 
 def test_jump_targets_land_on_the_signal_with_a_fine_step(engine: SDREngine) -> None:
