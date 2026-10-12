@@ -25,7 +25,7 @@ from tsdr.core.tuning_state import init_tuning_state
 from tsdr.devices import MockParams
 from tsdr.tui.widgets import waterfall_widget as waterfall_module
 from tsdr.tui.widgets.db_scale import (
-    GRID_GREY,
+    GRID_GRAY,
     GUTTER_COLS,
     KEY_COLS,
     LABEL_MIN_LUMA,
@@ -82,10 +82,10 @@ def _css(rgb: tuple[int, int, int]) -> str:
     return f"rgb({r},{g},{b})"
 
 
-def test_the_noise_floors_dark_colors_label_in_grey() -> None:
-    assert label_color((0, 0, 100), 0.17) == GRID_GREY  # dark navy, low in the window
+def test_the_noise_floors_dark_colors_label_in_gray() -> None:
+    assert label_color((0, 0, 100), 0.17) == GRID_GRAY  # dark navy, low in the window
     assert label_color((17, 82, 208), 0.25) == _css(legible((17, 82, 208)))
-    # Dark red high in the window is a strong signal: brightened, never grey.
+    # Dark red high in the window is a strong signal: brightened, never gray.
     assert label_color((0x4A, 0, 0), 1.0) == _css(legible((0x4A, 0, 0)))
 
 
@@ -193,9 +193,9 @@ def test_grid_labels_take_the_waterfalls_color_for_their_level(engine: SDREngine
     assert len(labels) == 9
     for text, rgb in labels.items():
         assert rgb == _rgb(Style(color=level_label_color(float(text), -115.0, -25.0)))
-    grey = _rgb(Style(color=GRID_GREY))
-    assert all(rgb == grey or _luma(rgb) >= LABEL_MIN_LUMA - 1 for rgb in labels.values())
-    assert labels[" -30 "] != grey  # high in the window: never grey
+    gray = _rgb(Style(color=GRID_GRAY))
+    assert all(rgb == gray or _luma(rgb) >= LABEL_MIN_LUMA - 1 for rgb in labels.values())
+    assert labels[" -30 "] != gray  # high in the window: never gray
 
 
 def test_text_mode_marks_the_squelch_and_trigger(engine: SDREngine) -> None:
@@ -290,7 +290,7 @@ def test_the_color_keys_end_labels_are_in_their_colors() -> None:
     w.set_reactive(WaterfallWidget.db_max, -25.0)
     for row, level, color in (
         (0, -25.0, _css(legible(level_color(-25.0, -115.0, -25.0)))),
-        (9, -115.0, GRID_GREY),
+        (9, -115.0, GRID_GRAY),
     ):
         (seg,) = list(w._color_key_strip(row, 10, GUTTER_COLS))
         assert seg.text == grid_label(level)

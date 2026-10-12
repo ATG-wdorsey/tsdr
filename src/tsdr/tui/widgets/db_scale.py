@@ -26,14 +26,14 @@ _MIN_PLOT_COLS = 20
 # is 10*log10(E[X]) minus 10*log10(e) times Euler's gamma.
 DB_MEAN_NOISE_BIAS = 10.0 * math.log10(math.e) * 0.5772156649015329
 # The grid, and the dB labels the waterfall's colors don't suit.
-GRID_GREY = "grey35"
+GRID_GRAY = "grey35"
 # dB labels take the waterfall's color for their level, brightened to at
 # least this luma (0-255; grey35 is 89) so the colormap's dark colors stay
 # legible on a dark background...
 LABEL_MIN_LUMA = 110.0
 # ...but low in the window, colors darker than this are the noise floor's on
-# the waterfall (its dark blues): those labels stay grey.
-LABEL_GREY_LUMA = 60.0
+# the waterfall (its dark blues): those labels stay gray.
+LABEL_GRAY_LUMA = 60.0
 
 
 def gutter_cols(width: int) -> int:
@@ -69,8 +69,8 @@ def _luma(rgb: tuple[float, float, float]) -> float:
 def label_color(rgb: tuple[int, int, int], position: float) -> str:
     """The color of a dB label whose level shows as `rgb` on the waterfall,
     `position` (0-1) of the way up the dB window."""
-    if position < 0.5 and _luma(rgb) < LABEL_GREY_LUMA:
-        return GRID_GREY
+    if position < 0.5 and _luma(rgb) < LABEL_GRAY_LUMA:
+        return GRID_GRAY
     r, g, b = legible(rgb)
     return f"rgb({r},{g},{b})"
 

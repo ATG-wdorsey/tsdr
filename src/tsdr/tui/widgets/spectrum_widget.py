@@ -31,7 +31,7 @@ from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import axis_si_prefix
 from tsdr.tui.inline_edit import InlineEditor
 from tsdr.tui.widgets.db_scale import (
-    GRID_GREY,
+    GRID_GRAY,
     grid_label,
     grid_levels,
     gutter_cols,
@@ -75,7 +75,7 @@ _STYLE_SEARCH = Style(color="yellow")
 _STYLE_SEARCH_BG = Style(bgcolor="#262000")  # text-mode SEARCH range
 # dB grid and reference lines, and their labels in the left column.
 _LINE_STYLES = {
-    "grid": Style(color=GRID_GREY),
+    "grid": Style(color=GRID_GRAY),
     "squelch": Style(color="dark_orange"),
     "trigger": Style(color="yellow"),
 }
