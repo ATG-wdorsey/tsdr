@@ -724,33 +724,33 @@ class SpectrumWidget(ImageModeMixin, Widget):
         if event.shift:
             self._scroll_zoom(1)
         else:
-            self._scroll_tune(-1)
+            self._scroll_tune(1)
         event.stop()
 
     def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
         if event.shift:
             self._scroll_zoom(-1)
         else:
-            self._scroll_tune(1)
+            self._scroll_tune(-1)
         event.stop()
 
     def _scroll_zoom(self, direction: int) -> None:
         self.app._adjust_spectrum_span(direction)
 
     def _scroll_tune(self, direction: int) -> None:
-        """Plain scroll tunes the dial; in free mode with a span set it pans
-        the view instead (in center mode the view follows the dial anyway).
-        Pixel-relative step (2 px per notch, min 1 Hz)."""
+        """Plain scroll tunes the dial one tuning step, like the arrow keys
+        (scroll up = up). In free mode with a span set it pans the view instead
+        (in center mode the view follows the dial anyway), 2 px per notch."""
         engine = get_engine()
         device = engine.get_focused_device()
         if device is None:
             return
         cfg = device.config
-        caps = device.device.capabilities
-        center, span = resolve_view(cfg, caps)
-        w = self.size.width
-        step = max(span / w * 2, 1.0) if w > 0 else 1.0
         if cfg.tuning_mode == "free" and cfg.spectrum_span is not None:
+            caps = device.device.capabilities
+            center, span = resolve_view(cfg, caps)
+            w = self.size.width
+            step = max(span / w * 2, 1.0) if w > 0 else 1.0
             lo, hi = full_view_range(cfg, caps)
             new_center = min(max(center + direction * step, lo + span / 2), hi - span / 2)
             try:
@@ -758,12 +758,7 @@ class SpectrumWidget(ImageModeMixin, Widget):
             except SDRException as e:
                 self.app._show_error(str(e))
         else:
-            new_freq = cfg.tuned_frequency + direction * step
-            new_freq = round(new_freq / step) * step
-            try:
-                engine.update_device_config(device.device_id, tuned_frequency=new_freq)
-            except SDRException as e:
-                self.app._show_error(str(e))
+            self.app._tune(direction)
 
     def _actual_freq_range(self, event: FFTUpdateEvent) -> tuple[float, float]:
         """Return (freq_min, freq_max) covered by the FFT event."""
