@@ -67,6 +67,7 @@ def test_search_keys_are_bound() -> None:
     assert lookup[(Context.GLOBAL, "slash")] is Action.SEARCH_TOGGLE
     assert lookup[(Context.GLOBAL, "x")] is Action.SEARCH_LOCKOUT
     assert lookup[(Context.GLOBAL, "X")] is Action.SEARCH_LOCKOUT_SAVE
+    assert lookup[(Context.GLOBAL, "ctrl+x")] is Action.SEARCH_UNLOCK
     assert lookup[(Context.GLOBAL, "left_curly_bracket")] is Action.SEARCH_EDGE_LOW
     assert lookup[(Context.GLOBAL, "right_curly_bracket")] is Action.SEARCH_EDGE_HIGH
 
@@ -148,6 +149,17 @@ def test_brackets_move_search_on_without_stopping_it(engine: SDREngine) -> None:
     assert keys.statuses[-1] == "No signal further in the search range"
 
 
+def test_ctrl_x_unlocks_the_channel_or_all(engine: SDREngine) -> None:
+    keys = _keys(engine)
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    TuningMixin._lock_out_channel(keys, permanent=False)  # type: ignore[arg-type]
+    TuningMixin._unlock(keys)  # type: ignore[arg-type]
+    assert keys.statuses[-1].startswith("Unlocked")
+    assert _search(engine).lockouts == frozenset()
+    TuningMixin._unlock(keys)  # type: ignore[arg-type]
+    assert keys.statuses[-1] == "No session lockouts to drop"
+
+
 def test_command_starts_reports_and_stops(engine: SDREngine) -> None:
     cmd = SDRSearchCommand()
     out = cmd.execute(
@@ -192,6 +204,8 @@ def test_tuner_shows_search_state_and_level() -> None:
     assert "HOLD" in badge and "1.5s" in badge
     assert "-62" in level
     assert "WAIT" in _search_lines(SearchStatus("waiting", DIAL, float("-inf"), 0.0, 0))[0]
+    assert "2 L/O" in _search_lines(holding, lockouts=2)[1]
+    assert "L/O" not in _search_lines(holding)[1]
     assert _search_lines(SearchStatus("waiting", DIAL, float("-inf"), 0.0, 0))[1] == ""
 
 

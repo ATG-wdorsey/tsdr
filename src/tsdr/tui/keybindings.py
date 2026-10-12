@@ -48,6 +48,7 @@ class Action(StrEnum):
     SEARCH_TOGGLE = "search.toggle"
     SEARCH_LOCKOUT = "search.lockout"
     SEARCH_LOCKOUT_SAVE = "search.lockout-save"
+    SEARCH_UNLOCK = "search.unlock"
     SEARCH_EDGE_LOW = "search.edge-low"
     SEARCH_EDGE_HIGH = "search.edge-high"
     BANDWIDTH_UP = "bandwidth.up"
@@ -177,6 +178,11 @@ BINDINGS: tuple[Binding, ...] = (
             Action.SEARCH_LOCKOUT_SAVE,
             ("X",),
             "Lock out the current channel for good (a memory tagged lockout)",
+        ),
+        (
+            Action.SEARCH_UNLOCK,
+            ("ctrl+x",),
+            "Unlock the current channel, or else drop all session lockouts",
         ),
     ),
     *_section(

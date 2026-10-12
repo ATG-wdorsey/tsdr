@@ -33,6 +33,7 @@ from tsdr.core.search_control import (
     set_search_step,
     start_search,
     stop_search,
+    unlock,
 )
 from tsdr.core.tuning import (
     STEP_LADDER,
@@ -224,6 +225,22 @@ class TuningMixin(MixinBase):
         self.show_status(
             f"Locked out {format_hz(frequency, decimals=4, long_suffix=True)} ({where})"
         )
+
+    def _unlock(self) -> None:
+        """`ctrl+x`: unlock the dial's channel, or else every session lockout."""
+        device = self._focused()
+        if device is None:
+            return
+        result = unlock(device.device_id)
+        if result.frequency_hz is not None:
+            deleted = " (lockout memory deleted)" if result.saved else ""
+            where = format_hz(result.frequency_hz, decimals=4, long_suffix=True)
+            self.show_status(f"Unlocked {where}{deleted}")
+        elif result.session:
+            plural = "s" if result.session != 1 else ""
+            self.show_status(f"Dropped {result.session} session lockout{plural}")
+        else:
+            self.show_status("No session lockouts to drop")
 
     def _center_view_on_dial(self) -> None:
         device = self._focused()

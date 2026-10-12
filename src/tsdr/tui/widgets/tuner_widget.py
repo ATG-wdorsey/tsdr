@@ -304,19 +304,18 @@ _SEARCH_BADGES: dict[SearchState, str] = {
 }
 
 
-def _search_lines(status: SearchStatus | None) -> tuple[str, str]:
-    """The state column's last two lines while SEARCH runs: state, channel level."""
-    if status is None:
-        return _SEARCH_BADGES["searching"], ""
-    badge = _SEARCH_BADGES[status.state]
-    if status.state == "holding":
+def _search_lines(status: SearchStatus | None, lockouts: int = 0) -> tuple[str, str]:
+    """The state column's last two lines while SEARCH runs: state, and the
+    channel level with the number of lockouts in force (session and saved)."""
+    badge = _SEARCH_BADGES["searching" if status is None else status.state]
+    if status is not None and status.state == "holding":
         badge += f" [dim]{status.hold_left_s:.1f}s[/dim]"
-    level = (
-        ""
-        if status.level_db == float("-inf")
-        else f"[bold]{status.level_db:.0f}[/bold] [dim]dBFS[/dim]"
-    )
-    return badge, level
+    known = status is not None and status.level_db != float("-inf")
+    level = f"[bold]{status.level_db:.0f}[/bold]" if status is not None and known else ""
+    if lockouts:
+        count = f"[yellow]{lockouts} L/O[/yellow]"
+        return badge, f"{level} [dim]·[/dim] {count}" if level else count
+    return badge, f"{level} [dim]dBFS[/dim]" if level else ""
 
 
 class TunerWidget(Vertical):
@@ -438,7 +437,8 @@ class TunerWidget(Vertical):
         if search is None:
             self._search_status = None
         else:
-            band_line, reg_line = _search_lines(self._search_status)
+            lockouts = len(search.lockouts | search.memory_lockouts)
+            band_line, reg_line = _search_lines(self._search_status, lockouts)
 
         self.query_one("#tuner-state", Static).update(f"{step_line}\n{band_line}\n{reg_line}")
 

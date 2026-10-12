@@ -214,6 +214,9 @@ Search (find activity within the captured band):
   locked-out signal, which a strong one pushes over the trigger 10-15 kHz
   away, are passed over too, while a station of its own beside it is not.
 - `X`: lock out the current channel for good (a memory tagged `lockout`).
+- `Ctrl+X`: unlock the current channel when it is locked out (deleting its
+  lockout memory; `X` there makes it again), or else drop all session lockouts.
+  While SEARCH runs, the tuner shows how many lockouts are in force (`2 L/O`).
 
 `search on --low 144M --high 148M --threshold -60 --hold 2 --dwell 30` sets the
 edges, the trigger (dBFS within the channel, as the squelch measures it;

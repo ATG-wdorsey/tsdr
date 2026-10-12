@@ -19,6 +19,7 @@ from tsdr.core.sdr.search import (
     DEFAULT_HOLD_S,
     LOCKOUT_TAG,
     MAX_CHANNEL_BANDWIDTH_HZ,
+    TRIGGER_ABOVE_SQUELCH_DB,
     SearchConfig,
     channel_powers_db,
     locate_levels,
@@ -254,7 +255,7 @@ def start_search(
         low,
         high,
         config.step_hz,
-        "squelch+6" if trigger_db is None else f"{trigger_db:.1f}",
+        f"squelch+{TRIGGER_ABOVE_SQUELCH_DB:g}" if trigger_db is None else f"{trigger_db:.1f}",
         channel.squelch_db,
         hold,
     )
@@ -340,6 +341,62 @@ def clear_session_lockouts(device_id: str) -> int:
     if search is not None and search.lockouts:
         engine.update_device_config(device_id, search=replace(search, lockouts=frozenset()))
     return count
+
+
+@dataclass(frozen=True)
+class Unlocked:
+    """What `unlock` removed: the dial's lockouts, or else every session lockout."""
+
+    frequency_hz: float | None  # the dial's channel; None = all session lockouts
+    session: int  # session lockouts dropped
+    saved: int  # lockout memories deleted
+
+
+def unlock(device_id: str) -> Unlocked:
+    """`ctrl+x`: unlock the dial's channel when it is locked out (a session
+    lockout, or a memory tagged LOCKOUT_TAG, which is deleted: `X` there makes
+    it again); otherwise drop every session lockout. A running SEARCH follows."""
+    engine = get_engine()
+    context = engine.get_device(device_id)
+    config = context.config
+    dial = config.tuned_frequency
+    channel = audio_channel(config)
+    if channel is None:
+        half = 1.0
+    else:
+        step = (
+            config.search.step_hz
+            if config.search is not None
+            else search_step(context, channel.mode)
+        )
+        half = max(step, channel.bandwidth_hz) / 2
+    settings = search_settings(device_id)
+    store = get_memory_store()
+    here = {f for f in settings.lockouts if abs(f - dial) < half}
+    saved = [m for m in store.find_by_tag(LOCKOUT_TAG) if abs(m.frequency - dial) < half]
+    if here or saved:
+        settings.lockouts -= here
+        for memory in saved:
+            store.remove(memory.id)
+        if saved:
+            engine.event_bus.publish(MemoriesChangedEvent(memories=tuple(store.all())))
+        result = Unlocked(dial, len(here), len(saved))
+    else:
+        result = Unlocked(None, len(settings.lockouts), 0)
+        settings.lockouts.clear()
+    search = engine.get_device(device_id).config.search
+    if search is not None and search.lockouts != frozenset(settings.lockouts):
+        engine.update_device_config(
+            device_id, search=replace(search, lockouts=frozenset(settings.lockouts))
+        )
+    logger.info(
+        "search_unlock device=%s frequency_hz=%s session=%d saved=%d",
+        device_id,
+        "all" if result.frequency_hz is None else f"{result.frequency_hz:.0f}",
+        result.session,
+        result.saved,
+    )
+    return result
 
 
 def set_search_step(device_id: str, step_hz: float) -> None:

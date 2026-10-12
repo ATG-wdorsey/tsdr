@@ -39,6 +39,7 @@ from tsdr.core.search_control import (
     set_search_step,
     start_search,
     stop_search,
+    unlock,
 )
 from tsdr.core.tuning_state import get_tuning_state, init_tuning_state
 from tsdr.devices import MockParams, mock
@@ -201,6 +202,29 @@ def test_session_lockout(engine: SDREngine) -> None:
     assert start_search("pluto").lockouts == frozenset({DIAL})
     assert clear_session_lockouts("pluto") == 1
     assert _config(engine).search.lockouts == frozenset()
+
+
+def test_unlock_at_the_dial_removes_its_lockouts_only(engine: SDREngine) -> None:
+    search_control.search_settings("pluto").lockouts.add(147.0e6)
+    start_search("pluto")
+    lock_out_channel("pluto")
+    lock_out_channel("pluto", permanent=True)
+    result = unlock("pluto")
+    assert (result.frequency_hz, result.session, result.saved) == (DIAL, 1, 1)
+    assert get_memory_store().find_by_tag(LOCKOUT_TAG) == []
+    search = _config(engine).search
+    assert search.lockouts == frozenset({147.0e6}) and search.memory_lockouts == frozenset()
+
+
+def test_unlock_elsewhere_drops_every_session_lockout(engine: SDREngine) -> None:
+    settings = search_control.search_settings("pluto")
+    settings.lockouts |= {147.0e6, 147.5e6}
+    get_memory_store().add(146_000_000, "saved", DemodSpec(mode="NFM"), 12_500, tags=(LOCKOUT_TAG,))
+    start_search("pluto")
+    result = unlock("pluto")
+    assert (result.frequency_hz, result.session, result.saved) == (None, 2, 0)
+    assert _config(engine).search.lockouts == frozenset()
+    assert len(get_memory_store().find_by_tag(LOCKOUT_TAG)) == 1  # saved lockouts stay
 
 
 def test_permanent_lockout_is_a_tagged_memory(engine: SDREngine) -> None:
