@@ -330,6 +330,7 @@ class TunerWidget(Vertical):
     _sample_rate: float | None = None
     _demod_profile: DemodProfile | None = None
     _search_status: SearchStatus | None = None
+    _state_text: str = ""
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="tuner-row"):
@@ -440,7 +441,11 @@ class TunerWidget(Vertical):
             lockouts = len(search.lockouts | search.memory_lockouts)
             band_line, reg_line = _search_lines(self._search_status, lockouts)
 
-        self.query_one("#tuner-state", Static).update(f"{step_line}\n{band_line}\n{reg_line}")
+        # Search status arrives several times a second; the column is fixed-size.
+        text = f"{step_line}\n{band_line}\n{reg_line}"
+        if text != self._state_text:
+            self._state_text = text
+            self.query_one("#tuner-state", Static).update(text, layout=False)
 
     def update_search(self, event: SearchStatusEvent) -> None:
         device = get_engine().get_focused_device()

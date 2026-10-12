@@ -15,7 +15,7 @@ from tsdr.core.sdr import engine as engine_module
 from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import SDREngine
-from tsdr.core.sdr.search import LOCKOUT_TAG, SearchStatus
+from tsdr.core.sdr.search import LOCKOUT_TAG, SearchConfig, SearchStatus
 from tsdr.core.tuning_state import get_tuning_state, init_tuning_state
 from tsdr.devices import MockParams, mock
 from tsdr.tui import tuning_mixin as tuning_mixin_module
@@ -23,7 +23,7 @@ from tsdr.tui.commands.sdr.search import SDRSearchCommand
 from tsdr.tui.keybindings import Action, Context, build_lookup
 from tsdr.tui.keyboard import KeyboardMixin
 from tsdr.tui.tuning_mixin import TuningMixin
-from tsdr.tui.widgets.tuner_widget import _search_lines
+from tsdr.tui.widgets.tuner_widget import TunerWidget, _search_lines
 
 DIAL = 146.52e6
 TONE = 146.625e6  # on the 12.5 kHz grid
@@ -213,6 +213,23 @@ def test_turning_the_squelch_off_stops_search(engine: SDREngine) -> None:
     KeyboardMixin._disable_squelch(keys)  # type: ignore[arg-type]
     assert _search(engine) is None
     assert keys.statuses[-1] == "Squelch off (SEARCH stopped)"
+
+
+@pytest.mark.usefixtures("engine")
+def test_the_tuner_redraws_its_search_column_only_on_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Search status comes several times a second; an unchanged column was
+    redrawn, with a layout pass, every time."""
+    tuner = TunerWidget()
+    updates: list[bool] = []
+    column = SimpleNamespace(update=lambda _text, layout=True: updates.append(layout))
+    monkeypatch.setattr(tuner, "query_one", lambda *_args, **_kw: column)
+    search = SearchConfig(low_hz=146e6, high_hz=147e6, step_hz=12_500.0)
+    tuner._search_status = SearchStatus("holding", DIAL, -45.0, 2.0, 1)
+    for _ in range(3):
+        tuner._render_state_column("NFM", DIAL, search)
+    assert updates == [False]
 
 
 def test_command_starts_reports_and_stops(engine: SDREngine) -> None:

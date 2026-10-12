@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass
 
 import numpy as np
 
+from tsdr.core import clock_sync
 from tsdr.core.events.events import SearchStatusEvent, SearchTuneEvent
 from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
@@ -133,7 +133,9 @@ class SearchStage:
             sample_rate=config.sample_rate,
             caps=context.device_context.device.capabilities,
         )
-        now = data.capture_utc_s or time.time()
+        # Capture time (0.0 = not stamped, as in tests). Clock sync can step it;
+        # a step only shortens or lengthens one hold or attack.
+        now = data.capture_utc_s if data.capture_utc_s > 0.0 else clock_sync.now_utc_seconds()
         target, status = self._controller.update(
             now,
             search,
