@@ -10,6 +10,7 @@ import pytest
 from tsdr.core.sdr import engine as engine_module
 from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.engine import SDREngine
+from tsdr.core.sdr.exceptions import SDRException
 from tsdr.devices import MockParams
 from tsdr.tui.widgets.spectrum_widget import SpectrumWidget
 
@@ -29,8 +30,12 @@ def engine(monkeypatch: pytest.MonkeyPatch) -> SDREngine:
     return engine
 
 
-def _widget(monkeypatch: pytest.MonkeyPatch, tunes: list[int]) -> SpectrumWidget:
-    app = SimpleNamespace(_tune=tunes.append, _show_error=lambda _message: None)
+def _widget(
+    monkeypatch: pytest.MonkeyPatch, tunes: list[int], errors: list[str] | None = None
+) -> SpectrumWidget:
+    app = SimpleNamespace(
+        _tune=tunes.append, _show_error=(errors if errors is not None else []).append
+    )
     monkeypatch.setattr(SpectrumWidget, "app", property(lambda _self: app))
     return SpectrumWidget()
 
@@ -59,3 +64,18 @@ def test_the_wheel_pans_a_zoomed_view_in_free_tuning(
     assert tunes == []
     assert config.spectrum_center is not None and config.spectrum_center > DIAL
     assert config.tuned_frequency == DIAL
+
+
+@pytest.mark.usefixtures("engine")
+def test_a_failed_wheel_tune_shows_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wheel goes through the tuning helper, which can raise; the keys catch
+    that, and the wheel must too, or the app ends."""
+    errors: list[str] = []
+
+    def fail(_direction: int) -> None:
+        raise SDRException("out of range")
+
+    widget = _widget(monkeypatch, [], errors)
+    monkeypatch.setattr(widget.app, "_tune", fail)
+    widget.on_mouse_scroll_up(_event())  # type: ignore[arg-type]
+    assert errors == ["out of range"]

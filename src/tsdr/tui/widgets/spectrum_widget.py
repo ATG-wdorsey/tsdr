@@ -758,7 +758,10 @@ class SpectrumWidget(ImageModeMixin, Widget):
             except SDRException as e:
                 self.app._show_error(str(e))
         else:
-            self.app._tune(direction)
+            try:
+                self.app._tune(direction)
+            except SDRException as e:
+                self.app._show_error(str(e))
 
     def _actual_freq_range(self, event: FFTUpdateEvent) -> tuple[float, float]:
         """Return (freq_min, freq_max) covered by the FFT event."""
