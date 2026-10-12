@@ -189,6 +189,7 @@ search_jump_failed
 search_lockout
 search_started
 search_stopped
+search_unlock
 signal_exit_failed
 signal_received
 soapy_found_system_path
