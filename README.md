@@ -2,30 +2,46 @@
 
 > **About this fork.** This fork of [floens/tsdr](https://github.com/floens/tsdr)
 > carries fixes and enhancements made while using TSDR with a PlutoSDR and an
-> Airspy on Linux, all meant for upstream as pull requests. The original
-> README follows this note.
+> Airspy on Linux, all meant for upstream as pull requests. What you'll notice:
 >
 > **Fixes**
-> - Audio dropouts on Linux with the TUI running: a real device buffer and
->   paced writes ([floens/tsdr#3](https://github.com/floens/tsdr/pull/3)).
-> - Phantom signals while tuning: multistage decimation with channel
->   selection; WSJT upper sideband
->   ([#7](https://github.com/floens/tsdr/pull/7)).
-> - Kitty graphics crash (SIGBUS) and leaked shared-memory frames
->   ([#4](https://github.com/floens/tsdr/pull/4)).
-> - Garbage-collection pauses that stalled device reads
->   ([#5](https://github.com/floens/tsdr/pull/5)).
-> - Demod mode case, shortcut errors, failed opens, click snapping, stale
->   configs ([#2](https://github.com/floens/tsdr/pull/2)).
+> - **No phantom signals while tuning.** Strong stations elsewhere in the
+>   capture no longer fold onto the channel you are tuned to (at 10 MS/s they
+>   were rejected by 0.4 dB; now by at least 81 dB). WSJT modes decode the
+>   upper sideband only.
+>   ([floens/tsdr#7](https://github.com/floens/tsdr/pull/7))
+> - **Clean audio on Linux with the TUI running.** No more dropouts several
+>   times a second, and the underrun counter counts real underruns.
+>   ([#3](https://github.com/floens/tsdr/pull/3))
+> - **Smooth capture at high sample rates.** Garbage-collection pauses that
+>   stopped every thread for ~120 ms, dropping radio samples, are kept short.
+>   ([#5](https://github.com/floens/tsdr/pull/5))
+> - **Kitty no longer crashes** (SIGBUS) in image mode, and frames no longer
+>   pile up in `/dev/shm`. ([#4](https://github.com/floens/tsdr/pull/4))
+> - **Everyday glitches.** After holding a tuning key the radio could stay on
+>   a different frequency than the dial showed; an out-of-range shortcut
+>   exited the app; a radio that failed to open showed as running;
+>   click-to-tune landed on whole megahertz with coarse steps; `demod wfm`
+>   was rejected (modes were case-sensitive).
+>   ([#2](https://github.com/floens/tsdr/pull/2))
 >
 > **Enhancements**
-> - SoapySDR: driver capabilities, overflow counts and a low-throughput warning
->   ([#6](https://github.com/floens/tsdr/pull/6)).
-> - SoapySDR: the stream is read on a native thread, out of reach of Python's
->   pauses (to be offered upstream).
-> - Zero-IF radios (PlutoSDR, HackRF and similar): the LO sits beside the
->   channel instead of on it, and the Pluto's analog filter follows the sample
->   rate (to be offered upstream).
+> - **SoapySDR radios use their real limits:** frequency range, fixed sample
+>   rates (such as the Airspy's) and gain step. Lost samples are reported:
+>   driver overflows are logged, and a warning suggests a lower rate when a
+>   radio can't deliver the one asked for.
+>   ([#6](https://github.com/floens/tsdr/pull/6))
+> - **Capture outside Python.** SoapySDR streams are read on a native thread,
+>   so pauses in Python can't drop radio samples, and holding a tuning key
+>   loses nothing. (To be offered upstream.)
+> - **Zero-IF radios (PlutoSDR, HackRF and similar).** While you demodulate,
+>   the LO sits beside the channel instead of on it, keeping the DC spike, LO
+>   leakage and near-DC intermod out of what you hear: `o`/`O` put it below or
+>   above the dial (again: no offset), or `config --lo-offset` and
+>   `--lo-offset-size`. The Pluto's analog filter follows the sample rate
+>   (0.8x) instead of staying at 18 MHz, so strong signals outside the span no
+>   longer overload the ADC: `config --analog-filter`. (To be offered
+>   upstream.)
 >
 > Install this fork with
 > `uv tool install --from git+https://github.com/ATG-wdorsey/tsdr@main tsdr`.
