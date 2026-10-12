@@ -655,12 +655,18 @@ class SDREngine:
         )
 
         new_cls = DEMODULATOR_CLASSES.get(spec.mode.upper())
+        old_cls = DEMODULATOR_CLASSES.get(old_mode.upper()) if old_mode is not None else None
         new_has_audio = new_cls is not None and new_cls.HAS_AUDIO
-        new_bw = (
-            new_cls.bandwidth_override_on_mode_switch(context.config.channel_bandwidth)
-            if new_cls is not None
-            else None
-        )
+        # Another demodulator starts at its own bandwidth: NFM's 12.5 kHz kept
+        # into WFM, or CW's 200 Hz into NFM, leaves it nearly silent. LSB <-> USB
+        # (one class) keep the user's, and with no demodulator before (a restore)
+        # the configured bandwidth stays unless it is too wide.
+        if new_cls is None:
+            new_bw = None
+        elif old_cls is not None and old_cls is not new_cls:
+            new_bw = new_cls.DEFAULT_CHANNEL_BANDWIDTH
+        else:
+            new_bw = new_cls.bandwidth_override_on_mode_switch(context.config.channel_bandwidth)
 
         # The squelch belongs to the receiver, not the mode: keep it.
         new_pc = PipelineConfig(stages=new_stages_tuple, audio_spec=spec)
