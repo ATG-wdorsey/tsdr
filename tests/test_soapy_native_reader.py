@@ -176,6 +176,9 @@ class FakeSoapyDevice:
     def setFrequency(self, direction, channel, freq):  # noqa: N802 (SoapySDR API name)
         self.calls.append("setFrequency")
 
+    def activateStream(self, stream):  # noqa: N802 (SoapySDR API name)
+        self.calls.append("activateStream")
+
     def deactivateStream(self, stream):  # noqa: N802 (SoapySDR API name)
         self.calls.append("deactivateStream")
 
@@ -205,7 +208,7 @@ def test_soapy_device_reads_through_the_native_reader(
     assert reader is not None
     dev.close()
     assert not reader._thread.is_alive()
-    assert fake.calls == ["setSampleRate", "deactivateStream", "closeStream"]
+    assert fake.calls == ["activateStream", "setSampleRate", "deactivateStream", "closeStream"]
 
 
 def _native_device(monkeypatch: pytest.MonkeyPatch) -> tuple[soapy.SoapySDRDevice, FakeSoapyDevice]:
@@ -245,7 +248,7 @@ def test_a_reader_stuck_in_the_driver_blocks_rate_changes_until_it_leaves(
     assert len(dev.read_samples(1000 * 8)) == 1000 * 8  # a fresh reader
     assert dev._reader is not stuck
     dev.close()
-    assert fake.calls == ["deactivateStream", "closeStream"]
+    assert fake.calls == ["activateStream", "deactivateStream", "closeStream"]
 
 
 def test_closing_with_a_stuck_reader_abandons_the_stream(
@@ -256,7 +259,7 @@ def test_closing_with_a_stuck_reader_abandons_the_stream(
     driver.block_s = 0.3
     _wait_until(lambda: driver.blocking)
     dev.close()
-    assert fake.calls == []  # neither deactivated nor closed under the loop
+    assert fake.calls == ["activateStream"]  # neither deactivated nor closed under the loop
     abandoned = soapy._abandoned_streams.pop()
     assert abandoned[0] is fake
     _wait_until(lambda: not abandoned[2].alive)
