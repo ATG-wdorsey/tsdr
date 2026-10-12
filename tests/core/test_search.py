@@ -13,6 +13,8 @@ from tsdr.core.sdr.search import (
     SearchConfig,
     SearchController,
     channel_powers_db,
+    local_peaks,
+    locate_levels,
     signal_peaks,
 )
 from tsdr.radio.dsp.squelch import iq_power_db
@@ -355,6 +357,44 @@ def test_without_a_trigger_it_follows_the_squelch() -> None:
     run.signals[round(145.5e6)] = SQUELCH + 4.0
     run.tick(0.3)
     assert run.jumps == [145.5e6]
+
+
+def test_a_window_outside_the_capture_reads_nothing_on_either_side() -> None:
+    """Below the capture, a window once borrowed the first FFT bin."""
+    flat = np.full(4096, -100.0, dtype=np.float32)
+    outside = np.array([95.0e6 - 20e3, 105.0e6 + 20e3])
+    assert np.all(np.isneginf(channel_powers_db(flat, 100.0e6, 10e6, outside, 12_500.0, 1.5)))
+
+
+def test_an_edge_channel_stays_a_peak_beside_a_neighbor_outside_the_capture() -> None:
+    """2.4 MS/s, 1 MHz steps: the grid point below the capture borrowed the
+    strong low-edge interference and hid a real signal at the edge channel."""
+    n, rate, center = 4096, 2.4e6, 146.5e6
+    spectrum = np.full(n, -100.0, dtype=np.float32)
+    spectrum[:8] = -20.0  # interference at the bottom of the capture
+    spectrum[int((146.0e6 - center) / rate * n + n / 2)] = -30.0  # a signal at 146 MHz
+    channels = np.array([146.0e6, 147.0e6])
+    locate, outer = locate_levels(spectrum, center, rate, channels, 1e6, 12_500.0, 1.5)
+    assert np.isneginf(outer[0])
+    assert local_peaks(locate, outer)[0]
+
+
+def test_a_window_narrower_than_a_bin_takes_the_nearest_bin() -> None:
+    n, rate = 32768, 10e6
+    bin_hz = rate / n
+    spectrum = np.full(n, -100.0, dtype=np.float32)
+    spectrum[n // 2] = -30.0  # the bin at the center frequency
+    # A 200 Hz window centered a third of a bin above that bin's center covers no
+    # bin center; it took the next bin up, which holds nothing.
+    level = channel_powers_db(spectrum, 0.0, rate, np.array([bin_hz / 3]), 200.0, 1.0)
+    assert level[0] == pytest.approx(-30.0, abs=0.01)
+
+
+def test_a_run_of_identical_levels_peaks_at_its_middle() -> None:
+    """Grid points finer than the FFT bins read alike: the peak was the run's
+    last point, a consistent bias to one side."""
+    assert list(np.flatnonzero(local_peaks(np.array([-90.0, -50, -50, -50, -90])))) == [2]
+    assert list(np.flatnonzero(local_peaks(np.array([-90.0, -50, -60, -50, -50])))) == [1, 3]
 
 
 def test_signal_peaks_take_each_signals_strongest_channel() -> None:

@@ -115,13 +115,25 @@ def locate_levels(
 def local_peaks(
     locate_db: np.ndarray, outer_db: tuple[float, float] = (-np.inf, -np.inf)
 ) -> np.ndarray:
-    """Channels at a signal's center: at least as strong as the channel below
-    and stronger than the one above (`outer_db`: the grid channels just past
-    each end, so a signal beyond an edge doesn't make the edge a peak). A
-    strong signal leaks into the channels beside it, 13-15 dB down 10 kHz away
-    for NFM; those slope down from its center and are never peaks."""
-    padded = np.concatenate(([outer_db[0]], locate_db, [outer_db[1]]))
-    peaks: np.ndarray = (locate_db >= padded[:-2]) & (locate_db > padded[2:])
+    """Channels at a signal's center: stronger than the channels on either side
+    (`outer_db`: the grid channels just past each end, so a signal beyond an
+    edge doesn't make the edge a peak). A strong signal leaks into the channels
+    beside it, 13-15 dB down 10 kHz away for NFM; those slope down from its
+    center and are never peaks. Neighbors that read exactly alike measured the
+    same FFT bins (a grid finer than the bins): such a run is one peak, at its
+    middle."""
+    n = len(locate_db)
+    peaks = np.zeros(n, dtype=bool)
+    if n == 0:
+        return peaks
+    edges = np.flatnonzero(np.diff(locate_db) != 0) + 1
+    starts = np.concatenate(([0], edges))
+    ends = np.concatenate((edges, [n])) - 1
+    level = locate_db[starts]
+    below = np.where(starts > 0, locate_db[starts - 1], outer_db[0])
+    above = np.where(ends < n - 1, locate_db[np.minimum(ends + 1, n - 1)], outer_db[1])
+    is_peak = (level > below) & (level > above)
+    peaks[(starts[is_peak] + ends[is_peak]) // 2] = True
     return peaks
 
 
@@ -168,18 +180,24 @@ def channel_powers_db(
     `spectrum_db` is compute_fft's output: fftshifted, scaled so a tone reads
     its amplitude. The bins a channel covers, summed and divided by the
     window's noise bandwidth, give the power a `bandwidth_hz` channel filter
-    passes. Channels outside the spectrum read -inf.
+    passes. A channel narrower than a bin, covering no bin center, takes the
+    bin nearest its center. Channels outside the spectrum read -inf.
     """
     n = len(spectrum_db)
     out = np.full(len(channels_hz), -np.inf)
     if n == 0 or len(channels_hz) == 0:
         return out
     bin_hz = sample_rate / n
-    # Bin k is centered at center_hz + (k - n/2) * bin_hz.
-    lo = np.ceil((channels_hz - bandwidth_hz / 2 - center_hz) / bin_hz + n / 2)
-    hi = np.ceil((channels_hz + bandwidth_hz / 2 - center_hz) / bin_hz + n / 2)
-    lo = np.clip(lo, 0, n).astype(np.intp)
-    hi = np.clip(np.maximum(hi, lo + 1), 0, n).astype(np.intp)
+    # Bin k is centered at center_hz + (k - n/2) * bin_hz; a channel takes the
+    # bins whose centers it covers, [lo, hi).
+    position = (channels_hz - center_hz) / bin_hz + n / 2
+    half = bandwidth_hz / 2 / bin_hz
+    lo = np.ceil(position - half)
+    hi = np.ceil(position + half)
+    narrow = hi <= lo
+    nearest = np.floor(position + 0.5)
+    lo = np.clip(np.where(narrow, nearest, lo), 0, n).astype(np.intp)
+    hi = np.clip(np.where(narrow, nearest + 1, hi), 0, n).astype(np.intp)
     inside = hi > lo
     if not inside.any():
         return out
