@@ -3,6 +3,7 @@ import logging
 import queue
 import sys
 import time
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -30,21 +31,15 @@ _DEFAULT_CHECK_INTERVAL_SECONDS = 1.0
 # backends get a device buffer of at least one whole prebuffer instead, deep
 # enough to ride out a stop-the-world GC pause (~100 ms with the TUI running).
 # The server may grant less than requested (PipeWire: ~60% of the PulseAudio
-# tlength), so the real capacity is measured at open (_fill_device_buffer).
+# tlength). Pacing, underflow accounting and the backlog bound all work from
+# the room the backend reports free (_device_room_reader); a wall-clock
+# estimate drifts whenever this thread is held up (GIL, CPU), and then held
+# audio back while the device ran dry.
 _CLIENT_QUEUE_BACKEND = sys.platform == "darwin"
 _MIN_DEVICE_BUFFER_SECONDS = 0.4
-# play() is entered once the device buffer is this close to having room, so it
-# waits only briefly (see _pace_device_write).
-_PACE_SLACK_SECONDS = 0.005
-# A play() call longer than this had to wait for room: the buffer is full.
-_PLAY_WAITED_SECONDS = 0.002
-# A full device buffer takes audio only as fast as it plays it (a quantum at a
-# time: 2048 frames on PipeWire here). Priming confirms a wait as "full" when,
-# for this long after it, writes have gone no faster than playback within one
-# quantum; a slow call that was a GC pause or a GIL wait is followed by writes
-# far faster than that.
-_FULL_CONFIRM_SECONDS = 0.2
-_FULL_SLACK_FRAMES = 8192
+# Shortest sleep while waiting for room; servers free it a quantum at a time
+# (2048 frames on PipeWire here).
+_ROOM_POLL_SECONDS = 0.002
 
 
 class AudioOutputWorker:
@@ -81,11 +76,10 @@ class AudioOutputWorker:
         self._prebuffered = False
         self._needs_flush = False
 
-        # Estimated audio buffered in a device-side buffer (non-CoreAudio),
-        # for underflow accounting: pushes add, wall-clock time drains.
-        self._device_buffer_seconds = 0.0
-        self._buffered_seconds = 0.0
-        self._buffered_at = 0.0
+        # Device-side buffer (non-CoreAudio): its capacity, and how to read
+        # the room free in it (None if the backend doesn't say).
+        self._device_frames = 0
+        self._device_room: Callable[[], int] | None = None
 
         self._resample_source_rate: float = 0.0
         self._resampler: StreamingPolyphaseResampler | None = None
@@ -263,54 +257,46 @@ class AudioOutputWorker:
                     self._drop_count += 1
                 except IndexError:
                     break
-        elif not _CLIENT_QUEUE_BACKEND:
-            self._pace_device_write(len(block))
+        elif self._device_room is not None:
+            self._wait_for_room(len(block))
 
         assert self.player is not None
-        started = time.perf_counter()
         if self._play_accepts_wait:
             self.player.play(block * gain, wait=False)
         else:
             self.player.play(block * gain)
         self._push_count += 1
         self._total_frames_out += len(block)
-        if not _CLIENT_QUEUE_BACKEND:
-            now = time.perf_counter()
-            if now - started > _PLAY_WAITED_SECONDS:
-                # play() waited for room, so the device buffer is now full;
-                # this re-anchors the estimate against sound-card clock drift.
-                self._buffered_seconds = self._device_buffer_seconds
-            else:
-                self._buffered_seconds = min(
-                    self._device_buffer_seconds,
-                    self._estimated_buffered_seconds() + len(block) / self.TARGET_RATE,
-                )
-            self._buffered_at = now
 
-    def _pace_device_write(self, frames: int) -> None:
-        """Sleep until the device buffer nearly has room for `frames`.
+    def _wait_for_room(self, frames: int) -> None:
+        """Sleep until the device buffer has room for `frames`.
 
         Left to wait for room itself, play() polls the sound server every
         millisecond; on PulseAudio each poll also allocates cyclic garbage in
         SoundCard, which lengthens the GC pauses that stall every thread.
+        Gives up after two buffers' time (a suspended sink) and lets play() wait.
         """
-        excess = (
-            self._estimated_buffered_seconds()
-            + frames / self.TARGET_RATE
-            - self._device_buffer_seconds
-        )
-        if excess > _PACE_SLACK_SECONDS:
-            time.sleep(excess - _PACE_SLACK_SECONDS)
+        frames = min(frames, self._device_frames)
+        deadline = time.perf_counter() + 2 * self._device_buffer_seconds
+        while (short := frames - self._room_frames()) > 0 and time.perf_counter() < deadline:
+            time.sleep(max(_ROOM_POLL_SECONDS, short / self.TARGET_RATE))
 
-    def _estimated_buffered_seconds(self) -> float:
-        return max(0.0, self._buffered_seconds - (time.perf_counter() - self._buffered_at))
+    def _room_frames(self) -> int:
+        assert self._device_room is not None
+        return min(self._device_frames, max(0, self._device_room()))
+
+    @property
+    def _device_buffer_seconds(self) -> float:
+        return self._device_frames / self.TARGET_RATE
 
     def _queue_depth(self) -> int:
         """Blocks of audio waiting to play."""
         if _CLIENT_QUEUE_BACKEND:
             q = getattr(self.player, "_queue", None)
             return len(q) if q is not None else 0
-        return int(self._estimated_buffered_seconds() * self.TARGET_RATE / self.BLOCK_SIZE)
+        if self._device_room is None:
+            return self._pre_buffer_blocks  # unknown: never report an underflow
+        return (self._device_frames - self._room_frames()) // self.BLOCK_SIZE
 
     def _trim_backlog(self, batch_duration: float) -> None:
         """Bound latency on backends that block in play().
@@ -319,13 +305,16 @@ class AudioOutputWorker:
         queue behind the full device buffer, and nothing would ever drain it
         faster than real time. Past two device buffers of backlog, drop the
         oldest batches down to half a buffer: the remainder still absorbs
-        jitter, and the hysteresis keeps this a rare, one-off glitch.
+        jitter, and the hysteresis keeps this a rare, one-off glitch. Audio
+        the device has room for now is not backlog: a stall of this thread
+        grows the queue and drains the device by the same amount.
         """
-        if self.audio_queue.qsize() * batch_duration <= 2 * self._device_buffer_seconds:
+        room = self._room_frames() / self.TARGET_RATE if self._device_room is not None else 0.0
+        if self.audio_queue.qsize() * batch_duration - room <= 2 * self._device_buffer_seconds:
             return
         keep = self._device_buffer_seconds / 2
         dropped = 0
-        while self.audio_queue.qsize() * batch_duration > keep:
+        while self.audio_queue.qsize() * batch_duration - room > keep:
             try:
                 self.audio_queue.get_nowait()
             except queue.Empty:
@@ -404,7 +393,6 @@ class AudioOutputWorker:
                 np.ceil(_MIN_DEVICE_BUFFER_SECONDS * self.TARGET_RATE / self.BLOCK_SIZE)
             )
             blocksize = max(self._pre_buffer_blocks, min_blocks) * self.BLOCK_SIZE
-        self._device_buffer_seconds = blocksize / self.TARGET_RATE
         self._player_cm = speaker.player(
             samplerate=self.TARGET_RATE,
             channels=2,
@@ -412,8 +400,10 @@ class AudioOutputWorker:
         )
         self.player = self._player_cm.__enter__()
         self._play_accepts_wait = "wait" in inspect.signature(self.player.play).parameters
-        if not _CLIENT_QUEUE_BACKEND:
-            self._fill_device_buffer(blocksize)
+        self._device_frames = blocksize
+        self._device_room = None if _CLIENT_QUEUE_BACKEND else _device_room_reader(self.player)
+        if self._device_room is not None:
+            self._start_full()
         logger.info(
             "audio_stream_opened source=%s device=%r speaker_id=%r rate=%d buffer_seconds=%.3f",
             self.source_id,
@@ -423,39 +413,16 @@ class AudioOutputWorker:
             self._device_buffer_seconds,
         )
 
-    def _fill_device_buffer(self, requested_frames: int) -> None:
-        """Prime the device buffer with silence and measure what it really holds.
+    def _start_full(self) -> None:
+        """Fill the device buffer with silence.
 
-        Writes silence until a wait for room is confirmed by the rate the
-        device then takes audio at (see _FULL_CONFIRM_SECONDS); what it holds
-        is what was written less what has played since. That capacity is what
-        pacing and underflow accounting work against. Erring high is harmless
-        (play() still blocks when the buffer is full); erring low keeps the
-        real buffer short of its cushion. The stream starts full, so no
-        separate prebuffer of real audio is needed.
+        Its capacity is the room the server reports before the first write;
+        that is what pacing and underflow accounting work against. Starting
+        full means no separate prebuffer of real audio is needed.
         """
-        assert self.player is not None
-        silence = np.zeros((self.BLOCK_SIZE, 2), dtype=np.float32)
-        written = 0
-        full_since: tuple[int, float] | None = None
-        while written < 2 * requested_frames:
-            started = time.perf_counter()
-            self.player.play(silence)
-            now = time.perf_counter()
-            written += self.BLOCK_SIZE
-            if full_since is None:
-                if now - started > _PLAY_WAITED_SECONDS:
-                    full_since = (written, now)
-                continue
-            accepted, elapsed = written - full_since[0], now - full_since[1]
-            if accepted > elapsed * self.TARGET_RATE + _FULL_SLACK_FRAMES:
-                full_since = None  # taking audio faster than it plays: not full
-            elif elapsed >= _FULL_CONFIRM_SECONDS:
-                written = max(self.BLOCK_SIZE, round(written - elapsed * self.TARGET_RATE))
-                break
-        self._device_buffer_seconds = written / self.TARGET_RATE
-        self._buffered_seconds = self._device_buffer_seconds
-        self._buffered_at = time.perf_counter()
+        assert self.player is not None and self._device_room is not None
+        self._device_frames = max(self.BLOCK_SIZE, self._device_room())
+        self.player.play(np.zeros((self._device_frames, 2), dtype=np.float32))
         self._prebuffered = True
 
     def _close_player(self) -> None:
@@ -468,6 +435,7 @@ class AudioOutputWorker:
             logger.warning("audio_stream_close_failed source=%s error=%r", self.source_id, e)
         self._player_cm = None
         self.player = None
+        self._device_room = None
         self._speaker_id = None
 
     def _maybe_follow_default(self) -> None:
@@ -537,6 +505,37 @@ class AudioOutputWorker:
 
     def request_flush(self) -> None:
         self._needs_flush = True
+
+
+def _device_room_reader(player: Any) -> Callable[[], int] | None:
+    """How to read the frames free in `player`'s device buffer, if SoundCard says.
+
+    WASAPI: buffer size less padding. PulseAudio: the stream's writable size,
+    which the client tracks locally (no server round trip); read under the
+    mainloop lock directly, since SoundCard's locking wrapper creates a class
+    per call (cyclic garbage).
+    """
+    available = getattr(player, "_render_available_frames", None)
+    if callable(available):
+        return lambda: int(available())
+    pulse = sys.modules.get("soundcard.pulseaudio")
+    try:
+        lib = pulse._pa  # type: ignore[union-attr]
+        mainloop = pulse._pulse.mainloop  # type: ignore[union-attr]
+        stream = player.stream
+        frame_bytes = 4 * int(player.channels)
+    except AttributeError, TypeError:
+        return None
+
+    def room() -> int:
+        lib.pa_threaded_mainloop_lock(mainloop)
+        try:
+            size = int(lib.pa_stream_writable_size(stream))
+        finally:
+            lib.pa_threaded_mainloop_unlock(mainloop)
+        return 0 if size >= 1 << 62 else size // frame_bytes  # (size_t)-1: error
+
+    return room
 
 
 def _coerce_speaker_spec(spec: str) -> str | int:
