@@ -746,22 +746,19 @@ class SpectrumWidget(ImageModeMixin, Widget):
         if device is None:
             return
         cfg = device.config
-        if cfg.tuning_mode == "free" and cfg.spectrum_span is not None:
-            caps = device.device.capabilities
-            center, span = resolve_view(cfg, caps)
-            w = self.size.width
-            step = max(span / w * 2, 1.0) if w > 0 else 1.0
-            lo, hi = full_view_range(cfg, caps)
-            new_center = min(max(center + direction * step, lo + span / 2), hi - span / 2)
-            try:
+        try:
+            if cfg.tuning_mode == "free" and cfg.spectrum_span is not None:
+                caps = device.device.capabilities
+                center, span = resolve_view(cfg, caps)
+                w = self.size.width
+                step = max(span / w * 2, 1.0) if w > 0 else 1.0
+                lo, hi = full_view_range(cfg, caps)
+                new_center = min(max(center + direction * step, lo + span / 2), hi - span / 2)
                 engine.update_device_config(device.device_id, spectrum_center=new_center)
-            except SDRException as e:
-                self.app._show_error(str(e))
-        else:
-            try:
+            else:
                 self.app._tune(direction)
-            except SDRException as e:
-                self.app._show_error(str(e))
+        except SDRException as e:
+            self.app._show_error(str(e))
 
     def _actual_freq_range(self, event: FFTUpdateEvent) -> tuple[float, float]:
         """Return (freq_min, freq_max) covered by the FFT event."""
