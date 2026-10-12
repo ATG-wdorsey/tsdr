@@ -44,6 +44,7 @@ from tsdr.core.tuning import (
     resolve_auto_step,
     save_previous_tune_state,
     snap_to_grid,
+    tune_state,
 )
 from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import format_hz
@@ -302,13 +303,21 @@ class TuningMixin(MixinBase):
             )
             self.show_status(f"No {where}")
             return
-        save_previous_tune_state(device)
+        before = tune_state(device)
         if searching:
-            if not search_jump(device.device_id, target):
-                self.show_status("That signal would move the LO; SEARCH keeps the dial")
-                return
+            jumped = search_jump(device.device_id, target)
+        elif device.config.tuning_mode == "free":
+            # In free tuning `[` / `]` never move the LO.
+            jumped = get_engine().update_device_config(
+                device.device_id, keep_lo=True, tuned_frequency=target
+            )
         else:
             self._apply_freq(device, target)
+            jumped = True
+        if not jumped:
+            self.show_status("That target would move the LO; the dial stays")
+            return
+        save_previous_tune_state(device, before)
         self.show_status(f"Jump: {format_hz(target, interval=1.0, long_suffix=True)}")
 
     def _swap_ab(self) -> None:

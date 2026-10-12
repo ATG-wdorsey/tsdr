@@ -293,6 +293,7 @@ class SDREngine:
         device_id: str,
         *,
         from_search: bool = False,
+        keep_lo: bool = False,
         while_search: SearchConfig | None = None,
         **changes: Unpack[DeviceConfigChanges],
     ) -> bool:
@@ -300,7 +301,8 @@ class SDREngine:
 
         DeviceContext handles worker notification (both I/O and pipeline workers).
         `from_search` marks SEARCH's own jumps: any other dial move stops SEARCH,
-        and a jump that would move the hardware is dropped. `while_search`
+        and a jump that would move the hardware is dropped. `keep_lo` drops any
+        change that would move the hardware (a `[` / `]` jump in free tuning). `while_search`
         applies the update only while that SEARCH run is still the device's,
         checked with the change itself: a jump or lockout decided for a run
         that a manual tune, a stop or a restart has replaced can't land.
@@ -363,11 +365,12 @@ class SDREngine:
         ):
             derived = self._derive_center(context, changes, caps)
             if derived != context.config.center_frequency:
-                if from_search:
+                if from_search or keep_lo:
                     logger.info(
-                        "search_jump_dropped device=%s to_hz=%.0f reason=would_recenter",
+                        "jump_dropped device=%s to_hz=%.0f search=%s reason=would_recenter",
                         device_id,
                         changes.get("tuned_frequency", 0.0),
+                        from_search,
                     )
                     return False
                 changes["center_frequency"] = derived

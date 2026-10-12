@@ -18,6 +18,7 @@ from tsdr.core.sdr.engine import SDREngine
 from tsdr.core.sdr.search import LOCKOUT_TAG, SearchStatus
 from tsdr.core.tuning_state import get_tuning_state, init_tuning_state
 from tsdr.devices import MockParams, mock
+from tsdr.tui import tuning_mixin as tuning_mixin_module
 from tsdr.tui.commands.sdr.search import SDRSearchCommand
 from tsdr.tui.keybindings import Action, Context, build_lookup
 from tsdr.tui.tuning_mixin import TuningMixin
@@ -55,6 +56,9 @@ def _keys(engine: SDREngine) -> SimpleNamespace:
     keys.show_status = keys.statuses.append
     keys._show_error = keys.errors.append
     keys._publish_tuning_state_changed = lambda: None
+    keys._apply_freq = lambda device, freq: engine.update_device_config(
+        device.device_id, tuned_frequency=freq
+    )
     return keys
 
 
@@ -168,6 +172,36 @@ def test_ctrl_x_unlocks_the_channel_or_all(engine: SDREngine) -> None:
     assert _search(engine).lockouts == frozenset()
     TuningMixin._unlock(keys)  # type: ignore[arg-type]
     assert keys.statuses[-1] == "No session lockouts to drop"
+
+
+def test_brackets_never_move_the_lo_in_free_tuning(engine: SDREngine) -> None:
+    """SEARCH off, free tuning, zero-IF radio: a memory at the LO was a target,
+    and tuning there moved the LO (146.470 -> 146.420 MHz)."""
+    engine.update_device_config("pluto", tuning_mode="free")
+    lo = engine.devices["pluto"].config.center_frequency
+    assert lo < DIAL
+    get_memory_store().add(int(lo), "at the LO", DemodSpec(mode="NFM"), 12_500)
+    keys = _keys(engine)
+    keys._latest_fft_by_device = {}
+    TuningMixin._jump_target(keys, -1)  # type: ignore[arg-type]
+    config = engine.devices["pluto"].config
+    assert (config.center_frequency, config.tuned_frequency) == (lo, DIAL)
+
+
+def test_a_refused_jump_leaves_the_ab_state_alone(
+    engine: SDREngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine.update_device_config("pluto", tuning_mode="free")
+    lo = engine.devices["pluto"].config.center_frequency
+    limits = (lo - 1e6, lo + 1e6)
+    monkeypatch.setattr(tuning_mixin_module, "jump_targets", lambda _d, _f: ([lo], limits))
+    keys = _keys(engine)
+    keys._latest_fft_by_device = {}
+    get_tuning_state().previous = None
+    TuningMixin._jump_target(keys, -1)  # type: ignore[arg-type]
+    assert keys.statuses[-1] == "That target would move the LO; the dial stays"
+    assert engine.devices["pluto"].config.center_frequency == lo
+    assert get_tuning_state().previous is None
 
 
 def test_command_starts_reports_and_stops(engine: SDREngine) -> None:

@@ -124,7 +124,8 @@ def jump_targets(
     as SEARCH sees them (channels on the step grid at or above the squelch,
     one per signal, not the one the dial is on). Without a demodulated channel,
     spectrum peaks stand in for signals. While SEARCH runs, only signals within
-    its range that it could stop on: not locked out, not at the LO."""
+    its range that it could stop on (not locked out). In free tuning, or while
+    SEARCH runs, nothing at the LO: tuning there would move it."""
     config = context.config
     channel = audio_channel(config)
     search = config.search
@@ -134,12 +135,35 @@ def jump_targets(
     else:
         limits = search_limits(context, channel)
         targets = [float(m.frequency) for m in get_memory_store().all()]
+    targets += _signal_targets(context, channel, fft, limits)
+    if channel is not None and (search is not None or config.tuning_mode == "free"):
+        lo_exclusion = abs(
+            lo_offset_for(
+                setting=config.lo_offset,
+                size_hz=config.lo_offset_hz,
+                channel_bandwidth=channel.bandwidth_hz,
+                sample_rate=config.sample_rate,
+                caps=context.device.capabilities,
+            )
+        )
+        targets = [f for f in targets if abs(f - config.center_frequency) >= lo_exclusion]
+    return targets, limits
+
+
+def _signal_targets(
+    context: SDRDeviceContext,
+    channel: AudioChannel | None,
+    fft: FFTUpdateEvent | None,
+    limits: tuple[float, float],
+) -> list[float]:
+    config = context.config
     if fft is None or len(fft.spectrum) == 0:
-        return targets, limits
+        return []
     if abs(fft.center_frequency - config.center_frequency) > fft.sample_rate / len(fft.spectrum):
-        return targets, limits  # a frame from before a retune
+        return []  # a frame from before a retune
     if channel is None or context.device.capabilities.provides_spectrum:
-        return targets + peak_frequencies(fft), limits
+        return peak_frequencies(fft)
+    search = config.search
     step = search.step_hz if search is not None else search_step(context, channel.mode)
     channels = step_grid(*limits, step)
     measured = channels + channel.passband_offset_hz
@@ -166,22 +190,8 @@ def jump_targets(
         half_width_hz=max(step, channel.bandwidth_hz) / 2,
     )
     if search is not None:
-        lo_exclusion = abs(
-            lo_offset_for(
-                setting=config.lo_offset,
-                size_hz=config.lo_offset_hz,
-                channel_bandwidth=channel.bandwidth_hz,
-                sample_rate=config.sample_rate,
-                caps=context.device.capabilities,
-            )
-        )
-        signals = [
-            f
-            for f in signals
-            if not search.is_locked_out(f, channel.bandwidth_hz)
-            and abs(f - config.center_frequency) >= lo_exclusion
-        ]
-    return targets + signals, limits
+        signals = [f for f in signals if not search.is_locked_out(f, channel.bandwidth_hz)]
+    return signals
 
 
 def search_jump(device_id: str, frequency_hz: float) -> bool:
