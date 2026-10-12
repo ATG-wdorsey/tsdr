@@ -308,6 +308,12 @@ alone. `SDRDeviceContext.analog_bandwidth_hz` holds the read-back width.
 
 ## Spectrum View (zoom/pan)
 
+A left column (`tui/widgets/db_scale.py:gutter_cols`) labels the spectrum's dB
+grid and holds the waterfall's color key; the plot, its strips and the
+waterfall start past it, and clicks map past it. The squelch line (squelch on)
+and SEARCH trigger line (SEARCH running) are drawn at `noise_equivalent_db`:
+where noise the channel measures at that level shows on the per-bin trace.
+
 The view is client state: `spectrum_center` / `spectrum_span` on `DeviceConfig`
 (None = track dial / full band). `spectrum_center` (panning) applies only in
 free tuning mode — in center mode the view always centers on the dial. `core/sdr/spectrum_view.py` (`resolve_view`,
