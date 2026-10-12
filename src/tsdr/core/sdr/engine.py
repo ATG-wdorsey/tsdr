@@ -660,8 +660,9 @@ class SDREngine:
         # Another demodulator starts at its own bandwidth: NFM's 12.5 kHz kept
         # into WFM, or CW's 200 Hz into NFM, leaves it nearly silent. LSB <-> USB
         # (one class) keep the user's, and with no demodulator before (a restore)
-        # the configured bandwidth stays unless it is too wide.
-        if new_cls is None:
+        # the configured bandwidth stays unless it is too wide. A fixed-width
+        # decoder (ADS-B, DAB, RTTY) ignores the setting: it is left alone.
+        if new_cls is None or new_cls.FIXED_CHANNEL_BANDWIDTH is not None:
             new_bw = None
         elif old_cls is not None and old_cls is not new_cls:
             new_bw = new_cls.DEFAULT_CHANNEL_BANDWIDTH

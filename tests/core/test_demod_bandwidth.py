@@ -53,3 +53,13 @@ def test_a_restored_demodulator_keeps_the_configured_bandwidth(engine: SDREngine
     engine.update_device_config("radio", channel_bandwidth=20_000.0)
     engine.set_audio_demod("radio", DemodSpec(mode="NFM"))
     assert _bandwidth(engine) == 20_000.0
+
+
+def test_a_fixed_width_decoder_leaves_the_setting_alone(engine: SDREngine) -> None:
+    """ADS-B and DAB measure their own fixed width; setting their (inherited)
+    default left 12.5 kHz configured, which other code then took as theirs."""
+    engine.set_audio_demod("radio", DemodSpec(mode="NFM"))
+    engine.update_device_config("radio", channel_bandwidth=15_000.0)
+    engine.set_audio_demod("radio", DemodSpec(mode="ADSB"))
+    assert _bandwidth(engine) == 15_000.0
+    assert engine.devices["radio"].demod_profile.channel_bandwidth == 2_000_000
