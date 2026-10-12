@@ -474,15 +474,49 @@ def test_edges_set_while_stopped_apply_at_the_next_start(engine: SDREngine) -> N
     assert search.high_hz == _config(engine).center_frequency + fitting_offset(RATE, 12_500.0)
 
 
-def test_an_edge_on_the_wrong_side_drops_the_other(engine: SDREngine) -> None:
+def test_an_edge_on_the_wrong_side_is_refused(engine: SDREngine) -> None:
+    """It used to drop the other edge silently (the user's call: refuse it)."""
     engine.update_device_config("pluto", tuning_mode="free")
     engine.update_device_config("pluto", tuned_frequency=145.0e6)
     set_search_edge("pluto", "high")
     engine.update_device_config("pluto", tuned_frequency=147.0e6)
-    set_search_edge("pluto", "low")
-    search = start_search("pluto")
-    assert search.low_hz == 147.0e6
-    assert search.high_hz > 147.0e6
+    with pytest.raises(SDRException, match="lower edge .* must be below the upper edge"):
+        set_search_edge("pluto", "low")
+    assert search_control.search_settings("pluto").high_hz == 145.0e6
+    assert search_control.search_settings("pluto").low_hz is None
+
+
+def test_a_conflicting_partial_range_is_refused_and_changes_nothing(engine: SDREngine) -> None:
+    """Given only a lower edge above the kept upper one, the command searched
+    the whole band and dropped the lower edge it was given."""
+    start_search("pluto", low_hz=146.0e6, high_hz=147.0e6)
+    with pytest.raises(SDRException, match="must be below the upper edge"):
+        start_search("pluto", low_hz=147.2e6)
+    with pytest.raises(SDRException, match="above the squelch"):
+        start_search("pluto", low_hz=146.5e6, trigger_db=-90.0)  # squelch -50
+    settings = search_control.search_settings("pluto")
+    assert (settings.low_hz, settings.high_hz) == (146.0e6, 147.0e6)
+    assert (_config(engine).search.low_hz, _config(engine).search.high_hz) == (146.0e6, 147.0e6)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"trigger_db": float("nan")},
+        {"hold_s": float("nan")},
+        {"max_dwell_s": float("nan")},
+        {"step_hz": float("nan")},
+        {"step_hz": float("inf")},
+        {"step_hz": 0.0},
+        {"low_hz": float("nan")},
+    ],
+)
+def test_values_that_are_not_finite_or_positive_are_refused(
+    engine: SDREngine, bad: dict[str, float]
+) -> None:
+    with pytest.raises(SDRException):
+        start_search("pluto", **bad)
+    assert _config(engine).search is None
 
 
 def test_full_band_forgets_the_edges(engine: SDREngine) -> None:

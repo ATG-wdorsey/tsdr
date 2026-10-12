@@ -46,6 +46,10 @@ class SearchConfig:
     run: int = 0  # bumped by each start, so a jump requested by an earlier run is dropped
 
     def validate(self) -> None:
+        numbers = (self.low_hz, self.high_hz, self.step_hz, self.hold_s)
+        optional = (self.trigger_db, self.max_dwell_s)
+        if not all(math.isfinite(v) for v in numbers + tuple(v for v in optional if v is not None)):
+            raise ValueError(f"search settings must be finite numbers, got {self}")
         if not 0 < self.low_hz < self.high_hz:
             raise ValueError(f"search range must be increasing, got {self.low_hz}-{self.high_hz}")
         if self.step_hz <= 0:

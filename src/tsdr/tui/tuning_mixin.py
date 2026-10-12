@@ -205,7 +205,11 @@ class TuningMixin(MixinBase):
         device = self._focused()
         if device is None:
             return
-        frequency = set_search_edge(device.device_id, edge)
+        try:
+            frequency = set_search_edge(device.device_id, edge)
+        except SDRException as e:
+            self._show_error(str(e))
+            return
         where = "lower" if edge == "low" else "upper"
         self.show_status(
             f"SEARCH {where} edge: {format_hz(frequency, decimals=4, long_suffix=True)}"

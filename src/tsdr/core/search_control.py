@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import math
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -82,6 +83,21 @@ def _search_range(
     if low >= high:
         return limit_low, limit_high
     return low, high
+
+
+def _edge_in_use(edge: float | None, limit_low: float, limit_high: float) -> float | None:
+    """A kept edge, if it lies within this capture (one set on another band doesn't)."""
+    return edge if edge is not None and limit_low - 1.0 <= edge <= limit_high + 1.0 else None
+
+
+def _check_edge_order(edges: SearchSettings, limit_low: float, limit_high: float) -> None:
+    low = _edge_in_use(edges.low_hz, limit_low, limit_high)
+    high = _edge_in_use(edges.high_hz, limit_low, limit_high)
+    if low is not None and high is not None and low >= high:
+        raise SDRException(
+            f"The lower edge ({low / 1e6:.4f} MHz) must be below the upper edge "
+            f"({high / 1e6:.4f} MHz)"
+        )
 
 
 def search_step_floor(config: DeviceConfig) -> float:
@@ -211,6 +227,22 @@ def start_search(
             f"{channel.bandwidth_hz / 1e3:g} kHz wide"
         )
 
+    for name, value in (
+        ("lower edge", low_hz),
+        ("upper edge", high_hz),
+        ("trigger", trigger_db),
+        ("hold", hold_s),
+        ("dwell", max_dwell_s),
+        ("step", step_hz),
+    ):
+        if value is not None and not math.isfinite(value):
+            raise SDRException(f"The {name} must be a finite number")
+    if step_hz is not None and step_hz <= 0:
+        raise SDRException("The step must be positive")
+    if (hold_s is not None and hold_s < 0) or (max_dwell_s is not None and max_dwell_s < 0):
+        raise SDRException("Hold and dwell must not be negative")
+
+    # Checked in full before any setting is kept: a refused command changes nothing.
     settings = search_settings(device_id)
     limit_low, limit_high = search_limits(context, channel)
     for edge in (low_hz, high_hz):
@@ -219,15 +251,16 @@ def start_search(
                 f"The search range must lie within {limit_low / 1e6:.4f}-"
                 f"{limit_high / 1e6:.4f} MHz, the captured band"
             )
-    if full_band:
-        settings.low_hz = settings.high_hz = None
-    if low_hz is not None and high_hz is not None and low_hz >= high_hz:
-        raise SDRException("The search range's lower edge must be below its upper edge")
+    edges = SearchSettings(
+        low_hz=None if full_band else settings.low_hz,
+        high_hz=None if full_band else settings.high_hz,
+    )
     if low_hz is not None:
-        settings.low_hz = low_hz
+        edges.low_hz = low_hz
     if high_hz is not None:
-        settings.high_hz = high_hz
-    low, high = _search_range(settings, limit_low, limit_high)
+        edges.high_hz = high_hz
+    _check_edge_order(edges, limit_low, limit_high)
+    low, high = _search_range(edges, limit_low, limit_high)
 
     trigger_given = trigger_db is not None
     if trigger_db is None:
@@ -269,6 +302,7 @@ def start_search(
     if not channel.squelch_enabled:
         engine.update_squelch(device_id, "audio", enabled=True)
     engine.update_device_config(device_id, search=config, tuning_mode="free")
+    settings.low_hz, settings.high_hz = edges.low_hz, edges.high_hz
     if trigger_given:
         settings.trigger_db = trigger_db
     settings.hold_s, settings.max_dwell_s = hold, max_dwell_s
@@ -288,23 +322,23 @@ def start_search(
 
 def set_search_edge(device_id: str, edge: Literal["low", "high"]) -> float:
     """Put a SEARCH edge at the dial, for the running SEARCH or the next one.
-    An opposite edge on the wrong side is dropped. Returns the frequency."""
+    An edge on the wrong side of the other one is refused. Returns the frequency."""
     engine = get_engine()
     context = engine.get_device(device_id)
     frequency = context.config.tuned_frequency
     settings = search_settings(device_id)
-    if edge == "low":
-        settings.low_hz = frequency
-        if settings.high_hz is not None and settings.high_hz <= frequency:
-            settings.high_hz = None
-    else:
-        settings.high_hz = frequency
-        if settings.low_hz is not None and settings.low_hz >= frequency:
-            settings.low_hz = None
-    search = context.config.search
     channel = audio_channel(context.config)
+    limits = search_limits(context, channel)
+    proposed = SearchSettings(low_hz=settings.low_hz, high_hz=settings.high_hz)
+    if edge == "low":
+        proposed.low_hz = frequency
+    else:
+        proposed.high_hz = frequency
+    _check_edge_order(proposed, *limits)
+    settings.low_hz, settings.high_hz = proposed.low_hz, proposed.high_hz
+    search = context.config.search
     if search is not None and channel is not None:
-        low, high = _search_range(settings, *search_limits(context, channel))
+        low, high = _search_range(settings, *limits)
         engine.update_device_config(
             device_id, while_search=search, search=replace(search, low_hz=low, high_hz=high)
         )

@@ -78,6 +78,9 @@ def test_braces_set_the_edges_at_the_dial(engine: SDREngine) -> None:
     TuningMixin._set_search_edge(keys, "low")  # type: ignore[arg-type]
     assert _search(engine).low_hz == DIAL
     assert keys.statuses[-1] == "SEARCH lower edge: 146.52 MHz"
+    TuningMixin._set_search_edge(keys, "high")  # type: ignore[arg-type]  # at the lower edge
+    assert "must be below the upper edge" in keys.errors[-1]
+    assert _search(engine).low_hz == DIAL and _search(engine).high_hz > DIAL
 
 
 def test_slash_starts_and_stops_search(engine: SDREngine) -> None:

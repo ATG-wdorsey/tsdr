@@ -209,7 +209,8 @@ Search (find activity within the captured band):
   before its hold ends; other tuning by hand, or stopping the radio, stops it.
   For narrowband modes only (not WFM).
 - `{` / `}`: put SEARCH's lower / upper edge at the dial (without edges it
-  searches the whole captured band; an edge outside the band is ignored).
+  searches the whole captured band; an edge outside the band is ignored, and
+  one on the wrong side of the other edge is refused).
 - `x`: lock out the current channel for this session. SEARCH stops only on a
   signal's center (a channel stronger than its neighbors), so the edges of a
   locked-out signal, which a strong one pushes over the trigger 10-15 kHz
