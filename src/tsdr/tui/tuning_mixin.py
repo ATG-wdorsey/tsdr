@@ -11,14 +11,12 @@ from tsdr.core.band_stack import (
     get_band_stack,
     suspended_writeback,
 )
-from tsdr.core.bandplans import get_bandplan_store
 from tsdr.core.demod_spec import PreviousTuneState
 from tsdr.core.events.events import (
     BandStackChangedEvent,
     TuningStateChangedEvent,
 )
 from tsdr.core.landmarks import next_target
-from tsdr.core.memories import get_memory_store
 from tsdr.core.preferences import save_tuning_state
 from tsdr.core.sdr.config import LoOffset, TuningMode
 from tsdr.core.sdr.device_context import SDRDeviceContext
@@ -28,6 +26,7 @@ from tsdr.core.sdr.search import TRIGGER_ABOVE_SQUELCH_DB
 from tsdr.core.sdr.spectrum_view import adjusted_span
 from tsdr.core.sdr.tune_policy import effective_lo_side
 from tsdr.core.search_control import (
+    jump_targets,
     lock_out_channel,
     set_search_edge,
     set_search_step,
@@ -265,19 +264,10 @@ class TuningMixin(MixinBase):
         device = self._focused()
         if device is None:
             return
-        memories = get_memory_store().all()
-        bandplan = get_bandplan_store().active
-        fft = self._latest_fft_by_device.get(device.device_id)
-        target = next_target(
-            direction,
-            float(device.config.tuned_frequency),
-            fft,
-            memories,
-            bandplan,
-            device.device.capabilities.frequency_range,
-        )
+        targets, limits = jump_targets(device, self._latest_fft_by_device.get(device.device_id))
+        target = next_target(direction, float(device.config.tuned_frequency), targets, limits)
         if target is None:
-            self.show_status("No landmark or peak")
+            self.show_status("No signal or memory further in the band")
             return
         save_previous_tune_state(device)
         self._apply_freq(device, target)

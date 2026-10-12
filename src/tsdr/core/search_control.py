@@ -7,17 +7,22 @@ import logging
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-from tsdr.core.events.events import MemoriesChangedEvent
+from tsdr.core.events.events import FFTUpdateEvent, MemoriesChangedEvent
+from tsdr.core.landmarks import peak_frequencies
 from tsdr.core.memories import get_memory_store
 from tsdr.core.sdr.device_context import DeviceState, SDRDeviceContext
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
 from tsdr.core.sdr.pipeline.stages.search_stage import AudioChannel, audio_channel
+from tsdr.core.sdr.processing import window_enbw_bins
 from tsdr.core.sdr.search import (
     DEFAULT_HOLD_S,
     LOCKOUT_TAG,
     MAX_CHANNEL_BANDWIDTH_HZ,
     SearchConfig,
+    channel_powers_db,
+    signal_peaks,
+    step_grid,
 )
 from tsdr.core.sdr.tune_policy import fitting_offset
 from tsdr.core.tuning import resolve_auto_step
@@ -48,10 +53,11 @@ def search_settings(device_id: str) -> SearchSettings:
     return _settings.setdefault(device_id, SearchSettings())
 
 
-def search_limits(context: SDRDeviceContext, channel: AudioChannel) -> tuple[float, float]:
-    """The widest range SEARCH can cover without moving the hardware."""
+def search_limits(context: SDRDeviceContext, channel: AudioChannel | None) -> tuple[float, float]:
+    """The widest range SEARCH (or `[` / `]`) can cover without moving the hardware."""
     config = context.config
-    half = fitting_offset(config.sample_rate, channel.bandwidth_hz)
+    bandwidth = channel.bandwidth_hz if channel is not None else 0.0
+    half = fitting_offset(config.sample_rate, bandwidth)
     low, high = config.center_frequency - half, config.center_frequency + half
     frequency_range = context.device.capabilities.frequency_range
     if frequency_range is not None:
@@ -75,6 +81,43 @@ def search_step(context: SDRDeviceContext, mode: str) -> float:
     """The tuning step (`s`), or the mode's channel raster when it is on auto."""
     step = get_tuning_state().step
     return step if step is not None else resolve_auto_step(mode, context.config.tuned_frequency)
+
+
+def jump_targets(
+    context: SDRDeviceContext, fft: FFTUpdateEvent | None
+) -> tuple[list[float], tuple[float, float]]:
+    """Targets for `[` / `]` and the band they stay in: memories, and signals
+    as SEARCH sees them (channels on the step grid at or above the squelch,
+    one per signal, not the one the dial is on). Without a demodulated channel,
+    spectrum peaks stand in for signals."""
+    config = context.config
+    channel = audio_channel(config)
+    limits = search_limits(context, channel)
+    targets = [float(m.frequency) for m in get_memory_store().all()]
+    if fft is None or len(fft.spectrum) == 0:
+        return targets, limits
+    if abs(fft.center_frequency - config.center_frequency) > fft.sample_rate / len(fft.spectrum):
+        return targets, limits  # a frame from before a retune
+    if channel is None or context.device.capabilities.provides_spectrum:
+        return targets + peak_frequencies(fft), limits
+    step = search_step(context, channel.mode)
+    channels = step_grid(*limits, step)
+    levels = channel_powers_db(
+        fft.spectrum,
+        fft.center_frequency,
+        fft.sample_rate,
+        channels + channel.passband_offset_hz,
+        channel.bandwidth_hz,
+        window_enbw_bins(config.fft_window, len(fft.spectrum)),
+    )
+    signals = signal_peaks(
+        channels,
+        levels,
+        channel.squelch_db,
+        around_hz=config.tuned_frequency,
+        half_width_hz=max(step, channel.bandwidth_hz) / 2,
+    )
+    return targets + signals, limits
 
 
 def start_search(

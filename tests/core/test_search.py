@@ -13,6 +13,7 @@ from tsdr.core.sdr.search import (
     SearchConfig,
     SearchController,
     channel_powers_db,
+    signal_peaks,
 )
 from tsdr.radio.dsp.squelch import iq_power_db
 
@@ -310,3 +311,18 @@ def test_without_a_trigger_it_follows_the_squelch() -> None:
     run.signals[round(145.5e6)] = SQUELCH + 7.0
     run.tick(0.3)
     assert run.jumps == [145.5e6]
+
+
+def test_signal_peaks_take_each_signals_strongest_channel() -> None:
+    channels = np.arange(10) * 5_000.0
+    levels = np.array([-99, -70, -60, -75, -99, -99, -65, -99, -72, -71], dtype=float)
+    assert signal_peaks(channels, levels, -80.0) == [10_000.0, 30_000.0, 45_000.0]
+
+
+def test_signal_peaks_leave_out_the_signal_the_dial_is_on() -> None:
+    channels = np.arange(10) * 5_000.0
+    levels = np.array([-99, -70, -60, -75, -99, -99, -65, -99, -99, -99], dtype=float)
+    # Dial at 15 kHz, off the strongest channel of its signal: that signal isn't a target.
+    assert signal_peaks(channels, levels, -80.0, around_hz=15_000.0, half_width_hz=6_250.0) == [
+        30_000.0
+    ]

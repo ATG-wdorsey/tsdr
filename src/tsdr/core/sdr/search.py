@@ -62,13 +62,46 @@ class SearchConfig:
 
     def channels(self) -> np.ndarray:
         """Channel centers: the step grid within [low_hz, high_hz]."""
-        first = math.ceil(self.low_hz / self.step_hz - 1e-9)
-        last = math.floor(self.high_hz / self.step_hz + 1e-9)
-        return np.arange(first, last + 1, dtype=np.float64) * self.step_hz
+        return step_grid(self.low_hz, self.high_hz, self.step_hz)
 
     def is_locked_out(self, frequency_hz: float, bandwidth_hz: float) -> bool:
         half = max(self.step_hz, bandwidth_hz) / 2
         return any(abs(frequency_hz - f) < half for f in self.lockouts | self.memory_lockouts)
+
+
+def step_grid(low_hz: float, high_hz: float, step_hz: float) -> np.ndarray:
+    """Multiples of `step_hz` within [low_hz, high_hz]."""
+    first = math.ceil(low_hz / step_hz - 1e-9)
+    last = math.floor(high_hz / step_hz + 1e-9)
+    return np.arange(first, last + 1, dtype=np.float64) * step_hz
+
+
+def signal_peaks(
+    channels_hz: np.ndarray,
+    levels_db: np.ndarray,
+    threshold_db: float,
+    *,
+    around_hz: float | None = None,
+    half_width_hz: float = 0.0,
+) -> list[float]:
+    """One frequency per signal: the strongest channel of each run of adjacent
+    channels at or above `threshold_db`. A run with a channel within
+    `half_width_hz` of `around_hz` (the signal the dial is on) is left out."""
+    active = levels_db >= threshold_db
+    peaks: list[float] = []
+    i, n = 0, len(channels_hz)
+    while i < n:
+        if not active[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and active[j + 1]:
+            j += 1
+        run = slice(i, j + 1)
+        if around_hz is None or not np.any(np.abs(channels_hz[run] - around_hz) < half_width_hz):
+            peaks.append(float(channels_hz[i + int(np.argmax(levels_db[run]))]))
+        i = j + 1
+    return peaks
 
 
 @dataclass(frozen=True)

@@ -14,10 +14,12 @@ from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.events.events import (
     ConfigChangedEvent,
     Event,
+    FFTUpdateEvent,
     MemoriesChangedEvent,
     SearchStatusEvent,
     SearchTuneEvent,
 )
+from tsdr.core.landmarks import next_target
 from tsdr.core.memories import get_memory_store, init_memory_store
 from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.device_context import DeviceState
@@ -30,6 +32,7 @@ from tsdr.core.sdr.search import LOCKOUT_TAG
 from tsdr.core.sdr.tune_policy import fitting_offset
 from tsdr.core.search_control import (
     clear_session_lockouts,
+    jump_targets,
     lock_out_channel,
     set_search_edge,
     set_search_step,
@@ -410,3 +413,43 @@ def test_stopping_the_radio_stops_search(engine: SDREngine) -> None:
     start_search("pluto")
     engine.stop_device("pluto")
     assert _config(engine).search is None
+
+
+# --- [ / ] targets ------------------------------------------------------------
+
+
+def _fft(config: DeviceConfig, tones: dict[float, float]) -> FFTUpdateEvent:
+    batch = _batch(config, 0.0, tones)
+    assert batch.spectrum is not None
+    return FFTUpdateEvent(
+        device_id="pluto",
+        spectrum=batch.spectrum,
+        frequencies=None,
+        center_frequency=config.center_frequency,
+        sample_rate=RATE,
+    )
+
+
+def test_jump_targets_are_signals_on_the_grid_and_memories_in_the_band(engine: SDREngine) -> None:
+    engine.update_squelch("pluto", "audio", threshold_db=-80.0)
+    store = get_memory_store()
+    store.add(146_000_000, "in band", DemodSpec(mode="NFM"), 12_500)
+    store.add(160_000_000, "out of band", DemodSpec(mode="NFM"), 12_500)
+    context = engine.devices["pluto"]
+    # An off-grid carrier, one under the squelch, and the one the dial is on.
+    fft = _fft(context.config, {147.0031e6: -30.0, 145.5e6: -112.0, DIAL: -30.0})
+    targets, limits = jump_targets(context, fft)
+    assert 147.0e6 in targets  # on the 12.5 kHz grid
+    assert 146.0e6 in targets
+    assert not any(abs(t - DIAL) < 6_250.0 for t in targets)
+    assert not any(abs(t - 145.5e6) < 6_250.0 for t in targets)
+    assert next_target(1, DIAL, targets, limits) == 147.0e6
+    assert next_target(-1, DIAL, targets, limits) == 146.0e6
+    assert next_target(1, 147.0e6, targets, limits) is None  # 160 MHz is beyond the band
+
+
+def test_jump_targets_without_a_demodulator_use_spectrum_peaks(engine: SDREngine) -> None:
+    engine.remove_pipeline("pluto", "audio")
+    context = engine.devices["pluto"]
+    targets, _ = jump_targets(context, _fft(context.config, {147.0031e6: -30.0}))
+    assert any(abs(t - 147.0031e6) < RATE / context.config.fft_size for t in targets)

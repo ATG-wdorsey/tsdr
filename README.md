@@ -178,7 +178,11 @@ Tuning:
 - `←` / `→`: tune down / up one step.
 - `Shift+←` / `Shift+→`: tune one coarse step.
 - `Alt+←` / `Ctrl+←`, `Alt+→` / `Ctrl+→`: tune one fine step.
-- `[` / `]`: jump to the previous / next tuning target (memory or band).
+- `[` / `]`: jump to the previous / next signal or memory within the captured
+  band. A signal is what SEARCH would stop on: channels on the tuning-step grid
+  at or above the squelch, taken once each at the strongest channel (without a
+  demodulator, spectrum peaks). They stop at the band's edge, so in free
+  tuning they never move the LO.
 - `s` / `S`: cycle the tuning step size forward / backward.
 - `c`: toggle center / free tuning (center: hardware follows every dial move;
   free: DSP offset until the band edge; entering center recenters).
