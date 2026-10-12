@@ -662,6 +662,16 @@ class SDREngine:
             else None
         )
 
+        # The squelch belongs to the receiver, not the mode: keep it.
+        new_pc = PipelineConfig(stages=new_stages_tuple, audio_spec=spec)
+        if old_pipeline is not None:
+            new_pc = replace(
+                new_pc,
+                squelch_enabled=old_pipeline.squelch_enabled,
+                squelch_threshold_db=old_pipeline.squelch_threshold_db,
+                squelch_hang_ms=old_pipeline.squelch_hang_ms,
+            )
+
         can_swap_in_place = (
             device_id in self._audio_workers
             and old_pipeline is not None
@@ -673,7 +683,6 @@ class SDREngine:
             self._drain_audio_queue(device_id)
             self._audio_workers[device_id].request_flush()
 
-            new_pc = PipelineConfig(stages=new_stages_tuple, audio_spec=spec)
             new_pipelines = MappingProxyType(dict(context.config.pipelines) | {"audio": new_pc})
             changes: dict[str, Any] = {"pipelines": new_pipelines}
             if new_bw is not None:
@@ -686,11 +695,7 @@ class SDREngine:
         self.remove_pipeline(device_id, "audio")
         if new_bw is not None:
             self.update_device_config(device_id, channel_bandwidth=new_bw)
-        self.add_pipeline(
-            device_id,
-            "audio",
-            PipelineConfig(stages=new_stages_tuple, audio_spec=spec),
-        )
+        self.add_pipeline(device_id, "audio", new_pc)
 
         if context.demod_profile and context.demod_profile.has_audio:
             self.start_audio_output(device_id)
