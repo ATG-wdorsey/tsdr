@@ -367,18 +367,18 @@ class SDREngine:
         config = context.config
         # The pending demodulator and bandwidth, not the current ones: recalls
         # set bandwidth and tune in one update, and a demod switch changes both.
+        # The profile's width is the pending setting for audio modes and a
+        # decoder's own fixed width (ADS-B, DAB) whatever the setting says.
         mode = active_mode_of(changes.get("pipelines", config.pipelines))
         profile = (
             None
             if mode == "RAW"
             else build_profile(mode, changes.get("channel_bandwidth", config.channel_bandwidth))
         )
-        if changes.get("channel_bandwidth") is not None:
-            bw = float(changes["channel_bandwidth"])
-        elif profile is not None:
-            bw = profile.channel_bandwidth
+        if profile is not None:
+            bw = float(profile.channel_bandwidth)
         else:
-            bw = config.channel_bandwidth or 0.0
+            bw = float(changes.get("channel_bandwidth") or config.channel_bandwidth or 0.0)
         tuned = changes.get("tuned_frequency", config.tuned_frequency)
         center = changes.get("center_frequency", config.center_frequency)
         sample_rate = changes.get("sample_rate", config.sample_rate)
