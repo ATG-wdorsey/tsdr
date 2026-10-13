@@ -25,8 +25,14 @@ def _pll_stereo_carrier(
     integrator_in: float,
     pll_alpha: float,
     pll_beta: float,
+    carrier_lead: float,
 ) -> tuple[np.ndarray, float, float]:
     """PLL loop: track 19 kHz pilot, generate coherent 38 kHz carrier.
+
+    The loop locks in quadrature: for a filtered pilot sin(theta_f), phase =
+    theta_f - pi/2. The band-pass delays the pilot, theta_f = theta -
+    carrier_lead / 2, while the subcarrier, sin(2 theta), is undelayed; so the
+    carrier in phase with it is -2 sin(2 phase + carrier_lead) = 2 sin(2 theta).
 
     Returns (carrier_38k, phase_out, integrator_out).
     """
@@ -38,7 +44,7 @@ def _pll_stereo_carrier(
     two_pi = 2.0 * math.pi
 
     for i in range(n):
-        carrier_38k[i] = 2.0 * math.cos(2.0 * phase)
+        carrier_38k[i] = -2.0 * math.sin(2.0 * phase + carrier_lead)
         error = pilot_filtered[i] * (-math.sin(phase))
         integrator += pll_beta * error
         freq_correction = pll_alpha * error + integrator
@@ -238,6 +244,10 @@ class WidebandFMDemodulator(Demodulator):
         # here because DF-I's padded buffer copy overhead isn't amortized at m=1.
         pilot_taps = firwin(128, [18500, 19500], pass_zero=False, fs=self.intermediate_rate)
         self._pilot_bp = StreamingFilter(pilot_taps, [1.0], dtype=np.float32)
+        # The band-pass delays the pilot by (taps - 1) / 2 samples; the 38 kHz
+        # carrier leads by twice that phase to match the undelayed subcarrier.
+        pilot_delay = (len(pilot_taps) - 1) / 2
+        self._carrier_lead = 2.0 * (2.0 * np.pi * 19000.0 / self.intermediate_rate) * pilot_delay
 
         freqs = np.fft.rfftfreq(_PILOT_FFT_SIZE, 1.0 / self.intermediate_rate)
         self._pilot_bins = np.abs(freqs - 19000.0) <= 500.0
@@ -382,6 +392,7 @@ class WidebandFMDemodulator(Demodulator):
             self.pll_integrator,
             self.pll_alpha,
             self.pll_beta,
+            self._carrier_lead,
         )
         self.pll_phase = phase
         self.pll_freq = 2.0 * np.pi * 19000.0 / self.intermediate_rate

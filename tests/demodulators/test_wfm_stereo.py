@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from tsdr.core.sdr.io import load_iq
 from tsdr.radio.demodulators.wfm import WidebandFMDemodulator
@@ -209,3 +210,19 @@ def test_bright_treble_keeps_stereo():
     demod = WidebandFMDemodulator(sample_rate=SAMPLE_RATE, rds_enabled=False)
     readings = _pilot_readings(demod, _broadcast(program, program, SAMPLE_RATE), SAMPLE_RATE)
     assert all(stereo for _, stereo in readings)
+
+
+@pytest.mark.parametrize("rate", [240_000, 250_000, 256_000, 300_000])
+def test_stereo_separation_at_any_intermediate_rate(rate: int):
+    # 30 % modulation: the FM spectrum fits the 200 kHz channel filter, which
+    # would otherwise limit the separation itself
+    t = np.arange(int(rate * 1.5)) / rate
+    tone = 0.3 * np.sin(2 * np.pi * 1000 * t)
+    silence = np.zeros_like(t)
+    mono = WidebandFMDemodulator(sample_rate=rate, rds_enabled=False)
+    full_level, _ = _tone_levels(mono, _broadcast(tone, tone, rate, pilot=False), rate)
+    for left_in, right_in, loud in ((tone, silence, 0), (silence, tone, 1)):
+        demod = WidebandFMDemodulator(sample_rate=rate, rds_enabled=False)
+        levels = _tone_levels(demod, _broadcast(left_in, right_in, rate), rate)
+        assert abs(_db(levels[loud], full_level)) < 0.5
+        assert _db(levels[1 - loud], full_level) < -40
