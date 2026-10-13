@@ -350,7 +350,7 @@ Available stages: `agc`, `demodulator`, `event_emitter`, `fft`, `frequency_shift
 ## Demodulators
 
 - **WFM**: Broadcast FM (±75 kHz deviation, 50/75 µs de-emphasis, stereo via PLL-locked 19 kHz pilot, RDS decode)
-- **NFM**: Narrowband FM (configurable deviation, 750 µs de-emphasis, squelch)
+- **NFM**: Narrowband FM (configurable deviation, 750 µs de-emphasis, CTCSS filtered by a 300 Hz high-pass, squelch)
 - **AM**: Envelope detection with DC blocker, AGC, audio LPF, squelch
 - **USB/LSB**: Single sideband via shift-LPF-unshift (rejects opposite sideband)
 - **CW**: Morse code with explicit BFO; Morse text decoder runs alongside audio output

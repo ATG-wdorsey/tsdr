@@ -4,7 +4,13 @@ from tsdr.radio.dsp.agc import AGC
 from tsdr.radio.dsp.costas import CostasLoop
 from tsdr.radio.dsp.dc_blocker import DCBlocker
 from tsdr.radio.dsp.dpll import DPLLBitSync
-from tsdr.radio.dsp.filters import butter, firwin, lfilter_zi, resample_poly
+from tsdr.radio.dsp.filters import (
+    butter,
+    butter_highpass_sections,
+    firwin,
+    lfilter_zi,
+    resample_poly,
+)
 from tsdr.radio.dsp.fm_channelizer import FMChannelizer
 from tsdr.radio.dsp.fm_discriminator import FMDiscriminator
 from tsdr.radio.dsp.fsk import FSKFrontEnd, estimate_fsk_shift
@@ -31,4 +37,5 @@ __all__ = [
     "lfilter",
     "lfilter_zi",
     "resample_poly",
+    "butter_highpass_sections",
 ]
