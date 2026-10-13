@@ -146,3 +146,24 @@ def test_free_mode_keeps_the_lo_when_the_dial_stays_clear() -> None:
     _add_nfm_pipeline_while_running(engine)
     _tune_while_running(engine, DIAL - 300e3)
     assert engine.devices["pluto"].config.center_frequency == DIAL - 400e3
+
+
+@pytest.mark.usefixtures("zero_if")
+@pytest.mark.parametrize("tuning_mode", ["center", "free"])
+def test_a_bandwidth_change_leaves_a_fixed_width_decoder_on_the_dial(tuning_mode: str) -> None:
+    """ADS-B's channel is 2 MHz whatever the bandwidth setting: too wide to sit
+    beside the LO. The bandwidth keys lower the setting; a pending 100 kHz was
+    taken as the channel's width and moved the LO into the channel."""
+    engine = _engine(tuned_frequency=1090e6, center_frequency=1090e6, tuning_mode=tuning_mode)
+    engine.set_audio_demod("pluto", DemodSpec(mode="ADSB"))
+    assert _lo_offset(engine) == 0.0
+    engine.update_device_config("pluto", channel_bandwidth=100e3)
+    assert _lo_offset(engine) == 0.0
+
+
+@pytest.mark.usefixtures("zero_if")
+def test_an_audio_modes_pending_bandwidth_sizes_the_offset() -> None:
+    engine = _engine()
+    engine.set_audio_demod("pluto", DemodSpec(mode="NFM"))
+    engine.update_device_config("pluto", channel_bandwidth=150e3, tuned_frequency=DIAL + 1e3)
+    assert _lo_offset(engine) == -150e3
