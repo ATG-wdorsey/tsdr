@@ -1,6 +1,6 @@
 import logging
 
-from tsdr.core.sdr.config import DeviceConfig
+from tsdr.core.sdr.config import DeviceConfig, SDRConfig
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
 from tsdr.core.sdr.samples_batch import SamplesBatch
 from tsdr.core.tracing import span
@@ -23,8 +23,11 @@ class DemodulatorStage:
         demodulator: Demodulator,
         mode_name: str = "",
         pipeline_name: str = "",
+        de_emphasis: float = 50e-6,
     ):
         self._demodulator = demodulator
+        self._de_emphasis = de_emphasis
+        demodulator.set_de_emphasis(de_emphasis)
         raw_name = mode_name or type(demodulator).LABEL
         self.mode_name = raw_name.upper().replace(" ", "")
         self._pipeline_name = pipeline_name
@@ -79,6 +82,10 @@ class DemodulatorStage:
         return data.with_changes(**changes)
 
     def on_config_change(self, config) -> None:
+        if isinstance(config, SDRConfig):
+            self._de_emphasis = config.wfm_de_emphasis_us / 1e6
+            self._demodulator.set_de_emphasis(self._de_emphasis)
+            return
         if not isinstance(config, DeviceConfig):
             return
         pipeline_config = config.pipelines.get(self._pipeline_name)
@@ -91,6 +98,7 @@ class DemodulatorStage:
                 new_demod = make_demodulator(spec, config.sample_rate, config.channel_bandwidth)
                 logger.info("demodulator_swapped old=%s new=%s", self.mode_name, new_mode)
                 self._demodulator = new_demod
+                self._demodulator.set_de_emphasis(self._de_emphasis)
                 self.mode_name = new_mode
                 self._last_sample_rate = config.sample_rate
                 self._last_freq = config.tuned_frequency

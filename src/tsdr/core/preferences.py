@@ -8,7 +8,7 @@ from tsdr.core import storage
 from tsdr.core.bandplans import get_bandplan_store
 from tsdr.core.demod_spec import PreviousTuneState
 from tsdr.core.devices import PersistedDevice, get_device_store
-from tsdr.core.sdr.config import DeviceConfig
+from tsdr.core.sdr.config import WFM_DE_EMPHASIS_US, DeviceConfig
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.samples_batch import SampleFormat
 from tsdr.devices import DeviceParams, IQFileParams
@@ -54,6 +54,7 @@ def save_engine_config(engine: SDREngine) -> None:
     prefs["engine"] = {
         "audio_volume": engine.config.audio_volume,
         "denoise": engine.config.denoise,
+        "wfm_de_emphasis_us": engine.config.wfm_de_emphasis_us,
     }
     save_preferences(prefs)
 
@@ -64,6 +65,10 @@ def restore_engine_config(prefs: dict[str, Any]) -> None:
         get_engine().update_global_config(audio_volume=float(engine_prefs["audio_volume"]))
     if "denoise" in engine_prefs:
         get_engine().update_global_config(denoise=bool(engine_prefs["denoise"]))
+    if engine_prefs.get("wfm_de_emphasis_us") in WFM_DE_EMPHASIS_US:
+        get_engine().update_global_config(
+            wfm_de_emphasis_us=int(engine_prefs["wfm_de_emphasis_us"])
+        )
 
 
 def _persist_params(params: DeviceParams) -> dict[str, Any]:

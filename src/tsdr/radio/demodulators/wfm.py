@@ -191,6 +191,11 @@ class WidebandFMDemodulator(Demodulator):
         self._last_ps_name = ""
         self._messages.clear()
 
+    def set_de_emphasis(self, time_constant: float) -> None:
+        if time_constant != self.de_emphasis_tc:
+            self.de_emphasis_tc = time_constant
+            self._setup_deemphasis_filter()
+
     def status(self) -> DemodStatus:
         """Thread-safe: callable from any thread. Reads scalar fields only."""
         # Normalize pilot SNR: 3 dB (unlock) = 0.0, 20 dB (strong) = 1.0

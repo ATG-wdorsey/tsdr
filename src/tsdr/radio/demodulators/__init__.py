@@ -179,6 +179,10 @@ class Demodulator(ABC):
         """Update FM peak deviation. NFM-only; default no-op elsewhere."""
         pass
 
+    def set_de_emphasis(self, time_constant: float) -> None:  # noqa: B027
+        """Update the broadcast de-emphasis time constant (seconds). WFM-only; no-op elsewhere."""
+        pass
+
     def set_sstv_mode(self, name: str | None) -> None:  # noqa: B027
         """Force a specific SSTV submode (or clear). SSTV-only; no-op elsewhere."""
         pass
