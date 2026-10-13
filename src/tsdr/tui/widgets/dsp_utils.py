@@ -60,6 +60,55 @@ def render_spectrum_to_buf(
                     buf[row, x, c] = center_color[c]
 
 
+def shade_columns(
+    buf: np.ndarray,
+    x_low: int,
+    x_high: int,
+    tint: np.ndarray,
+    edge: np.ndarray,
+) -> None:
+    """Tint the empty pixels (above the trace) of columns [x_low, x_high) of
+    an RGBA plot, and mark each edge that falls inside the plot. The x values
+    may lie outside it."""
+    width = buf.shape[1]
+    lo, hi = max(0, x_low), min(width, x_high)
+    if hi <= lo:
+        return
+    region = buf[:, lo:hi]
+    region[region[..., 3] == 0] = tint
+    for x in (x_low, x_high - 1):
+        if 0 <= x < width:
+            column = buf[:, x]
+            column[column[..., 3] <= tint[3]] = edge
+
+
+def draw_hline(
+    buf: np.ndarray,
+    y: int,
+    x_low: int,
+    x_high: int,
+    color: np.ndarray,
+    *,
+    over_alpha: int = 255,
+    keep: np.ndarray | None = None,
+    dash: int = 0,
+) -> None:
+    """Horizontal line on row `y` over columns [x_low, x_high) of an RGBA
+    plot. Pixels with alpha above `over_alpha`, or of color `keep`, stay; a
+    `dash` > 0 draws runs of that many pixels with equal gaps."""
+    height, width = buf.shape[:2]
+    lo, hi = max(0, x_low), min(width, x_high)
+    if not 0 <= y < height or hi <= lo:
+        return
+    row = buf[y, lo:hi]
+    mask = row[:, 3] <= over_alpha
+    if keep is not None:
+        mask &= ~np.all(row == keep, axis=1)
+    if dash > 0:
+        mask &= (np.arange(lo, hi) // dash) % 2 == 0
+    row[mask] = color
+
+
 def decimate_spectrum(spectrum: NDArray[np.float32], target: int) -> NDArray[np.float32]:
     """Resample spectrum to exactly *target* bins.
 

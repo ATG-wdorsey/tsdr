@@ -118,6 +118,7 @@ iqfile_set_sample_rate
 jitter_buffer_producer_raised
 jitter_buffer_stop_timeout
 jitter_buffer_underflow
+jump_dropped
 kitty_image_remove_miss
 kitty_image_zero_region
 kitty_multi_image_on_resize
@@ -185,6 +186,14 @@ rtltcp_set_bias_tee
 rtltcp_set_gain
 rtltcp_shutdown_skipped
 rtltcp_socket_close_failed
+search_edge_set
+search_jump
+search_jump_failed
+search_lockout
+search_started
+search_stopped
+search_unlock
+search_update_dropped
 signal_exit_failed
 signal_received
 soapy_found_system_path

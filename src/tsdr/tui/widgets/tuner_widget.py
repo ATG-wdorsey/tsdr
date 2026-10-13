@@ -19,10 +19,16 @@ from textual.widgets import Static
 
 from tsdr.core.band_stack import get_band_stack
 from tsdr.core.clock_sync import get_clock_sync_monitor, now
-from tsdr.core.events.events import DemodStatusEvent, DeviceStateChangedEvent, StatsUpdateEvent
+from tsdr.core.events.events import (
+    DemodStatusEvent,
+    DeviceStateChangedEvent,
+    SearchStatusEvent,
+    StatsUpdateEvent,
+)
 from tsdr.core.sdr.datatypes import DemodProfile, DemodStatus
 from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import get_engine
+from tsdr.core.sdr.search import SearchConfig, SearchState, SearchStatus
 from tsdr.core.tracing import span
 from tsdr.core.tuning import resolve_auto_step
 from tsdr.core.tuning_state import get_tuning_state
@@ -291,6 +297,27 @@ class ClockWidget(Static):
             self.update(markup, layout=False)
 
 
+_SEARCH_BADGES: dict[SearchState, str] = {
+    "searching": "[black on yellow] SEARCH [/]",
+    "holding": "[black on green] HOLD [/]",
+    "waiting": "[black on cyan] WAIT [/]",
+}
+
+
+def _search_lines(status: SearchStatus | None, lockouts: int = 0) -> tuple[str, str]:
+    """The state column's last two lines while SEARCH runs: state, and the
+    channel level with the number of lockouts in force (session and saved)."""
+    badge = _SEARCH_BADGES["searching" if status is None else status.state]
+    if status is not None and status.state == "holding":
+        badge += f" [dim]{status.hold_left_s:.1f}s[/dim]"
+    known = status is not None and status.level_db != float("-inf")
+    level = f"[bold]{status.level_db:.0f}[/bold]" if status is not None and known else ""
+    if lockouts:
+        count = f"[yellow]{lockouts} L/O[/yellow]"
+        return badge, f"{level} [dim]·[/dim] {count}" if level else count
+    return badge, f"{level} [dim]dBFS[/dim]" if level else ""
+
+
 class TunerWidget(Vertical):
     """Displays the current tuned frequency with sample rate, gain, and SNR."""
 
@@ -302,6 +329,8 @@ class TunerWidget(Vertical):
     _gain_line: str = ""
     _sample_rate: float | None = None
     _demod_profile: DemodProfile | None = None
+    _search_status: SearchStatus | None = None
+    _state_text: str = ""
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="tuner-row"):
@@ -381,9 +410,11 @@ class TunerWidget(Vertical):
             meter.update_quality(None, None)
             meter.update_squelch(None, None)
 
-        self._render_state_column(device.active_mode, float(config.tuned_frequency))
+        self._render_state_column(device.active_mode, float(config.tuned_frequency), config.search)
 
-    def _render_state_column(self, mode: str, freq_hz: float) -> None:
+    def _render_state_column(
+        self, mode: str, freq_hz: float, search: SearchConfig | None = None
+    ) -> None:
         ts = get_tuning_state()
         if ts.step is None:
             value = resolve_auto_step(mode, freq_hz)
@@ -402,7 +433,25 @@ class TunerWidget(Vertical):
                 band_line = f"[bold]{stack.band.name}[/bold] [dim]band[/dim]"
                 reg_line = f"[bold]{stack.current_idx + 1}/3[/bold] [dim]reg[/dim]"
 
-        self.query_one("#tuner-state", Static).update(f"{step_line}\n{band_line}\n{reg_line}")
+        if search is None:
+            self._search_status = None
+        else:
+            lockouts = len(search.lockouts | search.memory_lockouts)
+            band_line, reg_line = _search_lines(self._search_status, lockouts)
+
+        # Search status arrives several times a second; the column is fixed-size.
+        text = f"{step_line}\n{band_line}\n{reg_line}"
+        if text != self._state_text:
+            self._state_text = text
+            self.query_one("#tuner-state", Static).update(text, layout=False)
+
+    def update_search(self, event: SearchStatusEvent) -> None:
+        device = get_engine().get_focused_device()
+        if device is None or event.device_id != device.device_id:
+            return
+        self._search_status = event.status
+        config = device.config
+        self._render_state_column(device.active_mode, float(config.tuned_frequency), config.search)
 
     def _vol_line(self) -> str:
         vol = f"VOL {int(self._volume * 100)}%"

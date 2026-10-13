@@ -10,6 +10,7 @@ from tsdr.core.sdr.pipeline.stages import (
     FFTStage,
     FrequencyShiftStage,
     RecordStage,
+    SearchStage,
 )
 from tsdr.radio.registry import make_demodulator
 
@@ -23,6 +24,7 @@ _CLASS_TO_STAGE_TYPE: dict[type, StageType] = {
     DenoiserStage: StageType.DENOISER,
     FrequencyShiftStage: StageType.FREQUENCY_SHIFT,
     RecordStage: StageType.RECORD,
+    SearchStage: StageType.SEARCH,
 }
 
 
@@ -48,6 +50,8 @@ def create_stage(
             return AGCStage()
         case StageType.FFT:
             return FFTStage(config=device_config)
+        case StageType.SEARCH:
+            return SearchStage(config=device_config)
         case StageType.EVENT_EMITTER:
             return EventEmitterStage(config=sdr_config)
         case StageType.FREQUENCY_SHIFT:

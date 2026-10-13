@@ -148,6 +148,18 @@ class KeyboardMixin(MixinBase):
                 self._toggle_lo_offset("below")
             case Action.LO_OFFSET_ABOVE:
                 self._toggle_lo_offset("above")
+            case Action.SEARCH_TOGGLE:
+                self._toggle_search()
+            case Action.SEARCH_EDGE_LOW:
+                self._set_search_edge("low")
+            case Action.SEARCH_EDGE_HIGH:
+                self._set_search_edge("high")
+            case Action.SEARCH_LOCKOUT:
+                self._lock_out_channel(permanent=False)
+            case Action.SEARCH_LOCKOUT_SAVE:
+                self._lock_out_channel(permanent=True)
+            case Action.SEARCH_UNLOCK:
+                self._unlock()
             case Action.BANDWIDTH_UP:
                 self._adjust_channel_bandwidth(1)
             case Action.BANDWIDTH_DOWN:
@@ -385,8 +397,9 @@ class KeyboardMixin(MixinBase):
             self._show_error("No audio demodulator active")
             return
 
+        searching = device.config.search is not None
         engine.update_squelch(device.device_id, "audio", enabled=False)
-        self.show_status("Squelch off")
+        self.show_status("Squelch off (SEARCH stopped)" if searching else "Squelch off")
 
     def _quick_add_memory(self) -> None:
         engine = get_engine()

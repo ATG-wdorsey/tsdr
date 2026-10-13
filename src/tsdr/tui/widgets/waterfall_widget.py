@@ -12,6 +12,7 @@ from tsdr.core.events.events import FFTUpdateEvent
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.spectrum_view import view_range
 from tsdr.core.tracing import traced
+from tsdr.tui.widgets.db_scale import KEY_COLS, grid_label, gutter_cols, label_color
 from tsdr.tui.widgets.dsp_utils import (
     normalize_spectrum,
     project_spectrum,
@@ -64,6 +65,22 @@ def _build_luts() -> tuple[NDArray[np.uint8], NDArray[np.uint8]]:
 
 
 _RGB_LUT, _RGBA_LUT = _build_luts()
+
+
+def _position(level: float, db_min: float, db_max: float) -> float:
+    return min(1.0, max(0.0, (level - db_min) / (db_max - db_min)))
+
+
+def level_color(level: float, db_min: float, db_max: float) -> tuple[int, int, int]:
+    """The color a signal at `level` dB takes on the waterfall."""
+    r, g, b = (int(c) for c in _RGB_LUT[int(_position(level, db_min, db_max) * 255)])
+    return r, g, b
+
+
+def level_label_color(level: float, db_min: float, db_max: float) -> str:
+    """A dB label's color: `level`'s on the waterfall, kept legible."""
+    return label_color(level_color(level, db_min, db_max), _position(level, db_min, db_max))
+
 
 _STYLE_NONE = Style()
 
@@ -200,7 +217,12 @@ class WaterfallWidget(ImageModeMixin, Widget):
             # Image-area rows: transparent cells so the Kitty image (drawn at
             # z=-1073741825, under text) shows through. Opaque $app-bg cells
             # would hide the image.
-            return Strip.blank(self.size.width)
+            gutter = gutter_cols(self.size.width)
+            blank = Strip.blank(self.size.width - gutter)
+            if not gutter:
+                return blank
+            key = self._color_key_strip(y - 1, self.size.height - 1, gutter)
+            return Strip.join([key, blank])
         if y < len(self._strips):
             return self._strips[y]
         return Strip.blank(self.size.width, self.rich_style)
@@ -246,7 +268,9 @@ class WaterfallWidget(ImageModeMixin, Widget):
     def _render_waterfall_image(self, event: FFTUpdateEvent) -> None:
         full_w, full_h = self._kitty.full_pixel_size
         occ = self._kitty.occlusion_insets
-        w = full_w - occ.left - occ.right
+        # Columns line up with the spectrum's, past its dB label column.
+        left = max(occ.left, gutter_cols(self.size.width) * self._kitty.cell_width_px)
+        w = full_w - left - occ.right
         visible_h = full_h - occ.top - occ.bottom
         if w <= 0 or visible_h <= 0:
             return
@@ -256,7 +280,7 @@ class WaterfallWidget(ImageModeMixin, Widget):
 
         # Phase 2: Compute layout from final state (pure reads)
         cell_h = self._kitty.cell_height_px
-        layout = self._compute_strip_layout(cell_h, occ.top, visible_h, full_h, occ.left)
+        layout = self._compute_strip_layout(cell_h, occ.top, visible_h, full_h, left)
 
         # Phase 3: Emit kitty commands from layout (no state mutations)
         self._emit_strip_commands(layout)
@@ -431,7 +455,7 @@ class WaterfallWidget(ImageModeMixin, Widget):
     @traced("text_add_line")
     def _add_line(self, event: FFTUpdateEvent) -> None:
         """Add a new spectrum line to the rolling buffer."""
-        width = self.size.width
+        width = self.size.width - gutter_cols(self.size.width)
         height = (self.size.height - 2) * 2  # 2 rows per terminal line (half-blocks)
 
         if width < 10 or height < 4:
@@ -480,6 +504,8 @@ class WaterfallWidget(ImageModeMixin, Widget):
             Strip([Segment("─" * width, base)], width),
         ]
 
+        # Columns line up with the spectrum's, past its dB label column.
+        gutter = gutter_cols(width)
         buffer_height = self._buffer.shape[0]
         display_rows = height - 2
         written_pos = (self._write_pos - 1) % buffer_height
@@ -499,13 +525,44 @@ class WaterfallWidget(ImageModeMixin, Widget):
                     continue
 
             strip = self._render_half_block_row(
-                self._buffer[top_idx], self._buffer[bottom_idx], width
+                self._buffer[top_idx], self._buffer[bottom_idx], width - gutter
             )
             new_cache[key] = strip
             strips.append(strip)
 
         self._strip_cache = new_cache
+        if gutter:
+            # The cache holds plot rows by buffer position, which scroll; the
+            # color key holds still, so it joins each row here.
+            strips[2:] = [
+                Strip.join([self._color_key_strip(row, display_rows, gutter), strip])
+                for row, strip in enumerate(strips[2:])
+            ]
         self._strips = strips
+
+    def _color_key_strip(self, row: int, rows: int, cols: int) -> Strip:
+        """Row `row` of a `rows`-row color key for the label column: the
+        colormap from db_max (top) to db_min (bottom), two steps per row,
+        KEY_COLS wide and centered, with both ends labeled in their colors."""
+        if row in (0, rows - 1):
+            level = self.db_max if row == 0 else self.db_min
+            color = level_label_color(level, self.db_min, self.db_max)
+            style = self.rich_style + Style(color=color)
+            return Strip([Segment(grid_label(level).rjust(cols)[:cols], style)], cols)
+        span = max(1, 2 * rows - 1)
+        top = max(1, round(255 * (1.0 - 2 * row / span)))
+        bottom = max(1, round(255 * (1.0 - (2 * row + 1) / span)))
+        char, style = _get_cell(top, bottom)
+        width = min(KEY_COLS, cols)
+        left = (cols - width) // 2
+        return Strip(
+            [
+                Segment(" " * left, self.rich_style),
+                Segment(char * width, self.rich_style + style),
+                Segment(" " * (cols - left - width), self.rich_style),
+            ],
+            cols,
+        )
 
     def _render_half_block_row(
         self,

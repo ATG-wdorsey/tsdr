@@ -1,45 +1,27 @@
+"""Targets for `[` / `]`: the nearest one in a direction, within the captured band."""
+
 from __future__ import annotations
 
-from tsdr.core.bandplans import Bandplan
+from collections.abc import Iterable
+
 from tsdr.core.events.events import FFTUpdateEvent
-from tsdr.core.memories import Memory
 from tsdr.core.sdr.processing import find_peaks
-
-
-def find_landmarks(
-    memories: list[Memory],
-    bandplan: Bandplan | None,
-    tunable_range: tuple[float, float] | None,
-) -> set[float]:
-    """Memory frequencies + bandplan band edges within tunable range."""
-    lo, hi = tunable_range if tunable_range is not None else (float("-inf"), float("inf"))
-    out: set[float] = set()
-    for m in memories:
-        f = float(m.frequency)
-        if lo <= f <= hi:
-            out.add(f)
-    if bandplan is not None:
-        for band in bandplan.bands:
-            for edge in (float(band.start), float(band.end)):
-                if lo <= edge <= hi:
-                    out.add(edge)
-    return out
 
 
 def next_target(
     direction: int,
     current_freq: float,
-    fft: FFTUpdateEvent | None,
-    memories: list[Memory],
-    bandplan: Bandplan | None,
-    tunable_range: tuple[float, float] | None,
+    targets: Iterable[float],
+    limits: tuple[float, float] | None = None,
 ) -> float | None:
-    """Nearest landmark or FFT peak strictly in `direction`. None if none."""
+    """Nearest target strictly in `direction` and within `limits`. None if none."""
     if direction == 0:
         return None
-    candidates = find_landmarks(memories, bandplan, tunable_range)
-    if fft is not None:
-        peaks = find_peaks(fft.spectrum, fft.center_frequency, fft.sample_rate)
-        candidates.update(freq for freq, _ in peaks)
-    in_dir = (c for c in candidates if (c - current_freq) * direction > 0)
-    return min(in_dir, key=lambda c: abs(c - current_freq), default=None)
+    lo, hi = limits if limits is not None else (float("-inf"), float("inf"))
+    in_dir = (t for t in targets if lo <= t <= hi and (t - current_freq) * direction > 0)
+    return min(in_dir, key=lambda t: abs(t - current_freq), default=None)
+
+
+def peak_frequencies(fft: FFTUpdateEvent) -> list[float]:
+    """Spectrum peaks, for when there is no demodulated channel to measure."""
+    return [freq for freq, _ in find_peaks(fft.spectrum, fft.center_frequency, fft.sample_rate)]

@@ -45,6 +45,12 @@ class Action(StrEnum):
     TUNE_MODE_TOGGLE = "tune.mode-toggle"
     LO_OFFSET_BELOW = "tune.lo-below"
     LO_OFFSET_ABOVE = "tune.lo-above"
+    SEARCH_TOGGLE = "search.toggle"
+    SEARCH_LOCKOUT = "search.lockout"
+    SEARCH_LOCKOUT_SAVE = "search.lockout-save"
+    SEARCH_UNLOCK = "search.unlock"
+    SEARCH_EDGE_LOW = "search.edge-low"
+    SEARCH_EDGE_HIGH = "search.edge-high"
     BANDWIDTH_UP = "bandwidth.up"
     BANDWIDTH_DOWN = "bandwidth.down"
     BANDWIDTH_UP_FINE = "bandwidth.up-fine"
@@ -92,6 +98,7 @@ class Binding:
 
 
 TUNING = "Tuning"
+SEARCH = "Search"
 RECEPTION = "Reception"
 DISPLAY = "Display"
 MEMORIES = "Memories & panels"
@@ -143,12 +150,14 @@ BINDINGS: tuple[Binding, ...] = (
         (
             Action.TUNE_TARGET_PREV,
             ("left_square_bracket",),
-            "Jump to the previous tuning target (memory or band)",
+            "Jump to the previous signal or memory in the captured band "
+            "(while SEARCH runs: signal in its range, SEARCH keeps running)",
         ),
         (
             Action.TUNE_TARGET_NEXT,
             ("right_square_bracket",),
-            "Jump to the next tuning target (memory or band)",
+            "Jump to the next signal or memory in the captured band "
+            "(while SEARCH runs: signal in its range, SEARCH keeps running)",
         ),
         (Action.TUNE_STEP_NEXT, ("s",), "Cycle the tuning step size forward"),
         (Action.TUNE_STEP_PREV, ("S",), "Cycle the tuning step size backward"),
@@ -157,6 +166,24 @@ BINDINGS: tuple[Binding, ...] = (
         (Action.LO_OFFSET_ABOVE, ("O",), "Put the LO above the dial (again: no offset)"),
         (None, ("Ctrl+1-9",), "Recall a band-stack slot"),
         (None, ("Ctrl+0",), "Swap the A/B band stack"),
+    ),
+    *_section(
+        Context.GLOBAL,
+        SEARCH,
+        (Action.SEARCH_TOGGLE, ("slash",), "Start / stop SEARCH for active channels in the band"),
+        (Action.SEARCH_EDGE_LOW, ("left_curly_bracket",), "Put SEARCH's lower edge at the dial"),
+        (Action.SEARCH_EDGE_HIGH, ("right_curly_bracket",), "Put SEARCH's upper edge at the dial"),
+        (Action.SEARCH_LOCKOUT, ("x",), "Lock out the current channel for this session"),
+        (
+            Action.SEARCH_LOCKOUT_SAVE,
+            ("X",),
+            "Lock out the current channel for good (a memory tagged lockout)",
+        ),
+        (
+            Action.SEARCH_UNLOCK,
+            ("ctrl+x",),
+            "Unlock the current channel, or else drop all session lockouts",
+        ),
     ),
     *_section(
         Context.GLOBAL,

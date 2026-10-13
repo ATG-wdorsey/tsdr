@@ -217,8 +217,8 @@ demod wfm
 
 Common commands include `add`, `remove`, `start`, `stop`, `list`, `use`, and
 `config` (device management); `f` (tune), `demod` (select a demodulator or
-decoder), `squelch`, `denoise`, and `audio` (audio); `memory` and `bandplan`
-(frequency presets); `record` (IQ capture); and `pipeline` (inspect or modify
+decoder), `squelch`, `denoise`, and `audio` (audio); `search` (find active
+channels); `memory` and `bandplan` (frequency presets); `record` (IQ capture); and `pipeline` (inspect or modify
 processing stages). See `help` for the full list.
 
 ### Keyboard controls
@@ -230,7 +230,12 @@ Tuning:
 - `←` / `→`: tune down / up one step.
 - `Shift+←` / `Shift+→`: tune one coarse step.
 - `Alt+←` / `Ctrl+←`, `Alt+→` / `Ctrl+→`: tune one fine step.
-- `[` / `]`: jump to the previous / next tuning target (memory or band).
+- `[` / `]`: jump to the previous / next signal or memory within the captured
+  band. A signal is what SEARCH would stop on: channels on the tuning-step grid
+  at or above the squelch, taken once each at the strongest channel (without a
+  demodulator, spectrum peaks). They stop at the band's edge, so in free
+  tuning they never move the LO. While SEARCH runs they stay within its range
+  and keep it running (see below).
 - `s` / `S`: cycle the tuning step size forward / backward.
 - Click the spectrum to tune there. The click snaps to the mode's channel raster
   (12.5 kHz for NFM, 100 kHz for WFM), or to the tuning step when that is finer.
@@ -243,6 +248,41 @@ Tuning:
   channel. In center mode the spectrum is trimmed by twice the offset to keep
   the dial centered. `config --lo-offset` and `--lo-offset-size` set it from the
   console.
+
+Search (find activity within the captured band):
+
+- `/`: start / stop SEARCH. It switches to free tuning and turns the squelch on,
+  then puts the dial on the strongest channel that stays above the trigger for
+  100 ms (channels on the tuning-step grid, within the captured band; the
+  range is shaded on the spectrum). Its grid is never finer than 1 kHz, or than
+  the FFT resolves: with the tuning step at 10 Hz it searches 1 kHz steps. The squelch threshold holds the channel:
+  SEARCH moves on only after the channel has stayed below the squelch for the
+  hold time (2 s), so replies are heard, and between hits it stays on the last
+  channel. `[` / `]` move it on to the previous / next signal within its range
+  (skipping locked-out channels) without stopping it, so you can leave a channel
+  before its hold ends; other tuning by hand, turning the squelch off (`Ctrl+U`)
+  or stopping the radio stops it.
+  For narrowband modes only (not WFM).
+- `{` / `}`: put SEARCH's lower / upper edge at the dial (without edges it
+  searches the whole captured band; an edge outside the band is ignored, and
+  one on the wrong side of the other edge is refused).
+- `x`: lock out the current channel for this session. SEARCH stops only on a
+  signal's center (a channel stronger than its neighbors), so the edges of a
+  locked-out signal, which a strong one pushes over the trigger 10-15 kHz
+  away, are passed over too, while a station of its own beside it is not.
+- `X`: lock out the current channel for good (a memory tagged `lockout`).
+- `Ctrl+X`: unlock the current channel when it is locked out (deleting its
+  lockout memory; `X` there makes it again), or else drop all session lockouts.
+  While SEARCH runs, the tuner shows how many lockouts are in force (`2 L/O`).
+
+`search on --low 144M --high 148M --threshold -60 --hold 2 --dwell 30` sets the
+edges, the trigger (dBFS within the channel, as the squelch measures it;
+by default 3 dB above the squelch, following it, so `u` / `U` set both), the
+hold time and the most time on one
+active channel (`--dwell 0`: unlimited, the default); `--full` forgets the
+edges. `search` shows the settings, `search off` stops, `search lockout
+[--permanent]` locks out the current channel, and `search unlock` drops this
+session's lockouts.
 
 Reception:
 
@@ -266,6 +306,17 @@ Display:
 - `C`: re-center a panned view on the dial.
 - `h` / `l`: raise / lower the noise floor (spectrum dB minimum).
 - `H` / `L`: raise / lower the ceiling (spectrum dB maximum).
+
+The spectrum has a dB grid (every 10 dB, or 5 dB in a narrow window), labeled
+in a column on the left; the waterfall's column is its color key, strongest at
+the top. Each label is in the color a signal at that level takes on the
+waterfall (gray for the noise floor's dark blues). With the squelch on, a dashed orange line (`SQ`) marks the squelch,
+and while SEARCH runs a yellow line (`TR`) over the search range marks its
+trigger. The trace is power per FFT bin while the squelch measures the whole
+channel, so the lines sit where noise at those levels shows: a squelch set
+just above the noise floor is drawn just above it. A narrow carrier, all in
+one bin, has to rise further above the line (about 14 dB for NFM at 10 MS/s)
+to open the squelch.
 
 Memories and panels:
 

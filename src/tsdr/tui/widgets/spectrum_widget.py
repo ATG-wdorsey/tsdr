@@ -1,6 +1,8 @@
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from math import ceil, floor
 
 import numpy as np
@@ -18,25 +20,37 @@ from tsdr.core.events.events import (
     MemoriesChangedEvent,
 )
 from tsdr.core.memories import Memory, get_memory_store, memory_color, recall_memory
+from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
+from tsdr.core.sdr.pipeline.stages.search_stage import audio_channel
 from tsdr.core.sdr.spectrum_view import full_view_range, resolve_view, view_range
 from tsdr.core.tracing import traced
 from tsdr.core.tuning import click_snap_step, save_previous_tune_state
 from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import axis_si_prefix
 from tsdr.tui.inline_edit import InlineEditor
+from tsdr.tui.widgets.db_scale import (
+    GRID_GRAY,
+    grid_label,
+    grid_levels,
+    gutter_cols,
+    noise_equivalent_db,
+)
 from tsdr.tui.widgets.dsp_utils import (
+    draw_hline,
     iir_trace_filter,
     normalize_spectrum,
     project_spectrum,
     render_spectrum_to_buf,
+    shade_columns,
     span_rbw,
     status_strip,
     status_text,
     transient_view_shift,
 )
 from tsdr.tui.widgets.image_mode_mixin import ImageModeMixin
+from tsdr.tui.widgets.waterfall_widget import level_label_color
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +71,45 @@ _STYLE_NONE = Style()
 _STYLE_DIM = Style(dim=True)
 _STYLE_GREEN = Style(color="green")
 _STYLE_BLUE = Style(color="blue")
+_STYLE_SEARCH = Style(color="yellow")
+_STYLE_SEARCH_BG = Style(bgcolor="#262000")  # text-mode SEARCH range
+# dB grid and reference lines, and their labels in the left column.
+_LINE_STYLES = {
+    "grid": Style(color=GRID_GRAY),
+    "squelch": Style(color="dark_orange"),
+    "trigger": Style(color="yellow"),
+}
+_LINE_LABELS = {"squelch": "  SQ ", "trigger": "  TR "}
+# A reference line off the dB window: its label at that edge, no line.
+_OFF_WINDOW_LABELS = {
+    ("squelch", True): " SQ↑ ",
+    ("squelch", False): " SQ↓ ",
+    ("trigger", True): " TR↑ ",
+    ("trigger", False): " TR↓ ",
+}
+
+
+@lru_cache(maxsize=256)
+def _grid_label_style(level: float, db_min: float, db_max: float) -> Style:
+    return Style(color=level_label_color(level, db_min, db_max))
+
 
 # Image mode colors (RGBA)
 _TRACE_COLOR = np.array([0x40, 0xA0, 0xFF, 0xFF], dtype=np.uint8)  # bright blue
 _FILL_COLOR = np.array([0x20, 0x50, 0x80, 0x60], dtype=np.uint8)  # semi-transparent blue
 _BW_BOX_COLOR = np.array([40, 40, 40, 255], dtype=np.uint8)  # dark grey bandwidth box
 _CENTER_LINE_COLOR = np.array([255, 0, 0, 200], dtype=np.uint8)  # red center line
+_SEARCH_TINT = np.array([255, 190, 0, 28], dtype=np.uint8)  # faint amber over the SEARCH range
+_SEARCH_EDGE = np.array([255, 190, 0, 120], dtype=np.uint8)
+_LINE_COLORS = {
+    "grid": np.array([110, 110, 110, 90], dtype=np.uint8),
+    "squelch": np.array([255, 140, 0, 230], dtype=np.uint8),
+    "trigger": np.array([255, 215, 0, 230], dtype=np.uint8),
+}
+# The grid runs behind the trace: over the background, the fill and the
+# SEARCH tint (alpha up to the fill's), not over the trace, box or cursor.
+_GRID_OVER_ALPHA = int(_FILL_COLOR[3])
+_SQUELCH_DASH_PX = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +128,10 @@ class SpectrumFrame:
     bandplan_segments: tuple[
         tuple[int, int, str, str], ...
     ] = ()  # (col_start, col_end_exclusive, label, color_hex)
+    search_range: tuple[int, int] | None = None  # SEARCH (col_low, col_high), or None
+    gutter_cols: int = 0  # dB label columns left of the plot
+    # Grid and reference lines: (dot row, kind, col_low, col_high, (label, style)).
+    lines: tuple[tuple[int, str, int, int, tuple[str, Style]], ...] = ()
 
 
 class SpectrumWidget(ImageModeMixin, Widget):
@@ -106,6 +157,11 @@ class SpectrumWidget(ImageModeMixin, Widget):
         self._capture_center: float = 0.0
         self._provides_spectrum: bool = False
         self._sideband: str | None = None
+        self._search_range: tuple[float, float] | None = None
+        # Where the squelch and SEARCH trigger read on the trace (None = not shown).
+        self._squelch_line_db: float | None = None
+        self._trigger_line_db: float | None = None
+        self._image_gutter: dict[int, tuple[str, Style]] = {}
         self._memories: tuple[Memory, ...] = ()
         self._bandplan: Bandplan | None = None
         self._strips: list[Strip] = []
@@ -159,10 +215,87 @@ class SpectrumWidget(ImageModeMixin, Widget):
         self._tuned_frequency = device.config.tuned_frequency
         self._capture_center = device.config.center_frequency
         self._provides_spectrum = device.device.capabilities.provides_spectrum
+        search = device.config.search
+        self._search_range = None if search is None else (search.low_hz, search.high_hz)
+        self._read_reference_lines(device.config)
         if device.config.channel_bandwidth is not None:
             self._channel_bandwidth = device.config.channel_bandwidth
         else:
             self._channel_bandwidth = profile.channel_bandwidth if profile else None
+
+    def _read_reference_lines(self, config: DeviceConfig) -> None:
+        """The squelch line while the squelch is on, and the trigger line while
+        SEARCH runs, at the levels where noise reading those in the channel
+        shows on the trace (db_scale)."""
+        self._squelch_line_db = self._trigger_line_db = None
+        audio = config.pipelines.get("audio")
+        channel = audio_channel(config)
+        if audio is None or channel is None or self._provides_spectrum:
+            return
+
+        def on_trace(channel_db: float) -> float:
+            return noise_equivalent_db(
+                channel_db,
+                channel.bandwidth_hz,
+                config.sample_rate,
+                config.fft_size,
+                config.fft_window,
+            )
+
+        if audio.squelch_enabled:
+            self._squelch_line_db = on_trace(channel.squelch_db)
+        if config.search is not None:
+            self._trigger_line_db = on_trace(config.search.trigger_for(channel.squelch_db))
+
+    def _scale_lines(
+        self, width: int, freq_min: float, freq_max: float, span: int, *, text: bool
+    ) -> list[tuple[int, str, int, int, tuple[str, Style]]]:
+        """Grid and reference lines as (row, kind, col_low, col_high, label)
+        on a plot with rows 0 (db_max) to `span`, in drawing order; a label is
+        (text, style): grid labels in the waterfall's color for their level,
+        the squelch's and trigger's in their lines'. The row rounding matches
+        the trace's in each mode."""
+        db_min, db_max = self.db_min, self.db_max
+
+        def row(level: float) -> int | None:
+            if not db_min < level < db_max:
+                return None
+            norm = (level - db_min) / (db_max - db_min)
+            return round((1.0 - norm) * span) if text else span - int(norm * span)
+
+        lines: list[tuple[int, str, int, int, tuple[str, Style]]] = []
+        rows = (span + 1) / (4 if text else self._kitty.cell_height_px)
+        for level in grid_levels(db_min, db_max, rows):
+            r = row(level)
+            if r is not None:
+                label = (grid_label(level), _grid_label_style(level, db_min, db_max))
+                lines.append((r, "grid", 0, width, label))
+        search_x = self._search_x(width, freq_min, freq_max)
+        references = (
+            ("squelch", self._squelch_line_db, (0, width)),
+            (
+                "trigger",
+                self._trigger_line_db,
+                None if search_x is None else (max(0, search_x[0]), min(width, search_x[1])),
+            ),
+        )
+        for kind, ref_level, cols in references:
+            if ref_level is None or cols is None:
+                continue
+            r = row(ref_level)
+            if r is None:
+                above = ref_level >= db_max
+                label = (_OFF_WINDOW_LABELS[(kind, above)], _LINE_STYLES[kind])
+                lines.append((0 if above else span, kind, 0, 0, label))
+            else:
+                lines.append((r, kind, cols[0], cols[1], (_LINE_LABELS[kind], _LINE_STYLES[kind])))
+        return lines
+
+    def _gutter_strip(self, cols: int, label: tuple[str, Style] | None) -> Strip:
+        if label is None:
+            return Strip.blank(cols, self.rich_style)
+        text, style = label
+        return Strip([Segment(text.rjust(cols)[:cols], self.rich_style + style)], cols)
 
     def update_config(self) -> None:
         """Config changed - bars shift within visible range, overlays follow new config."""
@@ -231,25 +364,33 @@ class SpectrumWidget(ImageModeMixin, Widget):
         if self.image_mode:
             if y == 0:
                 return self._status_strip()
+            gutter = gutter_cols(self.size.width)
+            width = self.size.width - gutter
+            label = self._image_gutter.get(y)
+
+            def plot_row(strip: Strip) -> Strip:
+                if not gutter:
+                    return strip
+                return Strip.join([self._gutter_strip(gutter, label), strip])
+
             live = self._display_range()
             if live is not None:
                 freq_min, freq_max = live
-                width = self.size.width
                 if y in (1, 2) and self._memories:
                     label_rows = self._compute_memory_labels(width, freq_min, freq_max)
                     row_idx = y - 1
                     if row_idx < len(label_rows) and label_rows[row_idx]:
-                        return self._render_memory_label_strip(width, label_rows[row_idx])
+                        return plot_row(self._render_memory_label_strip(width, label_rows[row_idx]))
                 if y == self.size.height - 2:
                     segments = self._compute_bandplan_segments(width, freq_min, freq_max)
-                    return self._render_bandplan_strip(width, segments)
+                    return plot_row(self._render_bandplan_strip(width, segments))
                 if y == self.size.height - 1:
                     labels = self._compute_freq_labels(width, freq_min, freq_max)
-                    return self._render_freq_axis_strip(width, labels)
+                    return plot_row(self._render_freq_axis_strip(width, labels))
             # Image-area rows: transparent cells so the Kitty image (drawn at
             # z=-1073741825, under text) shows through. The image buffer's own
             # RGB already fills unpainted pixels with $app-bg.
-            return Strip.blank(self.size.width)
+            return plot_row(Strip.blank(width))
         if y < len(self._strips):
             return self._strips[y]
         return Strip.blank(self.size.width, self.rich_style)
@@ -282,6 +423,11 @@ class SpectrumWidget(ImageModeMixin, Widget):
             self._trace_ts = now
         return self._trace_avg
 
+    def _plot_left_px(self) -> int:
+        """Image-mode plot's left edge: past the dB label column."""
+        gutter_px = gutter_cols(self.size.width) * self._kitty.cell_width_px
+        return max(self._kitty.occlusion_insets.left, gutter_px)
+
     def _status_strip(self) -> Strip:
         span, rbw = span_rbw(self._display_range(), self.current_event)
         return status_strip(self.size.width, span, rbw, self.db_min, self.db_max, self.rich_style)
@@ -295,7 +441,8 @@ class SpectrumWidget(ImageModeMixin, Widget):
         self._read_config()
         full_w, full_h = self._kitty.full_pixel_size
         occ = self._kitty.occlusion_insets
-        w = full_w - occ.left - occ.right
+        left = self._plot_left_px()
+        w = full_w - left - occ.right
         h = full_h - occ.top - occ.bottom
         if w <= 0 or h <= 0:
             return
@@ -338,6 +485,25 @@ class SpectrumWidget(ImageModeMixin, Widget):
             center_x,
             _CENTER_LINE_COLOR,
         )
+        search_x = self._search_x(w, freq_min, freq_max)
+        if search_x is not None:
+            shade_columns(buf, *search_x, _SEARCH_TINT, _SEARCH_EDGE)
+
+        gutter: dict[int, tuple[str, Style]] = {}
+        for row, kind, col_low, col_high, label in self._scale_lines(
+            w, freq_min, freq_max, plot_h - 1, text=False
+        ):
+            if kind == "grid":
+                draw_hline(
+                    buf, row, col_low, col_high, _LINE_COLORS[kind], over_alpha=_GRID_OVER_ALPHA
+                )
+            else:
+                dash = _SQUELCH_DASH_PX if kind == "squelch" else 0
+                draw_hline(
+                    buf, row, col_low, col_high, _LINE_COLORS[kind], keep=_TRACE_COLOR, dash=dash
+                )
+            gutter[top_rows + (row + occ.top) // cell_h] = label
+        self._image_gutter = gutter
 
         span = freq_max - freq_min
         if self._memories and span > 0:
@@ -356,7 +522,7 @@ class SpectrumWidget(ImageModeMixin, Widget):
                     b = int(color_hex[5:7], 16)
                     buf[dash_rows, mx] = [r, g, b, 200]
 
-        self._kitty.update_image(self._image_key, buf, x=occ.left, y=occ.top + top_rows * cell_h)
+        self._kitty.update_image(self._image_key, buf, x=left, y=occ.top + top_rows * cell_h)
         self.refresh()
 
     def _on_image_mode_enabled(self) -> None:
@@ -408,6 +574,8 @@ class SpectrumWidget(ImageModeMixin, Widget):
         """
         bars_height = max(1, height - 4)
         freq_min, freq_max = live_range
+        gutter = gutter_cols(width)
+        width -= gutter
         target = width * 2
 
         if event is None:
@@ -459,6 +627,9 @@ class SpectrumWidget(ImageModeMixin, Widget):
         header = status_text(span_hz, rbw_hz, self.db_min, self.db_max)
         memory_labels = self._compute_memory_labels(width, freq_min, freq_max)
         bandplan_segments = self._compute_bandplan_segments(width, freq_min, freq_max)
+        search_x = self._search_x(width, freq_min, freq_max)
+        search_range = None if search_x is None else (max(0, search_x[0]), min(width, search_x[1]))
+        lines = self._scale_lines(width, freq_min, freq_max, total_dots - 1, text=True)
 
         return SpectrumFrame(
             header=header,
@@ -469,6 +640,9 @@ class SpectrumWidget(ImageModeMixin, Widget):
             bandwidth_range=bandwidth_range,
             memory_labels=memory_labels,
             bandplan_segments=bandplan_segments,
+            search_range=search_range,
+            gutter_cols=gutter,
+            lines=tuple(lines),
         )
 
     @traced("render_frame")
@@ -476,40 +650,86 @@ class SpectrumWidget(ImageModeMixin, Widget):
         """Render frame buffer to Strip objects."""
         strips: list[Strip] = []
         width = frame.width
+        gutter = frame.gutter_cols
         base = self.rich_style
 
-        # Header strip
-        strips.append(Strip([Segment(frame.header.ljust(width)[:width], base)], width))
+        # Header strip (full width, over the label column too)
+        full = width + gutter
+        strips.append(Strip([Segment(frame.header.ljust(full)[:full], base)], full))
+
+        def plot_row(strip: Strip, label: tuple[str, Style] | None = None) -> Strip:
+            if not gutter:
+                return strip
+            return Strip.join([self._gutter_strip(gutter, label), strip])
 
         for label_row in frame.memory_labels:
             if label_row:
-                strips.append(self._render_memory_label_strip(width, label_row))
+                strips.append(plot_row(self._render_memory_label_strip(width, label_row)))
 
         # Bandwidth indicator strip
-        strips.append(self._render_bandwidth_strip(width, frame.bandwidth_range))
+        strips.append(
+            plot_row(self._render_bandwidth_strip(width, frame.bandwidth_range, frame.search_range))
+        )
 
-        for row_cells in frame.cells:
-            strips.append(self._render_bar_row(row_cells, width))
+        row_lines: dict[int, list[tuple[int, str, int, int]]] = {}
+        labels: dict[int, tuple[str, Style]] = {}
+        for dot, kind, col_low, col_high, label in frame.lines:
+            row_lines.setdefault(dot // 4, []).append((dot % 4, kind, col_low, col_high))
+            labels[dot // 4] = label
+        for i, row_cells in enumerate(frame.cells):
+            row = self._render_bar_row(row_cells, width, frame.search_range, row_lines.get(i, ()))
+            strips.append(plot_row(row, labels.get(i)))
 
         # Bandplan row (always present; blank when inactive)
-        strips.append(self._render_bandplan_strip(width, frame.bandplan_segments))
+        strips.append(plot_row(self._render_bandplan_strip(width, frame.bandplan_segments)))
 
         # Frequency axis strip
-        strips.append(self._render_freq_axis_strip(width, frame.freq_axis_labels))
+        strips.append(plot_row(self._render_freq_axis_strip(width, frame.freq_axis_labels)))
 
         return strips
 
-    def _render_bar_row(self, cells: tuple[int, ...], width: int) -> Strip:
-        """Render a single bar row with run-length encoding."""
+    def _render_bar_row(
+        self,
+        cells: tuple[int, ...],
+        width: int,
+        search: tuple[int, int] | None = None,
+        lines: Sequence[tuple[int, str, int, int]] = (),
+    ) -> Strip:
+        """Render a single bar row with run-length encoding; `search` shades
+        the SEARCH range's columns, and `lines` (dot row within the cell, kind,
+        col_low, col_high) draw dotted lines through empty cells."""
         segments: list[Segment] = []
         base = self.rich_style
+        shaded, lit_shaded = base + _STYLE_SEARCH_BG, _STYLE_BLUE + _STYLE_SEARCH_BG
+        search_low, search_high = search if search is not None else (0, 0)
+        overlay: dict[int, tuple[int, str]] = {}
+        for dot, kind, col_low, col_high in lines:
+            bits = int(_BRAILLE_LEFT_BITS[dot] | _BRAILLE_RIGHT_BITS[dot])
+            for col in range(col_low, col_high):
+                if kind != "squelch" or col % 2 == 0:  # the squelch line is dashed
+                    # Lines sharing a cell combine; the later (squelch, trigger) colors it.
+                    prev = overlay.get(col)
+                    overlay[col] = ((prev[0] if prev else 0) | bits, kind)
+        line_styles = {
+            (kind, inside): base + style + (_STYLE_SEARCH_BG if inside else _STYLE_NONE)
+            for kind, style in _LINE_STYLES.items()
+            for inside in (False, True)
+        }
         run_char: str | None = None
         run_style: Style | None = None
         run_len = 0
 
-        for cell_idx in cells:
+        for col, cell_idx in enumerate(cells):
             char = _BRAILLE_CHARS[cell_idx]
-            style = _STYLE_BLUE if cell_idx != 0 else base
+            inside = search_low <= col < search_high
+            if cell_idx == 0 and col in overlay:
+                bits, kind = overlay[col]
+                char = _BRAILLE_CHARS[bits]
+                style = line_styles[(kind, inside)]
+            elif inside:
+                style = lit_shaded if cell_idx != 0 else shaded
+            else:
+                style = _STYLE_BLUE if cell_idx != 0 else base
 
             if char == run_char and style is run_style:
                 run_len += 1
@@ -531,22 +751,29 @@ class SpectrumWidget(ImageModeMixin, Widget):
 
         return Strip(segments, width)
 
-    def _render_bandwidth_strip(self, width: int, bandwidth_range: tuple[int, int] | None) -> Strip:
-        """Render bandwidth indicator strip."""
+    def _render_bandwidth_strip(
+        self,
+        width: int,
+        bandwidth_range: tuple[int, int] | None,
+        search: tuple[int, int] | None = None,
+    ) -> Strip:
+        """Render bandwidth indicator strip; the SEARCH range's line is yellow."""
         base = self.rich_style
         dim = base + _STYLE_DIM
-        if bandwidth_range is None:
-            return Strip([Segment("─" * width, dim)], width)
-
-        col_low, col_high = bandwidth_range
+        searched = base + _STYLE_SEARCH
+        channel = base + _STYLE_GREEN
+        bw_low, bw_high = bandwidth_range if bandwidth_range is not None else (0, 0)
+        search_low, search_high = search if search is not None else (0, 0)
         segments: list[Segment] = []
-        if col_low > 0:
-            segments.append(Segment("─" * col_low, dim))
-        if col_high > col_low:
-            segments.append(Segment("█" * (col_high - col_low), base + _STYLE_GREEN))
-        if col_high < width:
-            segments.append(Segment("─" * (width - col_high), dim))
-
+        for col in range(width):
+            if bw_low <= col < bw_high:
+                char, style = "█", channel
+            else:
+                char, style = "─", searched if search_low <= col < search_high else dim
+            if segments and segments[-1].style is style:
+                segments[-1] = Segment(segments[-1].text + char, style)
+            else:
+                segments.append(Segment(char, style))
         return Strip(segments, width)
 
     def _render_bandplan_strip(
@@ -676,12 +903,13 @@ class SpectrumWidget(ImageModeMixin, Widget):
             return
         freq_min, freq_max = live
         if self.image_mode:
-            occ = self._kitty.occlusion_insets
-            w = self._kitty.full_pixel_size[0] - occ.left - occ.right
-            x = event.x * self._kitty.cell_width_px - occ.left
+            left = self._plot_left_px()
+            w = self._kitty.full_pixel_size[0] - left - self._kitty.occlusion_insets.right
+            x = event.x * self._kitty.cell_width_px - left
         else:
-            w = self.size.width
-            x = event.x
+            gutter = gutter_cols(self.size.width)
+            w = self.size.width - gutter
+            x = event.x - gutter
         if w <= 0 or x < 0 or x >= w:
             return
         freq = freq_min + (x / w) * (freq_max - freq_min)
@@ -854,6 +1082,18 @@ class SpectrumWidget(ImageModeMixin, Widget):
 
         raw.sort(key=lambda t: -t[4])
         return tuple((cs, ce, name, color) for cs, ce, name, color, _ in raw)
+
+    def _search_x(self, width: int, freq_min: float, freq_max: float) -> tuple[int, int] | None:
+        """Unclamped columns of the SEARCH range's edges, or None (off, or out of view)."""
+        span = freq_max - freq_min
+        if self._search_range is None or span <= 0:
+            return None
+        low, high = self._search_range
+        x_low = int((low - freq_min) / span * width)
+        x_high = int((high - freq_min) / span * width)
+        if x_high <= 0 or x_low >= width:
+            return None
+        return x_low, x_high
 
     def _compute_bandwidth_range(
         self, width: int, freq_min: float, freq_max: float

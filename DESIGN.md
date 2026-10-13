@@ -215,6 +215,8 @@ Some common pipeline stages are:
   center.
 - The event emitter stage, computing statistics such as signal-to-noise ratio and publishing UI-bound events.
 - The demodulator stage, that calls one of the demodulators.
+- The search stage, that measures every channel in a search range and asks the engine to put the dial on an active
+  one.
 
 ### Demodulators
 

@@ -5,6 +5,7 @@ from tsdr.core.sdr.pipeline.stages.event_emitter_stage import EventEmitterStage
 from tsdr.core.sdr.pipeline.stages.fft_stage import FFTStage
 from tsdr.core.sdr.pipeline.stages.frequency_shift_stage import FrequencyShiftStage
 from tsdr.core.sdr.pipeline.stages.record_stage import RecordStage
+from tsdr.core.sdr.pipeline.stages.search_stage import SearchStage
 
 __all__ = [
     "AGCStage",
@@ -14,4 +15,5 @@ __all__ = [
     "FFTStage",
     "FrequencyShiftStage",
     "RecordStage",
+    "SearchStage",
 ]

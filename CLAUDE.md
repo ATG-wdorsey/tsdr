@@ -232,7 +232,7 @@ Each device owns multiple peer pipelines via `SDRDeviceContext.pipelines: dict[s
 
 ```
 SDRDeviceContext.pipelines
-    "visualization" → AGC → FFT → EventEmitter
+    "visualization" → AGC → FFT → Search → EventEmitter
     "audio"         → FrequencyShift → Demodulator → Denoiser → EventEmitter   (added on demod)
 ```
 
@@ -276,6 +276,32 @@ the dial. Free mode applies the offset when it recenters, when `o`/`O`
 (`config --lo-offset`) change it, and when a new demodulator would find the
 LO inside its channel.
 
+## Search
+
+SEARCH (`/`, the `search` command) finds activity within the capture and puts
+the dial on it. `DeviceConfig.search` (`SearchConfig` in `core/sdr/search.py`;
+None = off) holds a run: range, step (the tuning step), trigger, hold time, max
+dwell, lockouts; the step is never finer than `search_step_floor` (1 kHz, at
+least an FFT bin: cost and resolution); the edges (`{`/`}`, `--low/--high`) and an explicit trigger
+are remembered per device for the session. `SearchStage` in the visualization pipeline measures every
+step-grid channel's in-channel power from the FFT stage's unaveraged
+`instant_spectrum` (dBFS, the squelch's units: summed bins over the window's
+noise bandwidth), `SearchController` decides, and jumps go out as
+`SearchTuneEvent`, which the engine applies with `from_search=True`, as it
+does `[` / `]` while SEARCH runs (`search_jump`: signals within the range,
+not locked out, not at the LO; the new channel gets a full hold). Both stop
+only on local peaks of the step-wide locating levels (`local_peaks`, with the
+grid channel past each end measured too): a strong signal's leakage into the
+channels beside it slopes down from its center, so its edges, locked out or
+not, are never targets. The
+squelch threshold is the hold threshold. SEARCH never moves the hardware:
+starting it selects free tuning, it skips channels within the LO offset of the
+LO, the engine drops a jump that would recenter, and any other dial move, a
+recenter, a sample rate change, center tuning, a non-narrowband demodulator,
+turning the squelch off or stopping the device stops it. The spectrum shades the range. Starting, stopping and lockouts live in `core/search_control.py`;
+lasting lockouts are memories tagged `lockout` (the engine follows
+`MemoriesChangedEvent`).
+
 ## Analog filter
 
 `DeviceConfig.analog_filter` (auto/track/fixed/off), `analog_filter_hz` and
@@ -289,6 +315,12 @@ leaves the AD9361 at 18 MHz); drivers that retune their own filter are left
 alone. `SDRDeviceContext.analog_bandwidth_hz` holds the read-back width.
 
 ## Spectrum View (zoom/pan)
+
+A left column (`tui/widgets/db_scale.py:gutter_cols`) labels the spectrum's dB
+grid and holds the waterfall's color key; the plot, its strips and the
+waterfall start past it, and clicks map past it. The squelch line (squelch on)
+and SEARCH trigger line (SEARCH running) are drawn at `noise_equivalent_db`:
+where noise the channel measures at that level shows on the per-bin trace.
 
 The view is client state: `spectrum_center` / `spectrum_span` on `DeviceConfig`
 (None = track dial / full band). `spectrum_center` (panning) applies only in
@@ -313,7 +345,7 @@ devices the displayable band is `capabilities.frequency_range`, not
 
 Stages can be listed, added, or removed dynamically at runtime via the `pipeline` command.
 
-Available stages: `agc`, `demodulator`, `event_emitter`, `fft`, `frequency_shift`, `record` (see `StageType` in `core/sdr/config.py`).
+Available stages: `agc`, `demodulator`, `event_emitter`, `fft`, `frequency_shift`, `record`, `search` (see `StageType` in `core/sdr/config.py`).
 
 ## Demodulators
 

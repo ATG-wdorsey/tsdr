@@ -154,15 +154,22 @@ def current_spec_or_default(
     return spec
 
 
-def save_previous_tune_state(context: SDRDeviceContext) -> None:
-    """Snapshot the current tune state into TuningState.previous and persist+publish."""
-    ts = get_tuning_state()
-    spec = current_spec_or_default(context)
-    ts.previous = PreviousTuneState(
+def tune_state(context: SDRDeviceContext) -> PreviousTuneState:
+    """The device's tune state now: frequency, bandwidth and demodulator."""
+    return PreviousTuneState(
         frequency_hz=float(context.config.tuned_frequency),
         bandwidth_hz=current_channel_bandwidth(context),
-        spec=spec,
+        spec=current_spec_or_default(context),
     )
+
+
+def save_previous_tune_state(
+    context: SDRDeviceContext, state: PreviousTuneState | None = None
+) -> None:
+    """Snapshot the current tune state (or `state`, taken before a change that
+    might have been refused) into TuningState.previous and persist+publish."""
+    ts = get_tuning_state()
+    ts.previous = state if state is not None else tune_state(context)
     save_tuning_state(ts)
     get_engine().event_bus.publish(TuningStateChangedEvent(state=ts))
 

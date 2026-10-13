@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # TODO: should these be moved?
+from functools import cache
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -9,6 +10,28 @@ from tsdr.core.sdr.datatypes import SignalStatistics
 
 if TYPE_CHECKING:
     from tsdr.radio.dsp.fft import FFTPlan
+
+
+def fft_window(window_type: str, size: int) -> np.ndarray:
+    """The spectrum's window function ("hanning", "hamming", "blackman"; else rectangular)."""
+    if window_type == "hanning":
+        return np.hanning(size).astype(np.float32)
+    if window_type == "hamming":
+        return np.hamming(size).astype(np.float32)
+    if window_type == "blackman":
+        return np.blackman(size).astype(np.float32)
+    return np.ones(size, dtype=np.float32)
+
+
+@cache
+def window_enbw_bins(window_type: str, size: int) -> float:
+    """Equivalent noise bandwidth of the window, in bins (1.5 for Hann).
+
+    compute_fft scales a tone to its amplitude, so summed bins overstate
+    noise power by this factor.
+    """
+    window = fft_window(window_type, size).astype(np.float64)
+    return float(size * np.sum(window**2) / np.sum(window) ** 2)
 
 
 def compute_fft(

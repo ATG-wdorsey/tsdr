@@ -162,6 +162,7 @@ from tsdr.tui.commands.sdr.memory import MemoryCommand  # noqa: E402
 from tsdr.tui.commands.sdr.pipeline import SDRPipelineCommand  # noqa: E402
 from tsdr.tui.commands.sdr.record import SDRRecordCommand  # noqa: E402
 from tsdr.tui.commands.sdr.remove import SDRRemoveCommand  # noqa: E402
+from tsdr.tui.commands.sdr.search import SDRSearchCommand  # noqa: E402
 from tsdr.tui.commands.sdr.soapy import SoapyCommand  # noqa: E402
 from tsdr.tui.commands.sdr.squelch import SDRSquelchCommand  # noqa: E402
 from tsdr.tui.commands.sdr.start import SDRStartCommand  # noqa: E402
@@ -190,6 +191,7 @@ register("denoise", SDRDenoiseCommand())
 register("pipeline", SDRPipelineCommand())
 register("audio", AudioCommand())
 register("soapy", SoapyCommand())
+register("search", SDRSearchCommand())
 register("squelch", SDRSquelchCommand())
 register("f", FrequencyCommand())
 register("memory", MemoryCommand())

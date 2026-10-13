@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from textual import on
 
@@ -10,21 +11,30 @@ from tsdr.core.band_stack import (
     get_band_stack,
     suspended_writeback,
 )
-from tsdr.core.bandplans import get_bandplan_store
 from tsdr.core.demod_spec import PreviousTuneState
 from tsdr.core.events.events import (
     BandStackChangedEvent,
     TuningStateChangedEvent,
 )
 from tsdr.core.landmarks import next_target
-from tsdr.core.memories import get_memory_store
 from tsdr.core.preferences import save_tuning_state
 from tsdr.core.sdr.config import LoOffset, TuningMode
 from tsdr.core.sdr.device_context import SDRDeviceContext
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
+from tsdr.core.sdr.search import TRIGGER_ABOVE_SQUELCH_DB
 from tsdr.core.sdr.spectrum_view import adjusted_span
 from tsdr.core.sdr.tune_policy import effective_lo_side
+from tsdr.core.search_control import (
+    jump_targets,
+    lock_out_channel,
+    search_jump,
+    set_search_edge,
+    set_search_step,
+    start_search,
+    stop_search,
+    unlock,
+)
 from tsdr.core.tuning import (
     STEP_LADDER,
     bandwidth_step,
@@ -34,6 +44,7 @@ from tsdr.core.tuning import (
     resolve_auto_step,
     save_previous_tune_state,
     snap_to_grid,
+    tune_state,
 )
 from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import format_hz
@@ -168,6 +179,74 @@ class TuningMixin(MixinBase):
         else:
             self.show_status(f"LO offset: {new} the dial (no room at this sample rate)")
 
+    def _toggle_search(self) -> None:
+        """`/`: start SEARCH with the last settings, or stop it."""
+        device = self._focused()
+        if device is None:
+            return
+        try:
+            if stop_search(device.device_id):
+                self.show_status("SEARCH off")
+                return
+            search = start_search(device.device_id)
+        except SDRException as e:
+            self._show_error(str(e))
+            return
+        low = format_hz(search.low_hz, decimals=3, long_suffix=True)
+        high = format_hz(search.high_hz, decimals=3, long_suffix=True)
+        trigger = (
+            f"squelch + {TRIGGER_ABOVE_SQUELCH_DB:g} dB"
+            if search.trigger_db is None
+            else f"{search.trigger_db:.0f} dBFS"
+        )
+        self.show_status(f"SEARCH {low} to {high}, trigger {trigger}")
+
+    def _set_search_edge(self, edge: Literal["low", "high"]) -> None:
+        """`{`/`}`: put SEARCH's lower/upper edge at the dial."""
+        device = self._focused()
+        if device is None:
+            return
+        try:
+            frequency = set_search_edge(device.device_id, edge)
+        except SDRException as e:
+            self._show_error(str(e))
+            return
+        where = "lower" if edge == "low" else "upper"
+        self.show_status(
+            f"SEARCH {where} edge: {format_hz(frequency, decimals=4, long_suffix=True)}"
+        )
+
+    def _lock_out_channel(self, *, permanent: bool) -> None:
+        """`x`/`X`: skip the dial's channel, for this session or as a memory."""
+        device = self._focused()
+        if device is None:
+            return
+        try:
+            frequency = lock_out_channel(device.device_id, permanent=permanent)
+        except SDRException as e:
+            self._show_error(str(e))
+            return
+        where = "saved as a memory" if permanent else "this session"
+        self.show_status(
+            f"Locked out {format_hz(frequency, decimals=4, long_suffix=True)} ({where})"
+        )
+
+    def _unlock(self) -> None:
+        """`ctrl+x`: unlock the dial's channel, or else every session lockout."""
+        device = self._focused()
+        if device is None:
+            return
+        result = unlock(device.device_id)
+        if result.frequency_hz is not None:
+            deleted = " (lockout memory deleted)" if result.saved else ""
+            where = format_hz(result.frequency_hz, decimals=4, long_suffix=True)
+            self.show_status(f"Unlocked {where}{deleted}")
+        elif result.session:
+            plural = "s" if result.session != 1 else ""
+            self.show_status(f"Dropped {result.session} session lockout{plural}")
+        else:
+            self.show_status("No session lockouts to drop")
+
     def _center_view_on_dial(self) -> None:
         device = self._focused()
         if device is None:
@@ -189,11 +268,19 @@ class TuningMixin(MixinBase):
         self._publish_tuning_state_changed()
 
         device = self._focused()
+        searched = ""
+        if device is not None and device.config.search is not None:
+            step = ts.step or resolve_auto_step(device.active_mode, device.config.tuned_frequency)
+            used = set_search_step(device.device_id, step)
+            if used != step:
+                searched = f" (SEARCH: {format_hz(used, decimals=1, long_suffix=True)})"
         if ts.step is None and device is not None:
             resolved = resolve_auto_step(device.active_mode, device.config.tuned_frequency)
-            self.show_status(f"Step: auto ({format_hz(resolved, decimals=1, long_suffix=True)})")
+            self.show_status(
+                f"Step: auto ({format_hz(resolved, decimals=1, long_suffix=True)}){searched}"
+            )
         elif ts.step is not None:
-            self.show_status(f"Step: {format_hz(ts.step, decimals=1, long_suffix=True)}")
+            self.show_status(f"Step: {format_hz(ts.step, decimals=1, long_suffix=True)}{searched}")
 
     def _reset_step_to_auto(self) -> None:
         ts = get_tuning_state()
@@ -205,22 +292,32 @@ class TuningMixin(MixinBase):
         device = self._focused()
         if device is None:
             return
-        memories = get_memory_store().all()
-        bandplan = get_bandplan_store().active
-        fft = self._latest_fft_by_device.get(device.device_id)
-        target = next_target(
-            direction,
-            float(device.config.tuned_frequency),
-            fft,
-            memories,
-            bandplan,
-            device.device.capabilities.frequency_range,
-        )
+        targets, limits = jump_targets(device, self._latest_fft_by_device.get(device.device_id))
+        target = next_target(direction, float(device.config.tuned_frequency), targets, limits)
+        searching = device.config.search is not None
         if target is None:
-            self.show_status("No landmark or peak")
+            where = (
+                "signal further in the search range"
+                if searching
+                else "signal or memory further in the band"
+            )
+            self.show_status(f"No {where}")
             return
-        save_previous_tune_state(device)
-        self._apply_freq(device, target)
+        before = tune_state(device)
+        if searching:
+            jumped = search_jump(device.device_id, target)
+        elif device.config.tuning_mode == "free":
+            # In free tuning `[` / `]` never move the LO.
+            jumped = get_engine().update_device_config(
+                device.device_id, keep_lo=True, tuned_frequency=target
+            )
+        else:
+            self._apply_freq(device, target)
+            jumped = True
+        if not jumped:
+            self.show_status("That target would move the LO; the dial stays")
+            return
+        save_previous_tune_state(device, before)
         self.show_status(f"Jump: {format_hz(target, interval=1.0, long_suffix=True)}")
 
     def _swap_ab(self) -> None:

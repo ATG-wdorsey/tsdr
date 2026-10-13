@@ -41,6 +41,7 @@ from tsdr.tui.messages import (
     PipelineError,
     RecordingFinished,
     SamplesDropped,
+    SearchStatusUpdate,
     StatsUpdate,
     TuningStateChanged,
 )
@@ -212,6 +213,12 @@ class EventRouter(MixinBase):
         tuner = self._reconciler.get("tuner")
         if tuner is not None:
             tuner.update_status(message.event)  # type: ignore[attr-defined]
+
+    @on(SearchStatusUpdate)
+    def handle_search_status(self, message: SearchStatusUpdate) -> None:
+        tuner = self._reconciler.get("tuner")
+        if tuner is not None:
+            tuner.update_search(message.event)  # type: ignore[attr-defined]
 
     @on(MemoriesChanged)
     def handle_memories_changed(self, message: MemoriesChanged) -> None:
