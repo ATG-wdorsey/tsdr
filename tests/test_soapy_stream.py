@@ -49,12 +49,39 @@ class FakeDevice:
     def setGainMode(self, direction, channel, enable):  # noqa: N802 (SoapySDR API name)
         self.calls.append(("setGainMode", enable))
 
-    def setGain(self, direction, channel, name, value):  # noqa: N802 (SoapySDR API name)
-        self.calls.append(("setGain", name, value))
+    def setGain(self, direction, channel, *name_value):  # noqa: N802 (SoapySDR API name)
+        self.calls.append(("setGain", *name_value))
 
     def readStream(self, stream, buffers, numElems, timeoutUs):  # noqa: N802, N803 (SoapySDR API names)
-        self._fill(buffers[0], numElems)
+        if self._fill is not None:
+            self._fill(buffers[0], numElems)
         return FakeSR(numElems)
+
+    def setupStream(self, direction, fmt):  # noqa: N802 (SoapySDR API name)
+        self.calls.append(("setupStream", fmt))
+        return object()
+
+    def activateStream(self, stream):  # noqa: N802 (SoapySDR API name)
+        self.calls.append(("activateStream",))
+
+    def deactivateStream(self, stream):  # noqa: N802 (SoapySDR API name)
+        self.calls.append(("deactivateStream",))
+
+    def closeStream(self, stream):  # noqa: N802 (SoapySDR API name)
+        self.calls.append(("closeStream",))
+
+    def setSampleRate(self, direction, channel, rate):  # noqa: N802 (SoapySDR API name)
+        self.calls.append(("setSampleRate", rate))
+        self._rate = rate
+
+    def getSampleRate(self, direction, channel):  # noqa: N802 (SoapySDR API name)
+        return self._rate
+
+    def setFrequency(self, direction, channel, freq):  # noqa: N802 (SoapySDR API name)
+        self.calls.append(("setFrequency", freq))
+
+    def getHardwareKey(self):  # noqa: N802 (SoapySDR API name)
+        return "Fake"
 
 
 def _device(**kw) -> SoapySDRDevice:
@@ -180,7 +207,8 @@ def _open_with(monkeypatch, fake: FakeOpenableDevice) -> SoapySDRDevice:
 def test_open_compiles_the_native_reader_before_the_stream_starts(monkeypatch):
     """A driver may stall if its first read comes late (SoapyAirspy stops for
     good when nothing reads ~0.2 s after a rate change), so the reader's ~0.5 s
-    compile must not wait for the first read."""
+    compile must not wait for the first read. The stream itself starts with
+    that read (see test_the_stream_starts_with_the_first_read_after_tuning)."""
     order: list = []
     fake = FakeOpenableDevice(
         freq_ranges=[FakeRange(24e6, 1.8e9)],
@@ -190,7 +218,7 @@ def test_open_compiles_the_native_reader_before_the_stream_starts(monkeypatch):
     fake.activateStream = lambda stream: order.append("activate")  # type: ignore[method-assign]
     monkeypatch.setattr(soapy, "_native_read_stream", lambda: order.append("compile"))
     _open_with(monkeypatch, fake)
-    assert order == ["compile", "activate"]
+    assert order == ["compile"]
 
 
 def test_a_reader_that_fails_to_compile_falls_back_to_python_reads(monkeypatch, caplog):
@@ -331,3 +359,43 @@ def test_analog_filter_probe_and_set() -> None:
     assert dev.set_analog_bandwidth(1.6e6) == 1.6e6
     dev._device = FakeFilterDevice([])  # the Airspy reports no range
     assert dev._probe_analog_filter() is False
+
+
+def _openable() -> FakeOpenableDevice:
+    fake = FakeOpenableDevice(
+        freq_ranges=[FakeRange(70e6, 6e9)],
+        rate_ranges=[FakeRange(0.52e6, 61.44e6)],
+        gain_range=FakeRange(0.0, 73.0, 1.0),
+        hw="PlutoSDR",
+    )
+    fake.activateStream = lambda stream: fake.calls.append(("activateStream",))  # type: ignore[method-assign]
+    return fake
+
+
+def test_the_stream_starts_with_the_first_read_after_tuning(monkeypatch):
+    """Activated at open, before the rate and gain were set, a PlutoSDR
+    streamed ~0.4 s of near-full-scale junk (-1.8 dBFS) once reads began:
+    a burst of noise at every start. Activated by the first read, after the
+    I/O worker has tuned the radio, it starts clean."""
+    fake = _openable()
+    dev = _open_with(monkeypatch, fake)
+    dev.set_frequency(146e6)
+    dev.set_sample_rate(10e6)
+    dev.set_gain(35.0)
+    assert ("activateStream",) not in fake.calls
+    dev.read_samples(1024 * dev.get_sample_format().bytes_per_sample)
+    names = [c[0] for c in fake.calls]
+    assert names.index("activateStream") > names.index("setSampleRate")
+    assert names.index("activateStream") > names.index("setGain")
+    dev.read_samples(1024 * dev.get_sample_format().bytes_per_sample)
+    assert [c[0] for c in fake.calls].count("activateStream") == 1
+    dev.close()
+    assert [c[0] for c in fake.calls][-2:] == ["deactivateStream", "closeStream"]
+
+
+def test_a_stream_never_read_is_closed_without_deactivating(monkeypatch):
+    fake = _openable()
+    dev = _open_with(monkeypatch, fake)
+    dev.close()
+    names = [c[0] for c in fake.calls]
+    assert "deactivateStream" not in names and names[-1] == "closeStream"

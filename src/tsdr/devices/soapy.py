@@ -212,6 +212,7 @@ class SoapySDRDevice:
         self._device_args = device_args
         self._device = None
         self._stream = None
+        self._stream_active = False
         self._is_open = False
         self._sample_rate: float = 0.0
         # Driver-side overflows (samples the radio dropped before we read them),
@@ -314,7 +315,10 @@ class SoapySDRDevice:
         soapy_format = self._select_stream_format()
         self._stream = self._device.setupStream(_SoapySDR.SOAPY_SDR_RX, soapy_format)
         _native_read_stream()  # compiles the native reader before the stream starts
-        self._device.activateStream(self._stream)
+        # The first read activates the stream, once the radio is tuned: a
+        # PlutoSDR activated before its rate and gain were set streamed
+        # ~0.4 s of near-full-scale junk (-1.8 dBFS) when reads began.
+        self._stream_active = False
         self._is_open = True
 
         try:
@@ -431,7 +435,8 @@ class SoapySDRDevice:
         if self._device and self._stream:
             if self._stop_reader():
                 try:
-                    self._device.deactivateStream(self._stream)
+                    if self._stream_active:
+                        self._device.deactivateStream(self._stream)
                     self._device.closeStream(self._stream)
                 except RuntimeError as e:
                     logger.debug("soapy_stream_close_failed error=%r", e)
@@ -440,12 +445,16 @@ class SoapySDRDevice:
                 _abandoned_streams.append((self._device, self._stream, self._reader))
                 self._reader = None
             self._stream = None
+        self._stream_active = False
         self._device = None
         self._is_open = False
 
     def read_samples(self, count: int) -> bytes:
         if not self._device or not self._stream:
             raise DeviceError("Device not open")
+        if not self._stream_active:
+            self._device.activateStream(self._stream)
+            self._stream_active = True
         total_samples = count // self._sample_format.bytes_per_sample
         reader = self._reader
         if reader is not None and reader.stopping:
