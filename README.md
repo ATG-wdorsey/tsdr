@@ -2,7 +2,7 @@
 
 > **About this fork.** This fork of [floens/tsdr](https://github.com/floens/tsdr)
 > carries fixes and enhancements made while using TSDR with a PlutoSDR and an
-> Airspy on Linux, all meant for upstream as pull requests. What you'll notice:
+> Airspy on Linux, all offered upstream as pull requests. What you'll notice:
 >
 > **Fixes**
 > - **No phantom signals while tuning.** Strong stations elsewhere in the
@@ -24,6 +24,10 @@
 >   click-to-tune landed on whole megahertz with coarse steps; `demod wfm`
 >   was rejected (modes were case-sensitive).
 >   ([#2](https://github.com/floens/tsdr/pull/2))
+> - **A steady spectrum when zoomed or offset.** Zooming in, or an LO offset,
+>   no longer makes the trace noisy and several dB too high: each column
+>   averages the FFT bins it covers instead of showing just one.
+>   ([#10](https://github.com/floens/tsdr/pull/10))
 >
 > **Enhancements**
 > - **SoapySDR radios use their real limits:** frequency range, fixed sample
@@ -33,15 +37,15 @@
 >   ([#6](https://github.com/floens/tsdr/pull/6))
 > - **Capture outside Python.** SoapySDR streams are read on a native thread,
 >   so pauses in Python can't drop radio samples, and holding a tuning key
->   loses nothing. (To be offered upstream.)
+>   loses nothing. ([#8](https://github.com/floens/tsdr/pull/8))
 > - **Zero-IF radios (PlutoSDR, HackRF and similar).** While you demodulate,
 >   the LO sits beside the channel instead of on it, keeping the DC spike, LO
 >   leakage and near-DC intermod out of what you hear: `o`/`O` put it below or
 >   above the dial (again: no offset), or `config --lo-offset` and
 >   `--lo-offset-size`. The Pluto's analog filter follows the sample rate
 >   (0.8x) instead of staying at 18 MHz, so strong signals outside the span no
->   longer overload the ADC: `config --analog-filter`. (To be offered
->   upstream.)
+>   longer overload the ADC: `config --analog-filter`.
+>   ([#9](https://github.com/floens/tsdr/pull/9))
 >
 > Install this fork with
 > `uv tool install --from git+https://github.com/ATG-wdorsey/tsdr@main tsdr`.
