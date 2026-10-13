@@ -12,6 +12,10 @@ from tsdr.radio.decoders.rds import RDSData, RDSDecoder
 from tsdr.radio.demodulators import Demodulator
 from tsdr.radio.dsp import FMDiscriminator, StreamingDecimFilter, StreamingFilter, firwin
 
+# Pilot detection: one windowed FFT of the latest composite per chunk (about
+# 16 ms and 60 Hz bins at the intermediate rate).
+_PILOT_FFT_SIZE = 4096
+
 
 @nb.njit(cache=True, fastmath=True)
 def _pll_stereo_carrier(
@@ -81,8 +85,8 @@ class WidebandFMDemodulator(Demodulator):
     # Default channel bandwidth for WFM (200 kHz for stereo + RDS)
     DEFAULT_CHANNEL_BANDWIDTH = 200_000
 
-    # Pilot detection hysteresis thresholds (SNR in dB vs adjacent noise band)
-    # Real stereo stations show ~20+ dB pilot SNR; noise is ~0 dB
+    # Pilot detection hysteresis thresholds: power in the 1 kHz around the
+    # pilot against the same bandwidth of noise; noise alone reads ~0 dB
     _PILOT_LOCK_SNR = 8.0  # dB, lock when pilot SNR exceeds this
     _PILOT_UNLOCK_SNR = 3.0  # dB, unlock when pilot SNR drops below this
 
@@ -221,26 +225,25 @@ class WidebandFMDemodulator(Demodulator):
         self._audio_lpf_taps = audio_lpf_taps
 
     def _setup_pilot_filter(self) -> None:
-        """Setup 19 kHz pilot bandpass and adjacent noise reference filters.
+        """Setup the 19 kHz pilot bandpass for the PLL and the pilot detector.
 
-        Pilot detection uses SNR: pilot band power vs adjacent noise band power.
-        This distinguishes a real 19 kHz tone from broadband noise.
+        Pilot detection compares the power in the 1 kHz around the pilot with
+        the same bandwidth of the guard band above it (20-22 kHz), which holds
+        only noise: the program stops at 15 kHz and L-R starts at 23 kHz. An
+        FFT separates them cleanly; band-pass FIRs this short would let the
+        pilot and the program's treble into the noise reference.
         """
         # 19 kHz pilot bandpass (18.5-19.5 kHz)
         # Non-decimating: StreamingFilter (DF-II-T) is faster than StreamingDecimFilter
         # here because DF-I's padded buffer copy overhead isn't amortized at m=1.
-        self._pilot_bp = StreamingFilter(
-            firwin(128, [18500, 19500], pass_zero=False, fs=self.intermediate_rate),
-            [1.0],
-            dtype=np.float32,
-        )
+        pilot_taps = firwin(128, [18500, 19500], pass_zero=False, fs=self.intermediate_rate)
+        self._pilot_bp = StreamingFilter(pilot_taps, [1.0], dtype=np.float32)
 
-        # Noise reference bandpass (16-17 kHz) - same bandwidth, adjacent to pilot
-        self._noise_ref = StreamingFilter(
-            firwin(128, [16000, 17000], pass_zero=False, fs=self.intermediate_rate),
-            [1.0],
-            dtype=np.float32,
-        )
+        freqs = np.fft.rfftfreq(_PILOT_FFT_SIZE, 1.0 / self.intermediate_rate)
+        self._pilot_bins = np.abs(freqs - 19000.0) <= 500.0
+        self._guard_bins = (freqs >= 20000.0) & (freqs <= 22000.0)
+        self._pilot_window = np.hanning(_PILOT_FFT_SIZE).astype(np.float32)
+        self._pilot_tail = np.zeros(_PILOT_FFT_SIZE, dtype=np.float32)
 
         # PLL state for pilot recovery
         self.pll_phase = 0.0  # Phase accumulator (radians)
@@ -356,16 +359,7 @@ class WidebandFMDemodulator(Demodulator):
         # Extract pilot tone via bandpass filter
         pilot_filtered = self._pilot_bp.process(audio_clipped)
 
-        # Extract noise reference (adjacent band)
-        noise_ref = self._noise_ref.process(audio_clipped)
-
-        # SNR-based pilot detection: compare pilot band power to noise band power
-        # np.dot(x,x)/n avoids allocating a temporary squared array
-        n_filt = len(pilot_filtered)
-        pilot_power = np.dot(pilot_filtered, pilot_filtered) / n_filt
-        noise_power = np.dot(noise_ref, noise_ref) / n_filt
-        # Avoid log(0); floor noise at -60 dB relative to pilot
-        snr_db = 10.0 * np.log10(pilot_power / max(noise_power, pilot_power * 1e-6, 1e-20))
+        snr_db = self._pilot_snr(audio_clipped)
 
         # EMA smoothing of SNR (per-chunk alpha from chunk duration)
         chunk_duration = n_samples / self.intermediate_rate
@@ -408,6 +402,23 @@ class WidebandFMDemodulator(Demodulator):
 
         return lr_sum, lr_diff
 
+    def _pilot_snr(self, audio_clipped: np.ndarray) -> float:
+        """Pilot SNR in dB from a Hann-windowed FFT of the latest composite."""
+        tail = self._pilot_tail
+        n = len(audio_clipped)
+        if n >= len(tail):
+            tail[:] = audio_clipped[-len(tail) :]
+        else:
+            tail[:-n] = tail[n:]
+            tail[-n:] = audio_clipped
+        spectrum = np.abs(np.fft.rfft(tail * self._pilot_window)) ** 2
+        pilot_power = spectrum[self._pilot_bins].sum()
+        noise_power = spectrum[self._guard_bins].mean() * np.count_nonzero(self._pilot_bins)
+        # Avoid log(0): floor the noise at -60 dB relative to the pilot and
+        # -120 dB relative to the whole composite
+        floor = max(noise_power, pilot_power * 1e-6, spectrum.sum() * 1e-12, 1e-20)
+        return float(10.0 * np.log10(max(pilot_power, 1e-20) / floor))
+
     def _decode_rds(self, audio_raw: np.ndarray) -> RDSData | None:
         """Decode RDS from FM-demodulated audio.
 
@@ -437,7 +448,7 @@ class WidebandFMDemodulator(Demodulator):
 
         # Reset stereo state
         self._pilot_bp.reset()
-        self._noise_ref.reset()
+        self._pilot_tail[:] = 0.0
         self._stereo_lpf.reset()
         self.pll_phase = 0.0
         self.pll_freq = 2.0 * np.pi * 19000.0 / self.intermediate_rate

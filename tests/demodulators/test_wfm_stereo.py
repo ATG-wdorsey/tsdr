@@ -2,6 +2,7 @@ import numpy as np
 
 from tsdr.core.sdr.io import load_iq
 from tsdr.radio.demodulators.wfm import WidebandFMDemodulator
+from tsdr.radio.dsp import firwin
 
 SAMPLE_RATE = 250_000
 AUDIO_RATE = 48000
@@ -169,3 +170,42 @@ def test_a_stereo_station_plays_at_a_mono_stations_level():
     left, right = _tone_levels(stereo, _broadcast(centered, centered, SAMPLE_RATE), SAMPLE_RATE)
     assert stereo.stereo_detected and not mono.stereo_detected
     assert abs(_db(left, mono_level)) < 0.5 and abs(_db(right, mono_level)) < 0.5
+
+
+def _pilot_readings(demod: WidebandFMDemodulator, iq: np.ndarray, rate: float):
+    """(pilot SNR, stereo) after each 20 ms chunk, from 0.8 s on."""
+    readings = []
+    step = int(rate * 0.02)
+    for i in range(0, len(iq), step):
+        demod.demodulate(iq[i : i + step], 0.0)
+        demod.get_audio()
+        if i >= 0.8 * rate:
+            readings.append((demod.pilot_snr_ema, demod.stereo_detected))
+    return readings
+
+
+def test_the_pilot_reading_follows_the_signal_not_the_filters():
+    t = np.arange(int(SAMPLE_RATE * 1.5)) / SAMPLE_RATE
+    centered = 0.3 * np.sin(2 * np.pi * 1000 * t)
+    demod = WidebandFMDemodulator(sample_rate=SAMPLE_RATE, rds_enabled=False)
+    readings = _pilot_readings(demod, _broadcast(centered, centered, SAMPLE_RATE), SAMPLE_RATE)
+    assert min(snr for snr, _ in readings) > 30  # 40 dB CNR, 9 % pilot
+
+    rng = np.random.default_rng(1)
+    noise = (rng.normal(size=len(t)) + 1j * rng.normal(size=len(t))).astype(np.complex64)
+    demod = WidebandFMDemodulator(sample_rate=SAMPLE_RATE, rds_enabled=False)
+    readings = _pilot_readings(demod, noise, SAMPLE_RATE)
+    assert max(snr for snr, _ in readings) < 3 and not any(st for _, st in readings)
+
+
+def test_bright_treble_keeps_stereo():
+    # Pre-emphasized 12-15 kHz program (cymbals) at 20 % RMS deviation, 1-3 s
+    t = np.arange(int(SAMPLE_RATE * 4)) / SAMPLE_RATE
+    rng = np.random.default_rng(3)
+    band = firwin(401, [12_000, 15_000], pass_zero=False, fs=SAMPLE_RATE)
+    treble = np.convolve(rng.normal(size=len(t)), band, "same")
+    treble *= 0.2 / np.sqrt(np.mean(treble**2))
+    program = 0.1 * np.sin(2 * np.pi * 1000 * t) + treble * ((t > 1) & (t < 3))
+    demod = WidebandFMDemodulator(sample_rate=SAMPLE_RATE, rds_enabled=False)
+    readings = _pilot_readings(demod, _broadcast(program, program, SAMPLE_RATE), SAMPLE_RATE)
+    assert all(stereo for _, stereo in readings)
