@@ -309,11 +309,12 @@ class WidebandFMDemodulator(Demodulator):
         with span("deemphasis"):
             lr_sum_deemph = self._deemph_lr.process(lr_sum)
 
-        # Combine to L/R channels: L = (L+R + L-R) / 2, R = (L+R - L-R) / 2
+        # The composite carries (L+R)/2 and (L-R)/2, so L = sum + diff and
+        # R = sum - diff: a centered sound plays at the mono level.
         if lr_diff is not None:
             lr_diff_deemph = self._deemph_lmr.process(lr_diff)
-            left = np.float32(0.5) * (lr_sum_deemph + lr_diff_deemph)
-            right = np.float32(0.5) * (lr_sum_deemph - lr_diff_deemph)
+            left = lr_sum_deemph + lr_diff_deemph
+            right = lr_sum_deemph - lr_diff_deemph
         else:
             left = lr_sum_deemph
             right = lr_sum_deemph
