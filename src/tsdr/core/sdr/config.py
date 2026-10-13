@@ -102,6 +102,10 @@ class DeviceConfigChanges(TypedDict, total=False):
     search: SearchConfig | None
 
 
+# Broadcast FM de-emphasis time constants, in microseconds
+WFM_DE_EMPHASIS_US = (50, 75)
+
+
 class GlobalConfigChanges(TypedDict, total=False):
     """Optional fields for global config updates."""
 
@@ -111,6 +115,7 @@ class GlobalConfigChanges(TypedDict, total=False):
     iq_imbalance_correction: bool
     audio_volume: float
     denoise: bool
+    wfm_de_emphasis_us: int
 
 
 @dataclass(frozen=True)
@@ -244,6 +249,7 @@ class SDRConfig:
     dc_offset_correction: bool = True  # Remove DC offset
     iq_imbalance_correction: bool = True  # Correct IQ imbalance
     denoise: bool = False
+    wfm_de_emphasis_us: int = 50  # broadcast FM: 75 in the Americas and South Korea, 50 elsewhere
 
     def with_changes(self, **kwargs: Unpack[GlobalConfigChanges]) -> SDRConfig:
         return replace(self, **kwargs)
@@ -251,3 +257,5 @@ class SDRConfig:
     def validate(self) -> None:
         if self.update_rate_fps <= 0:
             raise ValueError(f"update_rate_fps must be positive, got {self.update_rate_fps}")
+        if self.wfm_de_emphasis_us not in WFM_DE_EMPHASIS_US:
+            raise ValueError(f"wfm_de_emphasis_us must be 50 or 75, got {self.wfm_de_emphasis_us}")

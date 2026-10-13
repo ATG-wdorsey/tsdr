@@ -4,7 +4,7 @@ from dataclasses import replace
 from types import MappingProxyType
 from typing import Any
 
-from tsdr.core.sdr.config import DeviceConfig, SDRConfig
+from tsdr.core.sdr.config import WFM_DE_EMPHASIS_US, DeviceConfig, SDRConfig
 from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import SDREngine, get_engine
 from tsdr.core.sdr.exceptions import SDRException
@@ -60,6 +60,8 @@ def _format_field(name: str, value: Any) -> str:
         return f"[yellow]{value / 1000:.1f} kHz[/]"
     if name == "network_buffer_seconds" and isinstance(value, (int, float)):
         return f"[yellow]{value:.2f} s[/]"
+    if name == "wfm_de_emphasis_us" and isinstance(value, int):
+        return f"[yellow]{value} µs[/]"
     if name == "frequency_range" and isinstance(value, tuple) and len(value) == 2:
         return (
             f"{freq_mhz(float(value[0]), precision=3)} – {freq_mhz(float(value[1]), precision=3)}"
@@ -153,6 +155,13 @@ class SDRConfigCommand(Command):
             "--bandwidth", help="Channel bandwidth with SI suffix (e.g. 200k, 1.5M)"
         )
         parser.add_argument("--fps", type=float, help="Target UI update rate")
+        parser.add_argument(
+            "--deemphasis",
+            type=int,
+            choices=WFM_DE_EMPHASIS_US,
+            help="Broadcast FM de-emphasis in µs: 75 (Americas, South Korea) or 50 (elsewhere); "
+            "remembered (global)",
+        )
         parser.add_argument(
             "--network-buffer",
             dest="network_buffer_seconds",
@@ -259,6 +268,8 @@ class SDRConfigCommand(Command):
             changes["channel_bandwidth"] = float(parse_hz(args.bandwidth))
         if args.fps is not None:
             changes["target_fps"] = args.fps
+        if args.deemphasis is not None:
+            changes["wfm_de_emphasis_us"] = args.deemphasis
         if args.network_buffer_seconds is not None:
             context = manager.get_device(did)
             if not isinstance(context.params, NetworkDeviceParams):
@@ -311,6 +322,8 @@ class SDRConfigCommand(Command):
                 summary["analog-filter"] = _format_field(key, value)
             elif key == "analog_filter_fraction":
                 summary["analog-filter-fraction"] = _format_field(key, value)
+            elif key == "wfm_de_emphasis_us":
+                summary["deemphasis"] = f"[yellow]{value} µs[/]"
             else:
                 summary[key] = str(value)
 

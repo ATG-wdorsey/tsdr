@@ -18,6 +18,10 @@ from tsdr.radio.dsp.decimator import MultistageDecimator, smooth_decimation
 _CHANNEL_TAPS = 97
 _CHANNEL_KAISER_BETA = 6.8
 
+# Pilot detection: one windowed FFT of the latest composite per chunk (about
+# 16 ms and 60 Hz bins at the intermediate rate).
+_PILOT_FFT_SIZE = 4096
+
 
 @nb.njit(cache=True, fastmath=True)
 def _pll_stereo_carrier(
@@ -27,8 +31,14 @@ def _pll_stereo_carrier(
     integrator_in: float,
     pll_alpha: float,
     pll_beta: float,
+    carrier_lead: float,
 ) -> tuple[np.ndarray, float, float]:
     """PLL loop: track 19 kHz pilot, generate coherent 38 kHz carrier.
+
+    The loop locks in quadrature: for a filtered pilot sin(theta_f), phase =
+    theta_f - pi/2. The band-pass delays the pilot, theta_f = theta -
+    carrier_lead / 2, while the subcarrier, sin(2 theta), is undelayed; so the
+    carrier in phase with it is -2 sin(2 phase + carrier_lead) = 2 sin(2 theta).
 
     Returns (carrier_38k, phase_out, integrator_out).
     """
@@ -40,7 +50,7 @@ def _pll_stereo_carrier(
     two_pi = 2.0 * math.pi
 
     for i in range(n):
-        carrier_38k[i] = 2.0 * math.cos(2.0 * phase)
+        carrier_38k[i] = -2.0 * math.sin(2.0 * phase + carrier_lead)
         error = pilot_filtered[i] * (-math.sin(phase))
         integrator += pll_beta * error
         freq_correction = pll_alpha * error + integrator
@@ -87,8 +97,8 @@ class WidebandFMDemodulator(Demodulator):
     # Default channel bandwidth for WFM (200 kHz for stereo + RDS)
     DEFAULT_CHANNEL_BANDWIDTH = 200_000
 
-    # Pilot detection hysteresis thresholds (SNR in dB vs adjacent noise band)
-    # Real stereo stations show ~20+ dB pilot SNR; noise is ~0 dB
+    # Pilot detection hysteresis thresholds: power in the 1 kHz around the
+    # pilot against the same bandwidth of noise; noise alone reads ~0 dB
     _PILOT_LOCK_SNR = 8.0  # dB, lock when pilot SNR exceeds this
     _PILOT_UNLOCK_SNR = 3.0  # dB, unlock when pilot SNR drops below this
 
@@ -196,6 +206,11 @@ class WidebandFMDemodulator(Demodulator):
         self._last_ps_name = ""
         self._messages.clear()
 
+    def set_de_emphasis(self, time_constant: float) -> None:
+        if time_constant != self.de_emphasis_tc:
+            self.de_emphasis_tc = time_constant
+            self._setup_deemphasis_filter()
+
     def status(self) -> DemodStatus:
         """Thread-safe: callable from any thread. Reads scalar fields only."""
         # Normalize pilot SNR: 3 dB (unlock) = 0.0, 20 dB (strong) = 1.0
@@ -236,26 +251,29 @@ class WidebandFMDemodulator(Demodulator):
         self._audio_lpf_taps = audio_lpf_taps
 
     def _setup_pilot_filter(self) -> None:
-        """Setup 19 kHz pilot bandpass and adjacent noise reference filters.
+        """Setup the 19 kHz pilot bandpass for the PLL and the pilot detector.
 
-        Pilot detection uses SNR: pilot band power vs adjacent noise band power.
-        This distinguishes a real 19 kHz tone from broadband noise.
+        Pilot detection compares the power in the 1 kHz around the pilot with
+        the same bandwidth of the guard band above it (20-22 kHz), which holds
+        only noise: the program stops at 15 kHz and L-R starts at 23 kHz. An
+        FFT separates them cleanly; band-pass FIRs this short would let the
+        pilot and the program's treble into the noise reference.
         """
         # 19 kHz pilot bandpass (18.5-19.5 kHz)
         # Non-decimating: StreamingFilter (DF-II-T) is faster than StreamingDecimFilter
         # here because DF-I's padded buffer copy overhead isn't amortized at m=1.
-        self._pilot_bp = StreamingFilter(
-            firwin(128, [18500, 19500], pass_zero=False, fs=self.intermediate_rate),
-            [1.0],
-            dtype=np.float32,
-        )
+        pilot_taps = firwin(128, [18500, 19500], pass_zero=False, fs=self.intermediate_rate)
+        self._pilot_bp = StreamingFilter(pilot_taps, [1.0], dtype=np.float32)
+        # The band-pass delays the pilot by (taps - 1) / 2 samples; the 38 kHz
+        # carrier leads by twice that phase to match the undelayed subcarrier.
+        pilot_delay = (len(pilot_taps) - 1) / 2
+        self._carrier_lead = 2.0 * (2.0 * np.pi * 19000.0 / self.intermediate_rate) * pilot_delay
 
-        # Noise reference bandpass (16-17 kHz) - same bandwidth, adjacent to pilot
-        self._noise_ref = StreamingFilter(
-            firwin(128, [16000, 17000], pass_zero=False, fs=self.intermediate_rate),
-            [1.0],
-            dtype=np.float32,
-        )
+        freqs = np.fft.rfftfreq(_PILOT_FFT_SIZE, 1.0 / self.intermediate_rate)
+        self._pilot_bins = np.abs(freqs - 19000.0) <= 500.0
+        self._guard_bins = (freqs >= 20000.0) & (freqs <= 22000.0)
+        self._pilot_window = np.hanning(_PILOT_FFT_SIZE).astype(np.float32)
+        self._pilot_tail = np.zeros(_PILOT_FFT_SIZE, dtype=np.float32)
 
         # PLL state for pilot recovery
         self.pll_phase = 0.0  # Phase accumulator (radians)
@@ -321,11 +339,12 @@ class WidebandFMDemodulator(Demodulator):
         with span("deemphasis"):
             lr_sum_deemph = self._deemph_lr.process(lr_sum)
 
-        # Combine to L/R channels: L = (L+R + L-R) / 2, R = (L+R - L-R) / 2
+        # The composite carries (L+R)/2 and (L-R)/2, so L = sum + diff and
+        # R = sum - diff: a centered sound plays at the mono level.
         if lr_diff is not None:
             lr_diff_deemph = self._deemph_lmr.process(lr_diff)
-            left = np.float32(0.5) * (lr_sum_deemph + lr_diff_deemph)
-            right = np.float32(0.5) * (lr_sum_deemph - lr_diff_deemph)
+            left = lr_sum_deemph + lr_diff_deemph
+            right = lr_sum_deemph - lr_diff_deemph
         else:
             left = lr_sum_deemph
             right = lr_sum_deemph
@@ -367,16 +386,7 @@ class WidebandFMDemodulator(Demodulator):
         # Extract pilot tone via bandpass filter
         pilot_filtered = self._pilot_bp.process(audio_clipped)
 
-        # Extract noise reference (adjacent band)
-        noise_ref = self._noise_ref.process(audio_clipped)
-
-        # SNR-based pilot detection: compare pilot band power to noise band power
-        # np.dot(x,x)/n avoids allocating a temporary squared array
-        n_filt = len(pilot_filtered)
-        pilot_power = np.dot(pilot_filtered, pilot_filtered) / n_filt
-        noise_power = np.dot(noise_ref, noise_ref) / n_filt
-        # Avoid log(0); floor noise at -60 dB relative to pilot
-        snr_db = 10.0 * np.log10(pilot_power / max(noise_power, pilot_power * 1e-6, 1e-20))
+        snr_db = self._pilot_snr(audio_clipped)
 
         # EMA smoothing of SNR (per-chunk alpha from chunk duration)
         chunk_duration = n_samples / self.intermediate_rate
@@ -399,6 +409,7 @@ class WidebandFMDemodulator(Demodulator):
             self.pll_integrator,
             self.pll_alpha,
             self.pll_beta,
+            self._carrier_lead,
         )
         self.pll_phase = phase
         self.pll_freq = 2.0 * np.pi * 19000.0 / self.intermediate_rate
@@ -418,6 +429,23 @@ class WidebandFMDemodulator(Demodulator):
             lr_diff = None
 
         return lr_sum, lr_diff
+
+    def _pilot_snr(self, audio_clipped: np.ndarray) -> float:
+        """Pilot SNR in dB from a Hann-windowed FFT of the latest composite."""
+        tail = self._pilot_tail
+        n = len(audio_clipped)
+        if n >= len(tail):
+            tail[:] = audio_clipped[-len(tail) :]
+        else:
+            tail[:-n] = tail[n:]
+            tail[-n:] = audio_clipped
+        spectrum = np.abs(np.fft.rfft(tail * self._pilot_window)) ** 2
+        pilot_power = spectrum[self._pilot_bins].sum()
+        noise_power = spectrum[self._guard_bins].mean() * np.count_nonzero(self._pilot_bins)
+        # Avoid log(0): floor the noise at -60 dB relative to the pilot and
+        # -120 dB relative to the whole composite
+        floor = max(noise_power, pilot_power * 1e-6, spectrum.sum() * 1e-12, 1e-20)
+        return float(10.0 * np.log10(max(pilot_power, 1e-20) / floor))
 
     def _decode_rds(self, audio_raw: np.ndarray) -> RDSData | None:
         """Decode RDS from FM-demodulated audio.
@@ -449,7 +477,7 @@ class WidebandFMDemodulator(Demodulator):
 
         # Reset stereo state
         self._pilot_bp.reset()
-        self._noise_ref.reset()
+        self._pilot_tail[:] = 0.0
         self._stereo_lpf.reset()
         self.pll_phase = 0.0
         self.pll_freq = 2.0 * np.pi * 19000.0 / self.intermediate_rate
