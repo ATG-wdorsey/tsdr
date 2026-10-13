@@ -706,12 +706,29 @@ class SDREngine:
         )
 
         new_cls = DEMODULATOR_CLASSES.get(spec.mode.upper())
+        old_cls = DEMODULATOR_CLASSES.get(old_mode.upper()) if old_mode is not None else None
         new_has_audio = new_cls is not None and new_cls.HAS_AUDIO
-        new_bw = (
-            new_cls.bandwidth_override_on_mode_switch(context.config.channel_bandwidth)
-            if new_cls is not None
-            else None
-        )
+        # Another demodulator starts at its own bandwidth: NFM's 12.5 kHz kept
+        # into WFM, or CW's 200 Hz into NFM, leaves it nearly silent. LSB <-> USB
+        # (one class) keep the user's, and with no demodulator before (a restore)
+        # the configured bandwidth stays unless it is too wide. A fixed-width
+        # decoder (ADS-B, DAB, RTTY) ignores the setting: it is left alone.
+        if new_cls is None or new_cls.FIXED_CHANNEL_BANDWIDTH is not None:
+            new_bw = None
+        elif old_cls is not None and old_cls is not new_cls:
+            new_bw = new_cls.DEFAULT_CHANNEL_BANDWIDTH
+        else:
+            new_bw = new_cls.bandwidth_override_on_mode_switch(context.config.channel_bandwidth)
+
+        # The squelch belongs to the receiver, not the mode: keep it.
+        new_pc = PipelineConfig(stages=new_stages_tuple, audio_spec=spec)
+        if old_pipeline is not None:
+            new_pc = replace(
+                new_pc,
+                squelch_enabled=old_pipeline.squelch_enabled,
+                squelch_threshold_db=old_pipeline.squelch_threshold_db,
+                squelch_hang_ms=old_pipeline.squelch_hang_ms,
+            )
 
         can_swap_in_place = (
             device_id in self._audio_workers
@@ -724,7 +741,6 @@ class SDREngine:
             self._drain_audio_queue(device_id)
             self._audio_workers[device_id].request_flush()
 
-            new_pc = PipelineConfig(stages=new_stages_tuple, audio_spec=spec)
             new_pipelines = MappingProxyType(dict(context.config.pipelines) | {"audio": new_pc})
             changes: dict[str, Any] = {"pipelines": new_pipelines}
             if new_bw is not None:
@@ -737,11 +753,7 @@ class SDREngine:
         self.remove_pipeline(device_id, "audio")
         if new_bw is not None:
             self.update_device_config(device_id, channel_bandwidth=new_bw)
-        self.add_pipeline(
-            device_id,
-            "audio",
-            PipelineConfig(stages=new_stages_tuple, audio_spec=spec),
-        )
+        self.add_pipeline(device_id, "audio", new_pc)
 
         if context.demod_profile and context.demod_profile.has_audio:
             self.start_audio_output(device_id)
