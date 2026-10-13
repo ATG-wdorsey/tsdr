@@ -37,6 +37,15 @@ def test_denoiser_passes_stereo_through_untouched():
     den.close()
 
 
+def test_denoiser_passes_wfm_mono_through_untouched():
+    # WFM with its pilot unlocked: two identical channels, stereo=False
+    den = AudioDenoiser()
+    tone = 0.3 * np.sin(2 * np.pi * 440 * np.arange(25_000) / 50_000.0)
+    batch = _batch(np.column_stack([tone, tone]), 50_000.0)
+    assert den.process(batch) is batch
+    den.close()
+
+
 def test_denoiser_keeps_48k_and_frames_with_carry():
     den = AudioDenoiser()
     rng = np.random.default_rng(1)

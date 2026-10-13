@@ -6,7 +6,8 @@ RNNoise runs at a fixed 48 kHz on 480-sample mono frames, so this:
 - resamples the input to 48 kHz when the demod emits another rate (only then);
 - scales ±1.0 audio to the int16 range RNNoise expects, and back;
 - accumulates 480-sample frames across calls, carrying the remainder;
-- passes stereo batches through untouched (WFM/broadcast is out of scope).
+- passes two-channel batches through untouched (WFM/broadcast is out of scope;
+  WFM sends two channels whether or not its pilot is locked).
 
 Denoised audio stays at 48 kHz — the audio worker resamples to its output rate
 anyway, so there's no reason to convert back to the demod's native rate.
@@ -39,7 +40,7 @@ class AudioDenoiser:
         return self._resampler.process(samples.reshape(-1, 1))[:, 0]
 
     def process(self, batch: AudioBatch) -> AudioBatch:
-        if batch.stereo:
+        if batch.stereo or batch.samples.ndim == 2:
             return batch
 
         x = np.ascontiguousarray(batch.samples, dtype=np.float32)
