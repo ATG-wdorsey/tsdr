@@ -229,6 +229,27 @@ def butter(
     return b, a
 
 
+def butter_highpass_sections(
+    order: int, cutoff_hz: float, fs: float
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """An even-order Butterworth high-pass as second-order sections (b, a),
+    stable where one high-order (b, a) is not (a cutoff far below the sample
+    rate). Each section is the bilinear transform, prewarped at the cutoff, of
+    one conjugate pole pair: the RBJ high-pass biquad at that pair's Q."""
+    if order < 2 or order % 2:
+        raise ValueError(f"order must be even and at least 2, got {order}")
+    w0 = 2.0 * np.pi * cutoff_hz / fs
+    c, s = np.cos(w0), np.sin(w0)
+    sections = []
+    for k in range(1, order // 2 + 1):
+        q = 1.0 / (2.0 * np.cos((2 * k - 1) * np.pi / (2 * order)))
+        alpha = s / (2.0 * q)
+        b = np.array([(1 + c) / 2, -(1 + c), (1 + c) / 2])
+        a = np.array([1 + alpha, -2 * c, 1 - alpha])
+        sections.append((b / a[0], a / a[0]))
+    return sections
+
+
 def resample_poly(x: np.ndarray, up: int, down: int) -> np.ndarray:
     """Polyphase resampling by rational factor *up/down*. Stateless."""
     if up == down:

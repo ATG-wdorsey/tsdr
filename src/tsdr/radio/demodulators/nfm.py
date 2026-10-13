@@ -8,9 +8,16 @@ from tsdr.radio.dsp import (
     FMDiscriminator,
     SquelchGate,
     StreamingFilter,
+    butter_highpass_sections,
     firwin,
     iq_power_db,
 )
+
+# CTCSS (sub-audible tones, 67-254 Hz) is filtered from the audio, as receivers
+# do: on some repeaters it carries most of the audio power. 8th order: 57 dB
+# down at 131.8 Hz, 13 dB at 250 Hz, 0.1 dB at 1 kHz.
+CTCSS_CUTOFF_HZ = 300.0
+CTCSS_ORDER = 8
 
 
 class NarrowbandFMDemodulator(Demodulator):
@@ -67,7 +74,14 @@ class NarrowbandFMDemodulator(Demodulator):
         else:
             self.use_deemphasis = False
 
+        self._setup_ctcss_filter()
         self._squelch = SquelchGate(audio_rate=self.decimated_rate)
+
+    def _setup_ctcss_filter(self) -> None:
+        self._ctcss = [
+            StreamingFilter(b, a, dtype=np.float64)
+            for b, a in butter_highpass_sections(CTCSS_ORDER, CTCSS_CUTOFF_HZ, self.decimated_rate)
+        ]
 
     def _setup_channel_filter(self) -> None:
         """Setup decimating anti-alias FIR + sharp post-decim channel filter.
@@ -110,6 +124,7 @@ class NarrowbandFMDemodulator(Demodulator):
         self._fm_discrim = FMDiscriminator(self.decimated_rate, self.deviation)
         if self.use_deemphasis:
             self._setup_deemphasis_filter()
+        self._setup_ctcss_filter()
         self._squelch = SquelchGate(audio_rate=self.decimated_rate)
 
     def set_deviation(self, deviation: float) -> None:
@@ -160,6 +175,8 @@ class NarrowbandFMDemodulator(Demodulator):
             audio_final = self._apply_deemphasis(audio_raw)
         else:
             audio_final = audio_raw
+        for section in self._ctcss:
+            audio_final = section.process(audio_final)
 
         audio_samples = audio_final.astype(np.float32)
         envelope = self._squelch.process(power_db, len(audio_samples))
@@ -192,4 +209,6 @@ class NarrowbandFMDemodulator(Demodulator):
         self._channel.reset()
         if self.use_deemphasis:
             self._deemph.reset()
+        for section in self._ctcss:
+            section.reset()
         self._squelch.reset()
