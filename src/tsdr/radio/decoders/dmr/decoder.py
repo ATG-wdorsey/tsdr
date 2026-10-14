@@ -33,6 +33,7 @@ from tsdr.radio.decoders.dmr.constants import (
 from tsdr.radio.decoders.dmr.fec import decode_cach, decode_slot_type, extract_voice_frames
 from tsdr.radio.demodulators import Demodulator
 from tsdr.radio.dsp import FMChannelizer, MuellerMuller
+from tsdr.radio.vocoder.agc import VoiceAGC
 from tsdr.radio.vocoder.ambe import AmbePlus2Decoder
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,9 @@ _SLOT_SWITCH_HOLD_SEC = 0.5
 # since its own last sync before forcing a re-sync. The count is per slot: with
 # voice on both slots, up to 10 bursts in a row carry no sync.
 _MAX_CONTINUATION_BURSTS = 5
+# The reference harness's speech gain (DSD, mbelib's decode_ambe): starts at x25, at most x50.
+_AGC_MAX_GAIN = 50.0
+_AGC_START_GAIN = 25.0
 
 
 @dataclass
@@ -202,6 +206,12 @@ class DMRDecoder(Demodulator):
             1: AmbePlus2Decoder(),
         }
         self._pcm_per_ts: dict[int, list[np.ndarray]] = {0: [], 1: []}
+        # Speech level per timeslot (each carries its own talkers), as mbelib's reference
+        # harness sets it: at most x50 on the synthesis scale (the old fixed gain was x56).
+        self._agc: dict[int, VoiceAGC] = {
+            0: VoiceAGC(max_gain=_AGC_MAX_GAIN, start_gain=_AGC_START_GAIN),
+            1: VoiceAGC(max_gain=_AGC_MAX_GAIN, start_gain=_AGC_START_GAIN),
+        }
         self._selected_ts: int | None = None
         self._candidate_ts: int | None = None
         self._candidate_since: float = 0.0
@@ -446,8 +456,8 @@ class DMRDecoder(Demodulator):
 
         if ts.confirmed:
             for frame_bytes in extract_voice_frames(burst):
-                pcm = self._vocoders[timeslot].decode_frame(frame_bytes)
-                self._pcm_per_ts[timeslot].append(pcm)
+                speech = self._vocoders[timeslot].decode_frame_float(frame_bytes)
+                self._pcm_per_ts[timeslot].append(self._agc[timeslot].process(speech / 32768.0))
 
         if ts.voice_burst_count <= 3 or ts.voice_burst_count % 100 == 0:
             self._pending_messages.append(
@@ -618,13 +628,12 @@ class DMRDecoder(Demodulator):
         chunks = self._pcm_per_ts[selected]
         if not chunks:
             return
-        pcm_int16 = np.concatenate(chunks)
+        samples = np.concatenate(chunks)
         self._pcm_per_ts[selected] = []
 
-        samples = pcm_int16.astype(np.float32) / 32768.0 * 8.0  # +18 dB
         self._audio_batches.append(
             AudioBatch(
-                samples=np.clip(samples, -1.0, 1.0),
+                samples=samples,
                 sample_rate=_DMR_PCM_RATE,
                 stereo=False,
                 prebuffer_seconds=self.audio_prebuffer_seconds,
@@ -689,6 +698,8 @@ class DMRDecoder(Demodulator):
             ts.voice_burst_count = 0
             ts.last_voice_ts = 0.0
         self._vocoders = {ts: AmbePlus2Decoder() for ts in self._vocoders}
+        for agc in self._agc.values():
+            agc.reset()
         for buf in self._pcm_per_ts.values():
             buf.clear()
         self._selected_ts = None
