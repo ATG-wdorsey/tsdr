@@ -26,3 +26,12 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
       - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: log-event-names
+        name: log event names are snake_case
+        entry: python scripts/check_log_event_names.py
+        language: system
+        pass_filenames: false
+        files: ^src/tsdr/.*\.py$

@@ -1,5 +1,6 @@
-"""Enforce that every logger.<level>(...) call in src/tsdr/ uses a stable
-`snake_case_event_name` as the first token of its message string.
+#!/usr/bin/env python3
+"""Check that every logger.<level>(...) call in src/tsdr/ uses a stable
+`snake_case_event_name` as the first token of its message string (a pre-commit hook).
 
 See `## Logging` in CLAUDE.md for the convention.
 """
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).parent.parent / "src" / "tsdr"
@@ -90,15 +92,14 @@ def _collect_names() -> tuple[set[str], list[tuple[Path, int, str]]]:
     return names, violations
 
 
-def test_log_event_names_are_snake_case() -> None:
-    """Every logger call's first token must be a snake_case event name."""
+def main() -> int:
     _, violations = _collect_names()
-    if violations:
-        msg_lines = [
-            f"{path.relative_to(SRC_ROOT.parent.parent)}:{lineno}: {token!r}"
-            for path, lineno, token in violations
-        ]
-        raise AssertionError(
-            "Found logger calls whose first message token is not snake_case:\n"
-            + "\n".join(msg_lines)
+    for path, lineno, token in violations:
+        print(
+            f"{path.relative_to(SRC_ROOT.parent.parent)}:{lineno}: log event name not snake_case: {token!r}"
         )
+    return 1 if violations else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
