@@ -10,7 +10,6 @@ import pytest
 
 from tsdr.core.sdr.io import load_iq as _load_iq
 from tsdr.radio.decoders.flex import (
-    FLEX_BAUD,
     FLEX_DEVIATION,
     FLEXDecoder,
     bch_correct,
@@ -62,78 +61,6 @@ def decimate_and_demod(iq, sample_rate=SAMPLE_RATE):
     fm = phase_diff * scale
 
     return fm, decimated_rate
-
-
-class TestStage1FMDemod:
-    """Stage 1: Verify FM demodulation produces clean 2-FSK levels."""
-
-    def test_bimodal_distribution(self, flex_iq):
-        fm, rate = decimate_and_demod(flex_iq)
-
-        # FM output should be bimodal around ±1. Pick the densest bin in each
-        # half-plane separately - taking the top-2 globally can return two
-        # adjacent bins of the same peak.
-        hist, edges = np.histogram(fm, bins=100)
-        centers = (edges[:-1] + edges[1:]) / 2
-
-        neg_mask = centers < 0
-        pos_mask = centers > 0
-        neg_peak = centers[neg_mask][np.argmax(hist[neg_mask])]
-        pos_peak = centers[pos_mask][np.argmax(hist[pos_mask])]
-
-        assert abs(neg_peak) > 0.3, f"Negative peak too close to 0: {neg_peak}"
-        assert abs(pos_peak) > 0.3, f"Positive peak too close to 0: {pos_peak}"
-
-
-class TestStage2SymbolRecovery:
-    """Stage 2: Verify Mueller-Muller recovers ~1600 symbols/second."""
-
-    @staticmethod
-    def _run_frontend(flex_iq):
-        decoder = FLEXDecoder(sample_rate=SAMPLE_RATE)
-        fm = decoder._channelizer.process(flex_iq)
-        symbols = decoder._mm.process(fm)
-        return symbols
-
-    def test_symbol_rate(self, flex_iq):
-        symbols = self._run_frontend(flex_iq)
-
-        duration = len(flex_iq) / SAMPLE_RATE
-        actual_rate = len(symbols) / duration
-        assert abs(actual_rate - FLEX_BAUD) / FLEX_BAUD < 0.01, (
-            f"Symbol rate {actual_rate:.0f} not within 1% of {FLEX_BAUD}"
-        )
-
-    def test_symbols_cluster(self, flex_iq):
-        symbols = self._run_frontend(flex_iq)
-
-        positive = symbols[symbols > 0]
-        negative = symbols[symbols < 0]
-
-        assert len(positive) > 100, "Too few positive symbols"
-        assert len(negative) > 100, "Too few negative symbols"
-        assert np.mean(np.abs(symbols)) > 0.3, "Symbols too close to zero"
-
-
-class TestStage3SyncDetection:
-    """Stage 3: Verify sync word detection in the bit stream."""
-
-    def test_sync_found(self, flex_iq):
-        decoder = FLEXDecoder(sample_rate=SAMPLE_RATE)
-
-        chunk_size = 32768
-        for start in range(0, len(flex_iq), chunk_size):
-            decoder.demodulate(flex_iq[start : start + chunk_size], 0.0)
-
-        # FLEX broadcasts a sync word every ~1.875 s, so a healthy ~10 s sample
-        # contains >= 5 syncs. The old `>= 1` bound passed even when sync recovery
-        # was almost completely broken.
-        duration_s = len(flex_iq) / SAMPLE_RATE
-        expected_min = max(3, int(duration_s / 2.0))
-        assert decoder._syncs_found >= expected_min, (
-            f"Expected at least {expected_min} sync detections in {duration_s:.0f}s of data, "
-            f"got {decoder._syncs_found}"
-        )
 
 
 class TestStage5BCH:

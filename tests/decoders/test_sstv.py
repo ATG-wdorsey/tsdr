@@ -20,9 +20,7 @@ from tsdr.radio.decoders.sstv import (
     StreamingEvents,
     StreamingSSTV,
     decode_offline,
-    find_vis,
     hilbert_fft,
-    instantaneous_freq,
 )
 from tsdr.radio.demodulators.sstv import SSTVDemodulator
 
@@ -74,35 +72,21 @@ def _samples() -> dict[str, tuple[np.ndarray, int]]:
 # ---- VIS detection --------------------------------------------------------
 
 
-@pytest.mark.parametrize(("filename", "expected_vis", "_shape"), SAMPLE_FIXTURES)
-def test_vis_detection_known_samples(
-    _samples: dict[str, tuple[np.ndarray, int]],
-    filename: str,
-    expected_vis: int,
-    _shape: tuple[int, int],
-) -> None:
-    audio, fs = _samples[filename]
-    freq = instantaneous_freq(audio, fs)
-    result = find_vis(freq, fs)
-    assert result is not None, f"no VIS detected in {filename}"
-    vis_code, _ = result
-    assert vis_code == expected_vis
-
-
 # ---- Offline decode -------------------------------------------------------
 
 
-@pytest.mark.parametrize(("filename", "_vis", "shape"), SAMPLE_FIXTURES)
-def test_decode_offline_image_shape(
+@pytest.mark.parametrize(("filename", "expected_vis", "shape"), SAMPLE_FIXTURES)
+def test_decode_offline_finds_the_mode_and_the_image(
     _samples: dict[str, tuple[np.ndarray, int]],
     filename: str,
-    _vis: int,
+    expected_vis: int,
     shape: tuple[int, int],
 ) -> None:
     audio, fs = _samples[filename]
     result = decode_offline(audio, fs)
     assert result is not None, f"offline decode failed for {filename}"
-    _, img = result
+    mode, img = result
+    assert mode is MODES[expected_vis]  # the VIS code was read
     assert img.shape == (*shape, 3)
     # Not a blank frame.
     assert img.std() > 5.0

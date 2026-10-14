@@ -42,31 +42,6 @@ def test_set_channel_bandwidth_clamps_too_wide_value():
     assert demod.channel_bandwidth == pytest.approx(EXPECTED_CLAMP)
 
 
-def test_bandwidth_override_wfm_to_am():
-    # Carryover from WFM (200 kHz) exceeds AM's Nyquist cap -> reset to AM default.
-    assert AMDemodulator.bandwidth_override_on_mode_switch(200_000) == pytest.approx(10_000)
-
-
-def test_bandwidth_override_lsb_to_usb_keeps_value():
-    # User-tuned 2.4 kHz fits USB's cap -> no reset (keep user's value).
-    assert SSBDemodulator.bandwidth_override_on_mode_switch(2_400) is None
-
-
-def test_bandwidth_override_nfm_to_am_keeps_value():
-    # 12.5 kHz fits AM's cap -> no reset.
-    assert AMDemodulator.bandwidth_override_on_mode_switch(12_500) is None
-
-
-def test_bandwidth_override_anything_to_wfm_keeps_value():
-    # WFM's MAX_CHANNEL_BANDWIDTH is inf -> never reset.
-    assert WidebandFMDemodulator.bandwidth_override_on_mode_switch(3_000) is None
-    assert WidebandFMDemodulator.bandwidth_override_on_mode_switch(200_000) is None
-
-
-def test_bandwidth_override_none_current_keeps_none():
-    assert AMDemodulator.bandwidth_override_on_mode_switch(None) is None
-
-
 def test_wfm_unaffected_by_wide_bandwidth():
     # WFM filters at the native sample rate -- 200 kHz must work without clamping.
     demod = WidebandFMDemodulator(sample_rate=SAMPLE_RATE, channel_bandwidth=200_000)

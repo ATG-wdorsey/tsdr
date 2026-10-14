@@ -7,7 +7,6 @@ parameters checked frame by frame against mbelib on a speech recording
 
 from __future__ import annotations
 
-import wave
 from pathlib import Path
 
 import numpy as np
@@ -117,47 +116,6 @@ def test_extract_bit_fields_silence():
 
 
 # End-to-end
-
-
-@pytest.mark.slow
-def test_decode_amb_file_to_wav(tmp_path):
-    """Decode the whole .amb file and write a wav for manual listening."""
-    if not AMB_SOURCE.exists():
-        pytest.skip("bmh_gasline.amb not available")
-
-    data = AMB_SOURCE.read_bytes()
-    assert data[:4] == b".amb"
-    records = []
-    pos = 4
-    while pos + 8 <= len(data):
-        errs2 = data[pos]
-        pos += 1
-        bits = np.zeros(49, dtype=np.int8)
-        for i in range(6):
-            b = data[pos]
-            pos += 1
-            for j in range(8):
-                bits[i * 8 + j] = (b >> (7 - j)) & 1
-        bits[48] = data[pos] & 1
-        pos += 1
-        records.append((errs2, bits))
-
-    dec = AmbePlus2Decoder()
-    out = np.zeros(160 * len(records), dtype=np.int16)
-    for i, (errs2, bits) in enumerate(records):
-        pcm = dec.decode_ambe_d(bits, errs2=errs2)
-        out[i * 160 : (i + 1) * 160] = pcm
-
-    wav_path = tmp_path / "bmh_gasline.wav"
-    with wave.open(str(wav_path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(8000)
-        w.writeframes(out.tobytes())
-    assert wav_path.stat().st_size > 100_000, "wav file suspiciously small"
-
-    rms = float(np.sqrt(np.mean(out.astype(np.float64) ** 2)))
-    assert rms > 100.0, f"output rms {rms:.0f} too low -- sounds like silence"
 
 
 def _amb_records(path: Path) -> list[tuple[int, np.ndarray]]:

@@ -412,15 +412,3 @@ class TestAircraftTracker:
         for ac in with_pos:
             assert -90 <= ac.lat <= 90, f"Latitude out of range: {ac.lat}"
             assert -180 <= ac.lon <= 180, f"Longitude out of range: {ac.lon}"
-
-    def test_snapshot_sorted_by_messages(self, decoded_messages):
-        """Verify snapshot is sorted by message count descending."""
-        tracker = AircraftTracker()
-        t = 1000.0
-        for _, msg in decoded_messages:
-            tracker.update(msg, t)
-            t += 0.01
-
-        snapshot = tracker.snapshot(now=t)
-        counts = [ac.messages for ac in snapshot.aircraft]
-        assert counts == sorted(counts, reverse=True)

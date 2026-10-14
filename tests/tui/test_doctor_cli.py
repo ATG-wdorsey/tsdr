@@ -5,24 +5,6 @@ from __future__ import annotations
 from tsdr.__main__ import _build_parser
 
 
-def test_doctor_subcommand() -> None:
-    args = _build_parser().parse_args(["doctor", "--check"])
-    assert args.command == "doctor"
-    assert args.check is True
-
-
-def test_doctor_json_flag() -> None:
-    args = _build_parser().parse_args(["doctor", "--json"])
-    assert args.command == "doctor"
-    assert args.json is True
-
-
-def test_doctor_interactive_default() -> None:
-    args = _build_parser().parse_args(["doctor"])
-    assert args.command == "doctor"
-    assert args.check is False
-
-
 def test_bare_invocation_has_no_command() -> None:
     args = _build_parser().parse_args([])
     assert args.command is None

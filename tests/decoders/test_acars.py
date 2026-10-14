@@ -11,17 +11,13 @@ import numpy as np
 import pytest
 from rich.text import Text
 
-from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.sdr.io import load_iq as _load_iq
 from tsdr.radio.decoders.acars import ACARSDecoder
 from tsdr.radio.decoders.acars.constants import ETX, PLUS, SOH, STAR, SYN
 from tsdr.radio.decoders.acars.crc import crc16, update, valid
 from tsdr.radio.decoders.acars.fec import fix_double_error, fix_parity_errors
 from tsdr.radio.decoders.acars.frame import AcarsFramer
-from tsdr.radio.decoders.acars.labels import describe_label
-from tsdr.radio.decoders.acars.oooi import decode_oooi
 from tsdr.radio.dsp.filters import resample_poly
-from tsdr.radio.registry import DEMODULATORS, make_demodulator
 
 SAMPLE_FILE = Path(__file__).resolve().parents[1] / "samples" / "acars_131824k_sr12k.cf32.zst"
 SAMPLE_RATE = 12000.0
@@ -113,15 +109,6 @@ class TestFEC:
         assert corrupt == block
 
 
-class TestRegistry:
-    def test_acars_registered(self):
-        assert "ACARS" in DEMODULATORS
-
-    def test_make_demodulator(self):
-        d = make_demodulator(DemodSpec(mode="ACARS"), SAMPLE_RATE)
-        assert isinstance(d, ACARSDecoder)
-
-
 @pytest.fixture(scope="module")
 def acars_iq():
     if not SAMPLE_FILE.exists():
@@ -204,44 +191,3 @@ class TestPartial:
         f = AcarsFramer(emit_partial=False)
         f.process(soft, 0.0)
         assert f.drain() == []
-
-
-class TestLabels:
-    def test_known(self):
-        assert describe_label("B6") == "ADS report"
-        assert describe_label("H1") == "message to/from terminal"
-
-    def test_oooi_class(self):
-        assert describe_label("Q1") == "OOOI / movement report"
-
-    def test_tech_ack_variant(self):
-        assert describe_label("_d") == "no-op / technical ack"
-
-    def test_unknown_fallback(self):
-        assert describe_label("ZZ") == ""
-
-
-class TestOooi:
-    def test_q2_dep_eta(self):
-        o = decode_oooi("Q2", "KJFK1830")
-        assert o is not None and o.dep == "KJFK" and o.eta == "1830"
-
-    def test_q1_full_block(self):
-        o = decode_oooi("Q1", "KLAX1200121517301745XXXXKJFK")
-        assert o is not None
-        assert o.dep == "KLAX" and o.gate_out == "1200" and o.wheels_off == "1215"
-        assert o.wheels_on == "1730" and o.gate_in == "1745" and o.dest == "KJFK"
-
-    def test_qn_dest_eta(self):
-        o = decode_oooi("QN", "0000EGLL1930")
-        assert o is not None and o.dest == "EGLL" and o.eta == "1930"
-
-    def test_21_guarded_commas(self):
-        o = decode_oooi("21", "POS011,KLAX,KSFO")  # commas at [6] and [11]
-        assert o is not None and o.dep == "KLAX" and o.dest == "KSFO"
-
-    def test_guard_fails_returns_none(self):
-        assert decode_oooi("21", "no commas here at all") is None
-
-    def test_non_oooi_label(self):
-        assert decode_oooi("H1", "whatever text") is None

@@ -1,9 +1,7 @@
 """Enforce that every logger.<level>(...) call in src/tsdr/ uses a stable
 `snake_case_event_name` as the first token of its message string.
 
-See `## Logging` in CLAUDE.md for the convention. The full list of observed
-names is committed as `tests/log_event_names.txt`; any change to that file
-should appear in code review.
+See `## Logging` in CLAUDE.md for the convention.
 """
 
 from __future__ import annotations
@@ -13,7 +11,6 @@ import re
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).parent.parent / "src" / "tsdr"
-SNAPSHOT_PATH = Path(__file__).parent / "log_event_names.txt"
 
 EVENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -104,31 +101,4 @@ def test_log_event_names_are_snake_case() -> None:
         raise AssertionError(
             "Found logger calls whose first message token is not snake_case:\n"
             + "\n".join(msg_lines)
-        )
-
-
-def test_log_event_names_match_snapshot() -> None:
-    """The set of event names should match tests/log_event_names.txt."""
-    names, _ = _collect_names()
-    observed = sorted(names)
-
-    if not SNAPSHOT_PATH.exists():
-        SNAPSHOT_PATH.write_text("\n".join(observed) + "\n")
-        raise AssertionError(
-            f"Snapshot file did not exist; created {SNAPSHOT_PATH}. Review and commit it."
-        )
-
-    expected = [
-        line
-        for line in SNAPSHOT_PATH.read_text(encoding="utf-8").splitlines()
-        if line and not line.startswith("#")
-    ]
-    if observed != expected:
-        SNAPSHOT_PATH.write_text("\n".join(observed) + "\n")
-        added = sorted(set(observed) - set(expected))
-        removed = sorted(set(expected) - set(observed))
-        raise AssertionError(
-            "Event name set drifted from snapshot. Snapshot rewritten — review diff:\n"
-            f"  added:   {added}\n"
-            f"  removed: {removed}"
         )

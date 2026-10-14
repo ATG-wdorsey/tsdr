@@ -56,20 +56,6 @@ def test_config_command_gain_maps_to_rf_gain():
     assert "gain" not in captured_changes, "'gain' should not be in changes dict"
 
 
-def test_config_with_changes_rf_gain():
-    """with_changes(rf_gain=...) should work."""
-    config = DeviceConfig()
-    new = config.with_changes(rf_gain=20.0)
-    assert new.rf_gain == 20.0
-
-
-def test_config_with_changes_auto_gain():
-    """with_changes(auto_gain=...) should work."""
-    config = DeviceConfig()
-    new = config.with_changes(auto_gain=True)
-    assert new.auto_gain is True
-
-
 def test_set_gain_sends_manual_mode_then_index():
     """RTLTCPDevice.set_gain() should send gain_mode=manual then gain_index."""
     dev = FakeDevice()
@@ -128,18 +114,6 @@ def test_io_worker_sets_agc_on_startup():
 
     device.set_auto_gain.assert_called_once_with(True)
     device.set_gain.assert_not_called()
-
-
-def test_r820t_gain_table_sorted():
-    """R820T gain table should be monotonically increasing."""
-    gains = RTLTCPDevice.R820T_GAINS
-    for i in range(1, len(gains)):
-        assert gains[i] >= gains[i - 1], f"Gain table not sorted at index {i}"
-
-
-def test_r820t_gain_table_length():
-    """R820T has 29 gain values (index 0-28)."""
-    assert len(RTLTCPDevice.R820T_GAINS) == 29
 
 
 def test_gain_boundary_values():

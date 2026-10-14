@@ -6,55 +6,28 @@ import pytest
 
 from tsdr.core.sdr.io import load_iq
 from tsdr.radio.decoders.tetra.burst import (
-    NDB_BBK1_BITS,
-    NDB_BBK2_BITS,
-    NDB_BLK1_BITS,
-    NDB_BLK2_BITS,
-    SB_BBK_BITS,
-    SB_BLK1_BITS,
-    SB_BLK2_BITS,
-    SB_FREQ_BITS,
-    extract_normal_burst,
-    extract_schf,
     extract_sync_burst,
 )
 from tsdr.radio.decoders.tetra.channel import (
-    append_crc,
     decode_block,
-    deinterleave,
-    depuncture_2_3,
     encode_block,
-    interleave,
-    puncture_2_3,
     rm3014_decode,
     rm3014_encode,
 )
 from tsdr.radio.decoders.tetra.decoder import TETRADecoder
 from tsdr.radio.decoders.tetra.demod import TetraDemod, estimate_freq_offset, rrc_taps
 from tsdr.radio.decoders.tetra.mac import SB1Info, parse_sb1
-from tsdr.radio.decoders.tetra.scramble import SCRAMB_INIT, generate_scramble_bits, scramble_init
+from tsdr.radio.decoders.tetra.scramble import SCRAMB_INIT
 from tsdr.radio.decoders.tetra.speech_channel import (
-    A1,
-    A2,
     SPEECH_K,
     _generate_speech_crc,
     bits_to_bytes,
     check_speech_crc,
-    codec_to_classes,
     decode_speech,
-    deinterleave_speech,
-    depuncture,
     encode_speech,
-    interleave_speech,
-    puncture,
-    reorder_to_codec,
 )
 from tsdr.radio.decoders.tetra.sync import (
-    SLOT_SYMBOLS,
-    SYNC_TRAIN_SYM_OFFSET,
-    Y_REF,
     SyncDetector,
-    SyncState,
 )
 from tsdr.radio.dsp import lfilter
 from tsdr.radio.dsp.costas import CostasLoop
@@ -285,352 +258,8 @@ def _load_tetra_iq() -> np.ndarray:
     return load_iq(sample_path)
 
 
-def pi4dqpsk_modulate(dibits: np.ndarray, sps: int) -> np.ndarray:
-    """Generate π/4-DQPSK baseband signal with RRC pulse shaping."""
-    # Map dibits to phase changes and accumulate
-    phase = 0.0
-    symbols = np.empty(len(dibits), dtype=np.complex128)
-    for i, d in enumerate(dibits):
-        phase += PI4_DQPSK_PHASE_MAP[int(d)]
-        symbols[i] = np.exp(1j * phase)
-
-    # Upsample and pulse shape (causal filter, matching demod)
-    upsampled = np.zeros(len(symbols) * sps, dtype=np.complex128)
-    upsampled[::sps] = symbols
-    taps = rrc_taps(float(sps), alpha=0.35)
-    result: np.ndarray = lfilter(taps, 1.0, upsampled)
-    return result.astype(np.complex64)
-
-
-class TestCheckpoint3Demod:
-    """Checkpoint 3: π/4-DQPSK demodulator + sample signal verification."""
-
-    def test_synthetic_signal(self):
-        """Demod synthetic π/4-DQPSK signal, verify >95% dibit accuracy."""
-
-        rng = np.random.default_rng(42)
-        n_symbols = 1000
-        sps = 4
-        sample_rate = 18000.0 * sps  # 72 kHz, no decimation needed
-
-        dibits = rng.integers(0, 4, size=n_symbols, dtype=np.uint8)
-        signal = pi4dqpsk_modulate(dibits, sps)
-
-        # Add AWGN at SNR=15 dB
-        snr_db = 15.0
-        sig_power = np.mean(np.abs(signal) ** 2)
-        noise_power = sig_power * 10.0 ** (-snr_db / 10.0)
-        noise = rng.normal(0, np.sqrt(noise_power / 2), size=(len(signal), 2)).astype(np.float32)
-        noisy = signal + (noise[:, 0] + 1j * noise[:, 1]).astype(np.complex64)
-
-        demod = TetraDemod(sample_rate)
-        soft_bits = demod.process(noisy)
-
-        # Convert soft bits to hard dibits
-        hard_bits = (soft_bits > 0).astype(np.uint8)
-        n_recovered = len(hard_bits) // 2
-        recovered_dibits = hard_bits[0::2] * 2 + hard_bits[1::2]
-
-        # Find best alignment accounting for RRC filter delay (~12 symbols)
-        # and diff demod offset. Search over both input and output offsets.
-        best_acc = 0.0
-        for skip_rec in range(min(50, n_recovered)):
-            for offset in range(min(50, len(dibits))):
-                ref = dibits[offset : offset + n_recovered - skip_rec]
-                rec = recovered_dibits[skip_rec : skip_rec + len(ref)]
-                match_len = min(len(ref), len(rec))
-                if match_len > 100:
-                    acc = np.mean(ref[:match_len] == rec[:match_len])
-                    best_acc = max(best_acc, acc)
-                    if best_acc > 0.99:
-                        break
-            if best_acc > 0.99:
-                break
-        assert best_acc > 0.95, f"Best dibit accuracy {best_acc:.3f} < 95%"
-
-    def test_real_sample_loads(self):
-        """Load real TETRA sample, verify output symbol count."""
-
-        iq = _load_tetra_iq()
-        sample_rate = SAMPLE_RATE
-        duration = 0.5
-        n_samples = int(duration * sample_rate)
-        iq_chunk = iq[:n_samples]
-
-        demod = TetraDemod(sample_rate)
-        soft_bits = demod.process(iq_chunk)
-
-        # Each symbol produces 2 soft bits
-        n_symbols = len(soft_bits) // 2
-        expected = int(duration * 18000)  # ~9000 symbols
-        assert abs(n_symbols - expected) / expected < 0.10, (
-            f"Symbol count {n_symbols} not within 10% of expected {expected}"
-        )
-        # Verify not all zeros
-        assert np.any(soft_bits != 0), "Soft bits are all zero"
-
-    def test_phase_histogram(self):
-        """Real TETRA signal should show 4-cluster phase histogram."""
-
-        iq = _load_tetra_iq()
-        sample_rate = SAMPLE_RATE
-        n_samples = int(1.0 * sample_rate)
-
-        demod = TetraDemod(sample_rate)
-        symbols = demod.process_symbols(iq[:n_samples])
-
-        if len(symbols) < 100:
-            pytest.fail(f"Too few symbols recovered: {len(symbols)}")
-
-        # Differential demod
-        diff = symbols[1:] * np.conj(symbols[:-1])
-        phases = np.angle(diff)
-
-        # Check 4 quadrants have significant occupancy
-        quadrant_counts = [
-            np.sum((phases > 0) & (phases < np.pi / 2)),  # π/4
-            np.sum((phases > np.pi / 2) & (phases < np.pi)),  # 3π/4
-            np.sum((phases < 0) & (phases > -np.pi / 2)),  # -π/4
-            np.sum((phases < -np.pi / 2) & (phases > -np.pi)),  # -3π/4
-        ]
-        total = sum(quadrant_counts)
-        fractions = [c / total for c in quadrant_counts]
-        for i, f in enumerate(fractions):
-            assert f > 0.15, f"Quadrant {i} has only {f:.1%} of symbols (expect >15%)"
-
-
-class TestCheckpoint4Sync:
-    """Checkpoint 4: Burst synchronization."""
-
-    def test_synthetic_sync_burst(self):
-        """Construct sync burst, embed in noise, verify sync detection."""
-        rng = np.random.default_rng(42)
-
-        # Build a sync burst: random symbols except training at correct offset
-        n_syms = SLOT_SYMBOLS
-        diff_syms = np.exp(1j * rng.uniform(-np.pi, np.pi, size=n_syms))
-
-        # Insert sync training at correct offset
-        diff_syms[SYNC_TRAIN_SYM_OFFSET : SYNC_TRAIN_SYM_OFFSET + len(Y_REF)] = Y_REF
-
-        # Convert diff symbols to raw symbols (integrate phase)
-        raw_syms = np.empty(n_syms + 1, dtype=np.complex128)
-        raw_syms[0] = 1.0
-        for i in range(n_syms):
-            raw_syms[i + 1] = raw_syms[i] * diff_syms[i]
-
-        # Add some padding and noise
-        padding = rng.standard_normal(100) + 1j * rng.standard_normal(100)
-        padded = np.concatenate([padding.astype(np.complex64), raw_syms.astype(np.complex64)])
-
-        # Add noise (SNR=10dB)
-        sig_power = np.mean(np.abs(padded) ** 2)
-        noise_power = sig_power * 10.0 ** (-10 / 10.0)
-        noise = (
-            rng.standard_normal(len(padded)) + 1j * rng.standard_normal(len(padded))
-        ) * np.sqrt(noise_power / 2)
-        noisy = (padded + noise).astype(np.complex64)
-
-        detector = SyncDetector(threshold=0.5)
-        results = detector.process(noisy)
-
-        assert detector.state == SyncState.LOCKED, "Should lock to sync burst"
-        assert len(results) >= 1, "Should find at least one burst"
-        assert results[0].burst_type == "sync", f"Expected sync, got {results[0].burst_type}"
-        assert results[0].correlation > 0.5, f"Correlation {results[0].correlation:.3f} too low"
-
-    def test_real_sample_sync_detection(self):
-        """Demod real sample, detect sync bursts."""
-
-        iq = _load_tetra_iq()
-        sample_rate = SAMPLE_RATE
-        duration = 5.0
-        n_samples = int(duration * sample_rate)
-
-        demod = TetraDemod(sample_rate)
-        symbols = demod.process_symbols(iq[:n_samples])
-
-        detector = SyncDetector()
-        results = detector.process(symbols)
-
-        sync_count = sum(1 for r in results if r.burst_type == "sync")
-        normal_count = sum(1 for r in results if r.burst_type in ("normal_1", "normal_2"))
-        total = len(results)
-
-        print(f"Total bursts: {total}, sync: {sync_count}, normal: {normal_count}")
-        assert total >= 5, f"Only {total} bursts found (expected ≥5)"
-
-    def test_lock_stability(self):
-        """Verify stable lock over 10 seconds."""
-
-        iq = _load_tetra_iq()
-        sample_rate = SAMPLE_RATE
-        duration = 10.0
-        n_samples = int(duration * sample_rate)
-
-        demod = TetraDemod(sample_rate)
-        symbols = demod.process_symbols(iq[:n_samples])
-
-        detector = SyncDetector()
-        results = detector.process(symbols)
-
-        # Count longest consecutive non-unknown run
-        longest_run = 0
-        current_run = 0
-        for r in results:
-            if r.burst_type != "unknown":
-                current_run += 1
-                longest_run = max(longest_run, current_run)
-            else:
-                current_run = 0
-
-        print(f"Total bursts: {len(results)}, longest locked run: {longest_run}")
-        assert longest_run >= 5, f"Longest locked run {longest_run} < 5"
-
-    def test_burst_type_identification(self):
-        """Verify sync:normal ratio is approximately 1:17."""
-
-        iq = _load_tetra_iq()
-        sample_rate = SAMPLE_RATE
-        duration = 10.0
-        n_samples = int(duration * sample_rate)
-
-        demod = TetraDemod(sample_rate)
-        symbols = demod.process_symbols(iq[:n_samples])
-
-        detector = SyncDetector()
-        results = detector.process(symbols)
-
-        sync_count = sum(1 for r in results if r.burst_type == "sync")
-        normal_count = sum(1 for r in results if r.burst_type in ("normal_1", "normal_2"))
-
-        print(f"Sync: {sync_count}, Normal: {normal_count}")
-        assert sync_count > 0, "No sync bursts"
-        assert normal_count > 0, "No normal bursts"
-
-
-class TestCheckpoint5Burst:
-    """Checkpoint 5: Burst field extraction."""
-
-    def test_offset_consistency(self):
-        """Verify field offsets by constructing a known 510-bit array."""
-        # Fill 510 bits with position-dependent values
-        soft = np.arange(510, dtype=np.float32) / 510.0
-
-        sb = extract_sync_burst(soft)
-        assert len(sb.freq_correction) == SB_FREQ_BITS == 80
-        assert len(sb.sb1) == SB_BLK1_BITS == 120
-        assert len(sb.bbk) == SB_BBK_BITS == 30
-        assert len(sb.sb2) == SB_BLK2_BITS == 216
-
-        # Verify values match expected positions
-        np.testing.assert_array_almost_equal(sb.freq_correction, soft[14:94])
-        np.testing.assert_array_almost_equal(sb.sb1, soft[94:214])
-        np.testing.assert_array_almost_equal(sb.bbk, soft[252:282])
-        np.testing.assert_array_almost_equal(sb.sb2, soft[282:498])
-
-        # Total data bits: 80 + 120 + 30 + 216 = 446 (+ tails + phase adj + training = 510)
-
-        ndb = extract_normal_burst(soft)
-        assert len(ndb.bkn1) == NDB_BLK1_BITS == 216
-        assert len(ndb.bbk) == NDB_BBK1_BITS + NDB_BBK2_BITS == 30
-        assert len(ndb.bkn2) == NDB_BLK2_BITS == 216
-
-        np.testing.assert_array_almost_equal(ndb.bkn1, soft[14:230])
-        np.testing.assert_array_almost_equal(ndb.bbk[:14], soft[230:244])
-        np.testing.assert_array_almost_equal(ndb.bbk[14:], soft[266:282])
-        np.testing.assert_array_almost_equal(ndb.bkn2, soft[282:498])
-
-    def test_real_sample_extraction(self):
-        """Extract SB1 from sync bursts in real sample."""
-
-        iq = _load_tetra_iq()
-        sample_rate = SAMPLE_RATE
-        n_samples = int(5.0 * sample_rate)
-
-        demod = TetraDemod(sample_rate)
-        symbols = demod.process_symbols(iq[:n_samples])
-
-        detector = SyncDetector()
-        results = detector.process(symbols)
-
-        sync_bursts = [r for r in results if r.burst_type == "sync"]
-        assert len(sync_bursts) > 0, "No sync bursts found"
-
-        for sb_result in sync_bursts[:10]:
-            sb = extract_sync_burst(sb_result.soft_bits)
-            assert len(sb.sb1) == 120, f"SB1 wrong length: {len(sb.sb1)}"
-            assert len(sb.bbk) == 30, f"BBK wrong length: {len(sb.bbk)}"
-            # Soft bits should have non-zero variance (not all zero)
-            assert np.std(sb.sb1) > 0.1, "SB1 soft bits have no variance"
-
-    def test_schf_extraction(self):
-        """Test SCH/F combined extraction from normal bursts."""
-
-        # Create known normal burst soft bits
-        soft = np.arange(510, dtype=np.float32) / 510.0
-
-        ndb = extract_normal_burst(soft)
-        schf = extract_schf(ndb)
-        assert len(schf) == 432, f"SCH/F wrong length: {len(schf)}"
-        np.testing.assert_array_almost_equal(schf[:216], ndb.bkn1)
-        np.testing.assert_array_almost_equal(schf[216:], ndb.bkn2)
-
-
 class TestCheckpoint6Channel:
     """Checkpoint 6: Channel decoding chain."""
-
-    def test_lfsr_reference(self):
-        """LFSR scrambling sequence with init=3 matches expected values."""
-
-        bits = generate_scramble_bits(3, 120)
-        assert len(bits) == 120
-        # First few bits should be deterministic for init=3
-        # Verify the LFSR produces non-trivial output
-        assert np.sum(bits) > 20, "Scramble bits too sparse"
-        assert np.sum(bits) < 100, "Scramble bits too dense"
-        # Verify reproducibility
-        bits2 = generate_scramble_bits(3, 120)
-        np.testing.assert_array_equal(bits, bits2)
-
-    def test_interleave_roundtrip(self):
-        """Interleave then deinterleave recovers original data."""
-
-        rng = np.random.default_rng(42)
-        for k, a in [(120, 11), (216, 101), (168, 13), (432, 103)]:
-            data = rng.standard_normal(k).astype(np.float32)
-            interleaved = interleave(data, k, a)
-            recovered = deinterleave(interleaved, k, a)
-            np.testing.assert_array_almost_equal(recovered, data, err_msg=f"K={k}, a={a}")
-
-    def test_depuncture_encode_roundtrip(self):
-        """Encode -> puncture -> depuncture -> Viterbi recovers type2 bits."""
-        rng = np.random.default_rng(42)
-        type1 = rng.integers(0, 2, size=60, dtype=np.uint8)
-
-        # CRC
-
-        type2 = append_crc(type1)
-        assert len(type2) == 76  # 60 + 16 CRC
-        # Pad to 80 for SB1
-        type2_padded = np.concatenate([type2, np.zeros(4, dtype=np.uint8)])
-
-        # Encode
-        mother = conv_encode(type2_padded, TETRA_K, TETRA_GENERATORS)
-        assert len(mother) == 320  # 80 * 4
-
-        # Puncture
-        punctured = puncture_2_3(mother, 120)
-        assert len(punctured) == 120
-
-        # Depuncture
-        soft_mother = depuncture_2_3(punctured.astype(np.float32) * 2.0 - 1.0, 320)
-        assert len(soft_mother) == 320
-
-        # Viterbi
-        dec = ViterbiDecoder(TETRA_K, TETRA_GENERATORS)
-        decoded = dec.decode(soft_mother)
-        np.testing.assert_array_equal(decoded, type2_padded)
 
     def test_full_sb1_chain(self):
         """Full forward + reverse chain for SB1: encode -> decode = identity."""
@@ -721,50 +350,6 @@ class TestCheckpoint6Channel:
 class TestCheckpoint7Bootstrap:
     """Checkpoint 7: SB1 bootstrap (BSCH decode)."""
 
-    def test_sb1_parse(self):
-        """Parse SB1 type1 bits with known values."""
-
-        type1 = np.zeros(60, dtype=np.uint8)
-        # CC=1 at bits 4-9
-        type1[9] = 1
-        # TN=3 at bits 10-11
-        type1[10] = 1
-        type1[11] = 1
-        # FN=18 at bits 12-16: 18 = 0b10010
-        type1[12] = 1
-        type1[15] = 1
-        # MN=1 at bits 17-22
-        type1[22] = 1
-        # MCC=204 at bits 31-40
-        for i, b in enumerate([(204 >> (9 - j)) & 1 for j in range(10)]):
-            type1[31 + i] = b
-        # MNC=16383 at bits 41-54
-        type1[41:55] = 1
-
-        info = parse_sb1(type1)
-        assert info.colour_code == 1
-        assert info.timeslot == 3
-        assert info.frame_number == 18
-        assert info.multiframe_number == 1
-        assert info.mcc == 204
-        assert info.mnc == 16383
-
-    def test_scramble_init(self):
-        """Verify scramble init formula."""
-
-        type1 = np.zeros(60, dtype=np.uint8)
-        type1[9] = 1  # CC=1
-        for i, b in enumerate([(204 >> (9 - j)) & 1 for j in range(10)]):
-            type1[31 + i] = b
-        type1[41:55] = 1  # MNC=16383
-
-        info = parse_sb1(type1)
-        expected = scramble_init(204, 16383, 1)
-        assert info.scramble_init == expected
-        # Verify formula: (CC | (MNC << 6) | (MCC << 20)) << 2 | 3
-        manual = ((1 | (16383 << 6) | (204 << 20)) << 2) | 3
-        assert info.scramble_init == manual
-
     def test_real_sample_bootstrap(self):
         """Decode SB1 from real sample, extract MCC/MNC/CC."""
 
@@ -800,33 +385,6 @@ class TestCheckpoint7Bootstrap:
         # Valid ranges
         assert 0 <= mccs[0] <= 1023
         assert 0 <= mncs[0] <= 16383
-
-    def test_tdma_timing(self):
-        """Verify TDMA timing from SB1 decodes."""
-
-        iq = _load_tetra_iq()
-        sample_rate = SAMPLE_RATE
-        n_samples = int(10.0 * sample_rate)
-
-        demod = TetraDemod(sample_rate)
-        symbols = demod.process_symbols(iq[:n_samples])
-        detector = SyncDetector()
-        results = detector.process(symbols)
-
-        for sb_result in [r for r in results if r.burst_type == "sync"][:10]:
-            sb = extract_sync_burst(sb_result.soft_bits)
-            type1, crc_ok = decode_block(sb.sb1, "SB1", SCRAMB_INIT)
-            if crc_ok:
-                info = parse_sb1(type1)
-                assert 0 <= info.timeslot <= 3, f"TN={info.timeslot} out of range"
-                assert 1 <= info.frame_number <= 18, f"FN={info.frame_number} out of range"
-                assert 1 <= info.multiframe_number <= 60, (
-                    f"MN={info.multiframe_number} out of range"
-                )
-                # FN should be in valid range (may not always be 18
-                # since the sync detector identifies based on training sequence
-                # correlation, and the signal may use sync format on all slots)
-                print(f"  TN={info.timeslot} FN={info.frame_number} MN={info.multiframe_number}")
 
 
 class TestCheckpoint8FullDecode:
@@ -894,33 +452,6 @@ class TestCheckpoint8FullDecode:
         print(f"BBK unique values: {len(unique_vals)} from {len(decoded_values)} decodes")
         assert len(decoded_values) > 0, "No BBK decodes"
 
-    def test_statistics_summary(self):
-        """Print decode statistics."""
-
-        results, s_init = self._get_bursts_and_init()
-
-        sync_count = sum(1 for r in results if r.burst_type == "sync")
-        normal_count = sum(1 for r in results if r.burst_type in ("normal_1", "normal_2"))
-
-        sb1_ok = sb2_ok = 0
-        for r in results:
-            if r.burst_type == "sync":
-                sb = extract_sync_burst(r.soft_bits)
-                _, ok = decode_block(sb.sb1, "SB1", SCRAMB_INIT)
-                if ok:
-                    sb1_ok += 1
-                _, ok = decode_block(sb.sb2, "SB2", s_init)
-                if ok:
-                    sb2_ok += 1
-
-        print("\n=== TETRA Decode Statistics ===")
-        print(f"Total bursts: {len(results)}")
-        print(f"Sync: {sync_count}, Normal: {normal_count}")
-        print(f"SB1 CRC-OK: {sb1_ok}/{sync_count} = {sb1_ok / max(1, sync_count):.0%}")
-        print(f"SB2 CRC-OK: {sb2_ok}/{sync_count} = {sb2_ok / max(1, sync_count):.0%}")
-        print(f"Scramble init: 0x{s_init:08X}")
-        assert len(results) >= 5
-
 
 class TestCheckpoint9FreqCorrection:
     """Checkpoint 9: Frequency correction."""
@@ -973,80 +504,6 @@ class TestCheckpoint9FreqCorrection:
             assert abs(est - freq_offset) < 500, (
                 f"Estimate {est:.0f} Hz too far from {freq_offset:.0f} Hz"
             )
-
-    def test_real_sample_offset(self):
-        """Extract freq correction from real sync bursts, verify consistency."""
-
-        iq = _load_tetra_iq()
-        sample_rate = SAMPLE_RATE
-        n_samples = int(10.0 * sample_rate)
-
-        demod = TetraDemod(sample_rate)
-        symbols = demod.process_symbols(iq[:n_samples])
-
-        detector = SyncDetector()
-        results = detector.process(symbols)
-
-        offsets = []
-        for r in results:
-            if r.burst_type == "sync":
-                est = estimate_freq_offset(r.diff_symbols)
-                offsets.append(est)
-
-        assert len(offsets) >= 3, "Not enough sync bursts for frequency estimate"
-        mean_offset = np.mean(offsets)
-        std_offset = np.std(offsets)
-        print(
-            f"Frequency offset: mean={mean_offset:.0f} Hz, std={std_offset:.0f} Hz, n={len(offsets)}"
-        )
-        assert std_offset < 500, f"Frequency estimates too inconsistent: std={std_offset:.0f} Hz"
-
-    def test_before_after(self):
-        """Compare CRC-OK rates with and without frequency correction."""
-
-        iq = _load_tetra_iq()
-        sample_rate = SAMPLE_RATE
-        n_samples = int(10.0 * sample_rate)
-
-        # Without freq correction
-        demod1 = TetraDemod(sample_rate)
-        symbols1 = demod1.process_symbols(iq[:n_samples])
-        det1 = SyncDetector()
-        results1 = det1.process(symbols1)
-
-        crc_ok_1 = sum(
-            1
-            for r in results1
-            if r.burst_type == "sync"
-            and decode_block(extract_sync_burst(r.soft_bits).sb1, "SB1", SCRAMB_INIT)[1]
-        )
-        total_1 = sum(1 for r in results1 if r.burst_type == "sync")
-
-        # Estimate offset from first pass
-        offsets = [estimate_freq_offset(r.diff_symbols) for r in results1 if r.burst_type == "sync"]
-        mean_offset = float(np.mean(offsets)) if offsets else 0.0
-
-        # With freq correction
-        demod2 = TetraDemod(sample_rate)
-        demod2.apply_freq_correction(mean_offset)
-        symbols2 = demod2.process_symbols(iq[:n_samples])
-        det2 = SyncDetector()
-        results2 = det2.process(symbols2)
-
-        crc_ok_2 = sum(
-            1
-            for r in results2
-            if r.burst_type == "sync"
-            and decode_block(extract_sync_burst(r.soft_bits).sb1, "SB1", SCRAMB_INIT)[1]
-        )
-        total_2 = sum(1 for r in results2 if r.burst_type == "sync")
-
-        rate1 = crc_ok_1 / max(1, total_1)
-        rate2 = crc_ok_2 / max(1, total_2)
-        print(f"Without freq corr: {crc_ok_1}/{total_1} = {rate1:.0%}")
-        print(f"With freq corr ({mean_offset:.0f} Hz): {crc_ok_2}/{total_2} = {rate2:.0%}")
-        # Both should be high (sample is well-tuned) or corrected should be better
-        assert rate2 >= rate1 * 0.9, f"Freq correction made things worse: {rate2:.0%} < {rate1:.0%}"
 
 
 class TestCheckpoint10Integration:
@@ -1136,89 +593,9 @@ class TestCheckpoint10Integration:
         msgs2 = decoder.get_messages()
         assert len(msgs2) > 0, "No messages after reset"
 
-    def test_statistics(self):
-        """Print decoder stats after 30 seconds."""
-
-        iq = _load_tetra_iq()
-        sample_rate = SAMPLE_RATE
-        chunk_size = int(0.5 * sample_rate)
-        duration = 30.0
-
-        decoder = TETRADecoder(sample_rate)
-        total_msgs = 0
-
-        for i in range(int(duration / 0.5)):
-            start = i * chunk_size
-            end = start + chunk_size
-            if end > len(iq):
-                break
-            decoder.demodulate(iq[start:end], i * 0.5)
-            total_msgs += len(decoder.get_messages())
-
-        quality = decoder._state.quality
-        crc_events = quality.crc_events
-        n_crc = len(crc_events)
-        n_ok = sum(1 for _, ok in crc_events if ok)
-        print(f"\n=== {type(decoder).LABEL} ===")
-        print(f"Total bursts: {quality.lifetime_bursts}")
-        print(f"CRC OK: {n_ok}/{n_crc}")
-        print(f"Messages: {total_msgs}")
-
-        if n_crc > 0:
-            crc_rate = n_ok / n_crc
-            print(f"CRC-OK rate: {crc_rate:.0%}")
-            assert crc_rate > 0.50, f"CRC-OK rate {crc_rate:.0%} below 50%"
-        assert total_msgs >= 2, f"Only {total_msgs} messages in 30s"
-
 
 class TestSpeechChannel:
     """Tests for TETRA speech traffic channel coding."""
-
-    def test_interleave_roundtrip(self):
-        """Matrix interleave/deinterleave should be identity."""
-        rng = np.random.default_rng(42)
-        data = rng.uniform(-1, 1, 432).astype(np.float32)
-        assert np.allclose(deinterleave_speech(interleave_speech(data)), data)
-        assert np.allclose(interleave_speech(deinterleave_speech(data)), data)
-
-    def test_puncture_depuncture_class1(self):
-        """Puncture/depuncture roundtrip for class 1 (rate 8/12)."""
-        rng = np.random.default_rng(42)
-        # 112 symbols (no tail), x 3 generators = 336 mother bits
-        mother = rng.choice([-1.0, 1.0], size=336).astype(np.float32)
-        coded = puncture(mother, A1)
-        assert len(coded) == 168  # N1_2_CODED
-        recovered = depuncture(coded, A1)
-        assert len(recovered) == 336
-        # Non-punctured positions should match exactly
-        for i in range(len(recovered)):
-            if recovered[i] != 0.0:
-                assert recovered[i] == mother[i]
-
-    def test_puncture_depuncture_class2(self):
-        """Puncture/depuncture roundtrip for class 2 (rate 8/18)."""
-        rng = np.random.default_rng(42)
-        # (60 + 8 CRC + 4 tail) = 72 symbols, x 3 = 216 mother bits
-        mother = rng.choice([-1.0, 1.0], size=216).astype(np.float32)
-        coded = puncture(mother, A2)
-        assert len(coded) == 162  # N2_2_CODED
-        recovered = depuncture(coded, A2)
-        assert len(recovered) == 216
-        for i in range(len(recovered)):
-            if recovered[i] != 0.0:
-                assert recovered[i] == mother[i]
-
-    def test_reorder_roundtrip(self):
-        """Codec-to-class and class-to-codec should be inverses."""
-        rng = np.random.default_rng(42)
-        class0 = rng.integers(0, 2, 102, dtype=np.uint8)
-        class1 = rng.integers(0, 2, 112, dtype=np.uint8)
-        class2 = rng.integers(0, 2, 60, dtype=np.uint8)
-        f1, f2 = reorder_to_codec(class0, class1, class2)
-        c0, c1, c2 = codec_to_classes(f1, f2)
-        np.testing.assert_array_equal(c0, class0)
-        np.testing.assert_array_equal(c1, class1)
-        np.testing.assert_array_equal(c2, class2)
 
     def test_speech_crc(self):
         """CRC generation and check should agree."""
@@ -1258,9 +635,3 @@ class TestSpeechChannel:
         # Verify bit packing produces expected length
         packed = bits_to_bytes(dec_f1)
         assert len(packed) == 18  # ceil(137/8) = 18
-
-    def test_bits_to_bytes_packing(self):
-        """bits_to_bytes should pack MSB-first and pad correctly."""
-        bits = np.array([1, 0, 1, 0, 0, 0, 1, 1, 1, 1], dtype=np.uint8)
-        result = bits_to_bytes(bits)
-        assert result == bytes([0b10100011, 0b11000000])

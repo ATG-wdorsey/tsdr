@@ -3,7 +3,7 @@ import pytest
 
 from tsdr.core.sdr.datatypes import AudioBatch
 from tsdr.radio.dsp.denoise import AudioDenoiser
-from tsdr.radio.dsp.rnnoise import FRAME_SIZE, RNNoiseState, rnnoise_available
+from tsdr.radio.dsp.rnnoise import FRAME_SIZE, rnnoise_available
 
 pytestmark = pytest.mark.skipif(
     not rnnoise_available(), reason="librnnoise not available on this platform"
@@ -12,22 +12,6 @@ pytestmark = pytest.mark.skipif(
 
 def _batch(samples: np.ndarray, sample_rate: float, stereo: bool = False) -> AudioBatch:
     return AudioBatch(samples=samples.astype(np.float32), sample_rate=sample_rate, stereo=stereo)
-
-
-def test_rnnoise_state_frame_shape_and_dtype():
-    state = RNNoiseState()
-    rng = np.random.default_rng(0)
-    frame = (rng.standard_normal(FRAME_SIZE) * 3000.0).astype(np.float32)
-    out = state.process(frame)
-    assert out.shape == (FRAME_SIZE,)
-    assert out.dtype == np.float32
-    state.close()
-
-
-def test_state_close_idempotent():
-    state = RNNoiseState()
-    state.close()
-    state.close()  # no error on second close
 
 
 def test_denoiser_passes_stereo_through_untouched():

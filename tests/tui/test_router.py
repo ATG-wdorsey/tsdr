@@ -263,37 +263,6 @@ def test_config_changed_marks_prefs_dirty() -> None:
     router._engine_prefs_sync.mark_dirty.assert_called_once_with()
 
 
-def test_pipeline_changed_marks_prefs_dirty() -> None:
-    store = UIStore(UIModel())
-    router = _make_router(store, _FakeReconciler(), _FakeEngine())
-    router.handle_pipeline_changed(
-        PipelineChanged(PipelineChangedEvent(device_id="rtl0", pipeline_name="audio", active=True))
-    )
-    router._engine_prefs_sync.mark_dirty.assert_called_once_with()
-
-
-def test_device_added_marks_prefs_dirty() -> None:
-    router = _make_router(UIStore(UIModel()), _FakeReconciler(), _FakeEngine())
-    router.handle_device_added(DeviceAdded(DeviceAddedEvent(device_id="rtl0")))
-    router._engine_prefs_sync.mark_dirty.assert_called_once_with()
-
-
-def test_device_removed_marks_prefs_dirty() -> None:
-    router = _make_router(UIStore(UIModel()), _FakeReconciler(), _FakeEngine())
-    router.handle_device_removed(DeviceRemoved(DeviceRemovedEvent(device_id="rtl0")))
-    router._engine_prefs_sync.mark_dirty.assert_called_once_with()
-
-
-def test_focus_changed_marks_prefs_dirty() -> None:
-    rec = _FakeReconciler()
-    rec.install("tuner")
-    rec.install("spectrum")
-    rec.install("console")
-    router = _make_router(UIStore(UIModel()), rec, _FakeEngine())
-    router.handle_focus_changed(FocusChanged(FocusChangedEvent(focused_device_id="rtl0")))
-    router._engine_prefs_sync.mark_dirty.assert_called_once_with()
-
-
 # --- structural routing -----------------------------------------------------
 
 

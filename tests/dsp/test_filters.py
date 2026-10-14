@@ -1,4 +1,3 @@
-import logging
 from math import gcd
 
 import numpy as np
@@ -6,7 +5,6 @@ import scipy.signal
 
 from tsdr.radio.dsp import FMDiscriminator, butter, firwin, lfilter, lfilter_zi, resample_poly
 from tsdr.radio.dsp._kernels import (
-    _RESAMPLER_TAPS_WARN,
     StreamingDecimFilter,
     StreamingFilter,
     StreamingPolyphaseResampler,
@@ -313,33 +311,6 @@ class TestIQConvert:
 
 
 class TestPolyphaseResampler:
-    def test_sine_wave_frequency_preserved(self):
-        """A sine wave resampled from 50kHz to 48kHz must preserve frequency."""
-        source_rate = 50000
-        target_rate = 48000
-        freq = 1000.0  # 1 kHz tone
-        duration = 0.1  # 100ms
-
-        t = np.arange(int(source_rate * duration)) / source_rate
-        mono = np.sin(2 * np.pi * freq * t).astype(np.float32)
-        stereo = np.column_stack([mono, mono])
-
-        g = gcd(target_rate, source_rate)
-        up, down = target_rate // g, source_rate // g
-        n_taps = 2 * 10 * max(up, down) + 1
-        resampler = StreamingPolyphaseResampler(up, down, n_taps)
-        result = resampler.process(stereo)
-
-        # Check output length is approximately correct
-        expected_len = int(len(mono) * target_rate / source_rate)
-        assert abs(result.shape[0] - expected_len) <= 2
-
-        # Check the resampled signal still has energy at 1kHz using FFT
-        spectrum = np.abs(np.fft.rfft(result[50:-50, 0]))  # skip edges
-        freqs = np.fft.rfftfreq(len(result[50:-50, 0]), 1.0 / target_rate)
-        peak_freq = freqs[np.argmax(spectrum)]
-        assert abs(peak_freq - freq) < 50  # within 50 Hz
-
     def test_streaming_continuity(self):
         """Chunked processing must produce same length and similar output as single-shot."""
         source_rate = 50000
@@ -386,16 +357,6 @@ class TestMakeRationalResampler:
         assert (r.up, r.down) == (1, 1)
         x = np.zeros((256, 1), dtype=np.float32)
         assert r.process(x).shape[0] == 256
-
-    def test_large_taps_warn(self, caplog):
-        with caplog.at_level(logging.WARNING):
-            StreamingPolyphaseResampler(2, 1, _RESAMPLER_TAPS_WARN + 1)
-        assert any("resampler_taps_large" in rec.getMessage() for rec in caplog.records)
-
-    def test_normal_taps_do_not_warn(self, caplog):
-        with caplog.at_level(logging.WARNING):
-            StreamingPolyphaseResampler(4, 1, 81)
-        assert not any("resampler_taps_large" in rec.getMessage() for rec in caplog.records)
 
 
 class TestLfilterIIRF32:

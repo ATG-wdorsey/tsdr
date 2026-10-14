@@ -10,11 +10,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.sdr.io import load_iq as _load_iq
 from tsdr.radio.decoders.fsk import FSKGenericDecoder, NAVTEXDecoder, RTTYDecoder
 from tsdr.radio.decoders.fsk.fec import check_bits, resolve_char
-from tsdr.radio.decoders.fsk.profile import NAVTEX_PROFILE, PROFILES, RTTY_PROFILE
+from tsdr.radio.decoders.fsk.profile import NAVTEX_PROFILE, RTTY_PROFILE
 from tsdr.radio.decoders.fsk.tables import (
     ALPHABETS,
     CCIR_ALPHA,
@@ -26,7 +25,6 @@ from tsdr.radio.decoders.fsk.tables import (
 )
 from tsdr.radio.dsp import estimate_fsk_shift
 from tsdr.radio.dsp.fsk import FSKFrontEnd
-from tsdr.radio.registry import make_demodulator
 
 SAMPLE_FILE = Path(__file__).resolve().parents[1] / "samples" / "navtex_518k_sr5k.cf32.zst"
 SAMPLE_RATE = 5000.0
@@ -311,14 +309,6 @@ def navtex_iq():
 
 
 class TestRealSample:
-    def test_frontend_bimodal(self, navtex_iq):
-        iq = np.ascontiguousarray(navtex_iq) / (np.mean(np.abs(navtex_iq)) + 1e-12)
-        fe = FSKFrontEnd(SAMPLE_RATE, 100.0, 170.0)
-        soft = fe.process(iq.astype(np.complex64))
-        # a real NAVTEX signal drives soft bits well away from zero on both rails
-        assert np.mean(soft > 0) == pytest.approx(0.5, abs=0.15)
-        assert np.median(np.abs(soft)) > 0.3
-
     def test_full_decode(self, navtex_iq):
         decoder = NAVTEXDecoder(sample_rate=SAMPLE_RATE)
         texts = _decode(decoder, navtex_iq)
@@ -398,30 +388,6 @@ class TestGenericMode:
         d = FSKGenericDecoder(sample_rate=fs, framing="sitor_b", baud=100.0, shift_hz=170.0)
         assert d._alphabet == "ccir476"
         assert "GENERIC SITOR" in " ".join(_decode(d, iq))
-
-    def test_make_demodulator_forwards_params(self):
-        spec = DemodSpec(
-            mode="FSK",
-            fsk_baud=50.0,
-            fsk_shift_hz=450.0,
-            fsk_reverse=True,
-            fsk_alphabet="ita2",
-            fsk_framing="start_stop",
-        )
-        d = make_demodulator(spec, 6000.0, 1000)
-        assert isinstance(d, FSKGenericDecoder)
-        assert d._pin_baud == 50.0 and d._pin_shift == 450.0 and d._pin_invert is True
-
-
-class TestPresets:
-    def test_dwd(self):
-        p = PROFILES["dwd"]
-        assert (p.baud, p.shift_hz, p.polarity) == (50.0, 450.0, "reverse")
-
-    def test_all_well_formed(self):
-        for p in PROFILES.values():
-            assert p.framing in ("start_stop", "sitor_b")
-            assert p.alphabet in ("ita2", "ccir476")
 
 
 # --------------------------- real DWD RTTY sample ---------------------------

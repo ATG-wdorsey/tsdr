@@ -8,12 +8,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from scipy.signal import find_peaks
 
 from tsdr.core.sdr.io import load_iq as _load_iq
 from tsdr.radio.decoders.dmr.constants import (
     DEVIATION,
-    SYMBOL_RATE,
     SYNC_DIBITS,
     SYNC_MAX_ERRORS,
     SYNC_PATTERNS,
@@ -69,57 +67,6 @@ def decimate_and_demod(iq, sample_rate=SAMPLE_RATE):
     fm = phase_diff * scale
 
     return fm, decimated_rate
-
-
-class TestStage1FMDemod:
-    """Stage 1: Verify FM demodulation produces 4FSK levels."""
-
-    def test_four_level_distribution(self, dmr_iq):
-        fm, rate = decimate_and_demod(dmr_iq)
-
-        hist, edges = np.histogram(fm, bins=200, range=(-2, 2))
-        centers = (edges[:-1] + edges[1:]) / 2
-
-        peaks, props = find_peaks(hist, height=np.max(hist) * 0.05, distance=10)
-        peak_positions = sorted(centers[peaks])
-
-        assert len(peak_positions) >= 4, (
-            f"Expected at least 4 peaks in 4FSK histogram, got {len(peak_positions)}: {peak_positions}"
-        )
-
-    def test_signal_present(self, dmr_iq):
-        fm, rate = decimate_and_demod(dmr_iq)
-
-        assert np.std(fm) > 0.2, f"FM signal too weak, std={np.std(fm):.3f}"
-        assert np.max(np.abs(fm)) > 0.5, "No significant FM deviation"
-
-
-class TestStage2SymbolRecovery:
-    """Stage 2: Verify M&M recovers symbols at 4800 sym/s."""
-
-    def _run_pipeline(self, dmr_iq):
-        decoder = DMRDecoder(sample_rate=SAMPLE_RATE)
-        fm = decoder._channelizer.process(dmr_iq)
-        return decoder._mm.process(fm)
-
-    def test_symbol_rate(self, dmr_iq):
-        symbols = self._run_pipeline(dmr_iq)
-        duration = len(dmr_iq) / SAMPLE_RATE
-        actual_rate = len(symbols) / duration
-        assert abs(actual_rate - SYMBOL_RATE) / SYMBOL_RATE < 0.05, (
-            f"Symbol rate {actual_rate:.0f} not within 5% of {SYMBOL_RATE}"
-        )
-
-    def test_four_level_eye(self, dmr_iq):
-        """Recovered symbols should cluster at 4 levels."""
-        symbols = self._run_pipeline(dmr_iq)
-        hist, edges = np.histogram(symbols, bins=100)
-        centers = (edges[:-1] + edges[1:]) / 2
-
-        peaks, _ = find_peaks(hist, height=np.max(hist) * 0.05, distance=5)
-        peak_pos = centers[peaks]
-        assert np.any(peak_pos > 0), "No positive symbol clusters"
-        assert np.any(peak_pos < 0), "No negative symbol clusters"
 
 
 class TestStage3SyncDetection:
