@@ -542,7 +542,7 @@ class DMRDecoder(Demodulator):
         if ts.voice_burst_count <= 3 or ts.voice_burst_count % 100 == 0:
             self._pending_messages.append(
                 DecodedMessage(
-                    text=f"{sync_type} slot={timeslot} voice burst#{ts.voice_burst_count}",
+                    text=f"{sync_type} TS{timeslot + 1} voice burst#{ts.voice_burst_count}",
                     timestamp=timestamp,
                 )
             )
@@ -564,7 +564,7 @@ class DMRDecoder(Demodulator):
 
         if slot_type is None:
             self._slot_type_fail += 1
-            text = f"{sync_type} slot={timeslot} [SlotType err]"
+            text = f"{sync_type} TS{timeslot + 1} [SlotType err]"
             if not cach_ok:
                 text += " [CACH err]"
             self._pending_messages.append(DecodedMessage(text=text, timestamp=timestamp))
@@ -609,7 +609,7 @@ class DMRDecoder(Demodulator):
             )
 
         if slot_type.data_type != DataType.IDLE:
-            text = f"{sync_type} slot={timeslot} cc={slot_type.color_code} type={dt_name}"
+            text = f"{sync_type} TS{timeslot + 1} cc={slot_type.color_code} type={dt_name}"
             if not cach_ok:
                 text += " [CACH err]"
             self._pending_messages.append(DecodedMessage(text=text, timestamp=timestamp))

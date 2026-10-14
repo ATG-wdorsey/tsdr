@@ -16,6 +16,7 @@ import itertools
 import numpy as np
 import pytest
 
+from tsdr.core.demod_spec import DemodSpec
 from tsdr.radio.decoders.dmr import decoder as dmr
 from tsdr.radio.decoders.dmr.constants import (
     BURST_DIBITS,
@@ -27,6 +28,7 @@ from tsdr.radio.decoders.dmr.constants import (
 from tsdr.radio.decoders.dmr.decoder import DMRDecoder
 from tsdr.radio.decoders.dmr.fec import _QR_16_7_6_WORDS, hamming_7_4_decode
 from tsdr.radio.dsp import rrc_taps
+from tsdr.radio.registry import make_demodulator
 
 RATE = 48_000.0
 _LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}  # dibit -> 4FSK symbol (ETSI TS 102 361-1)
@@ -194,7 +196,8 @@ def test_a_lost_signal_is_not_decoded_as_voice() -> None:
 def test_the_timeslot_heard_is_chosen() -> None:
     """auto plays the first call; "1" / "2" one timeslot; "both" TS1 left, TS2 right,
     in step, without waiting for a slot that carries no voice."""
-    decoder = DMRDecoder(sample_rate=RATE, audio_slot="both")
+    decoder = make_demodulator(DemodSpec(mode="DMR", dmr_slot="both"), RATE)  # as tsdr builds it
+    assert isinstance(decoder, DMRDecoder)
     now = 1000.0
     for slot, level in ((0, 0.25), (1, 0.5)):
         decoder._ts_state[slot].last_voice_ts = now

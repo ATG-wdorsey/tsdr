@@ -108,7 +108,13 @@ register("ACARS", ACARSDecoder, lambda sample_rate, **_: ACARSDecoder(sample_rat
 register("ADSB", ADSBDecoder, lambda sample_rate, **_: ADSBDecoder(sample_rate=sample_rate))
 register("APRS", APRSDecoder, lambda sample_rate, **_: APRSDecoder(sample_rate=sample_rate))
 register("DAB", DABDecoder, lambda sample_rate, **_: DABDecoder(sample_rate=sample_rate))
-register("DMR", DMRDecoder, lambda sample_rate, **_: DMRDecoder(sample_rate=sample_rate))
+register(
+    "DMR",
+    DMRDecoder,
+    lambda sample_rate, audio_slot=None, **_: DMRDecoder(
+        sample_rate=sample_rate, audio_slot=audio_slot
+    ),
+)
 register("FLEX", FLEXDecoder, lambda sample_rate, **_: FLEXDecoder(sample_rate=sample_rate))
 register("NAVTEX", NAVTEXDecoder, lambda sample_rate, **_: NAVTEXDecoder(sample_rate=sample_rate))
 register(
