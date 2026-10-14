@@ -243,6 +243,7 @@ class SearchController:
         tuned_hz: float,
         current_db: float,
         hold_db: float,  # the squelch threshold
+        squelch_open: bool | None = None,  # the demodulator's squelch; None = unknown
         bandwidth_hz: float,
         lo_hz: float,
         lo_exclusion_hz: float,
@@ -254,15 +255,21 @@ class SearchController:
         (levels over locating_bandwidth) picks among eligible channels, which
         must be local peaks of it (`outer_locate_db`: the grid channels just
         past each end): SEARCH stops on a signal's center, never on the edge of
-        a strong signal, locked out or not. `voice` is VSQ's verdict on the
-        dial's transmission (None = VSQ off): "not_voice" closes the squelch
-        for the hold, and SEARCH leaves the channel disarmed."""
+        a strong signal, locked out or not. The dial's channel is held while
+        `squelch_open` (what the listener hears: the squelch averages the
+        channel and opens 3 dB over its threshold); a single FFT frame of
+        noise reads about 1 dB either side of its mean, so `current_db`
+        against `hold_db` decides only while the squelch state is unknown.
+        `voice` is VSQ's verdict on the dial's transmission (None = VSQ off):
+        "not_voice" closes the squelch for the hold, and SEARCH leaves the
+        channel disarmed."""
         if not np.array_equal(channels_hz, self._channels):
             self._channels = channels_hz
             self._above_since = np.full(len(channels_hz), np.nan)
         trigger_db = config.trigger_for(hold_db)
         hold_db = min(hold_db, trigger_db)
-        is_open = current_db >= hold_db and voice != "not_voice"
+        is_open = squelch_open if squelch_open is not None else current_db >= hold_db
+        is_open = is_open and voice != "not_voice"
 
         if tuned_hz != self._current:
             # Within a run the dial moves only by SEARCH's jumps and `[` / `]`
