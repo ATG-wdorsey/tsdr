@@ -293,7 +293,11 @@ only on local peaks of the step-wide locating levels (`local_peaks`, with the
 grid channel past each end measured too): a strong signal's leakage into the
 channels beside it slopes down from its center, so its edges, locked out or
 not, are never targets. The
-squelch threshold is the hold threshold. SEARCH never moves the hardware:
+squelch holds the channel: `SearchStage` passes the demodulator's squelch state
+(`SDRDeviceContext.demod_status`, what the listener hears) to the controller,
+which holds while it is open; one unaveraged FFT frame of noise reads about 1 dB
+either side of its mean, too noisy to decide (the threshold decides only before
+the demodulator reports). SEARCH never moves the hardware:
 starting it selects free tuning, it skips channels within the LO offset of the
 LO, the engine drops a jump that would recenter, and any other dial move, a
 recenter, a sample rate change, center tuning, a non-narrowband demodulator,
