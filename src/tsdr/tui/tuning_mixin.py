@@ -193,6 +193,17 @@ class TuningMixin(MixinBase):
         except SDRException as e:
             self._show_error(str(e))
             return
+        # A tuning step coarser than the channel would blind SEARCH between its grid
+        # points; it searched on the mode's automatic step, so the tuner shows that.
+        ts = get_tuning_state()
+        coarse = ""
+        if ts.step is not None and search.step_hz < ts.step:
+            coarse = (
+                f"; step {format_hz(search.step_hz, decimals=1, long_suffix=True)} (auto: the "
+                f"{format_hz(ts.step, decimals=1, long_suffix=True)} step would miss stations)"
+            )
+            ts.step = None
+            self._publish_tuning_state_changed()
         low = format_hz(search.low_hz, decimals=3, long_suffix=True)
         high = format_hz(search.high_hz, decimals=3, long_suffix=True)
         trigger = (
@@ -200,7 +211,7 @@ class TuningMixin(MixinBase):
             if search.trigger_db is None
             else f"{search.trigger_db:.0f} dBFS"
         )
-        self.show_status(f"SEARCH {low} to {high}, trigger {trigger}")
+        self.show_status(f"SEARCH {low} to {high}, trigger {trigger}{coarse}")
 
     def _set_search_edge(self, edge: Literal["low", "high"]) -> None:
         """`{`/`}`: put SEARCH's lower/upper edge at the dial."""
