@@ -22,7 +22,6 @@ from tsdr.core.sdr.config import LoOffset, TuningMode
 from tsdr.core.sdr.device_context import SDRDeviceContext
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
-from tsdr.core.sdr.search import TRIGGER_ABOVE_SQUELCH_DB
 from tsdr.core.sdr.spectrum_view import adjusted_span
 from tsdr.core.sdr.tune_policy import effective_lo_side
 from tsdr.core.search_control import (
@@ -207,11 +206,7 @@ class TuningMixin(MixinBase):
             self._publish_tuning_state_changed()
         low = format_hz(search.low_hz, decimals=3, long_suffix=True)
         high = format_hz(search.high_hz, decimals=3, long_suffix=True)
-        trigger = (
-            f"squelch + {TRIGGER_ABOVE_SQUELCH_DB:g} dB"
-            if search.trigger_db is None
-            else f"{search.trigger_db:.0f} dBFS"
-        )
+        trigger = "the squelch" if search.trigger_db is None else f"{search.trigger_db:.0f} dBFS"
         self.show_status(f"SEARCH {low} to {high}, trigger {trigger}{coarse}")
 
     def _set_search_edge(self, edge: Literal["low", "high"]) -> None:

@@ -2,7 +2,7 @@ from argparse import BooleanOptionalAction, Namespace
 
 from tsdr.core.memories import get_memory_store
 from tsdr.core.sdr.engine import get_engine
-from tsdr.core.sdr.search import LOCKOUT_TAG, TRIGGER_ABOVE_SQUELCH_DB, SearchConfig
+from tsdr.core.sdr.search import LOCKOUT_TAG, SearchConfig
 from tsdr.core.search_control import (
     clear_session_lockouts,
     lock_out_channel,
@@ -36,11 +36,7 @@ def describe(search: SearchConfig, squelch_db: float) -> str:
         {
             "range": f"{freq_mhz(search.low_hz, precision=4)}-{freq_mhz(search.high_hz, precision=4)}",
             "step": f"[yellow]{search.step_hz / 1e3:g} kHz[/]",
-            "trigger": (
-                f"squelch + {TRIGGER_ABOVE_SQUELCH_DB:g} dB"
-                if search.trigger_db is None
-                else _dbfs(search.trigger_db)
-            ),
+            "trigger": ("the squelch" if search.trigger_db is None else _dbfs(search.trigger_db)),
             "hold": f"{_dbfs(squelch_db)} for {search.hold_s:g} s",
             "dwell": dwell,
             "vsq": state("on" if search.voice_squelch else "off"),

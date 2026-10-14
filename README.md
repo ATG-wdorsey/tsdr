@@ -269,7 +269,8 @@ Search (find activity within the captured band):
   is it coarser than the channel, which would leave stations between grid
   points unseen: a 100 kHz step gives way to the mode's automatic step (12.5 kHz
   for NFM), and that mode's tuning step goes to auto. The squelch holds the channel:
-  SEARCH moves on only after the squelch has stayed shut for the hold time
+  it opens at its line (`SQ`) and shuts only when the channel drops 3 dB under
+  it (the `HY` line); SEARCH moves on only after the squelch has stayed shut for the hold time
   (2 s), so replies are heard, and between hits it stays on the last
   channel. `[` / `]` move it on to the previous / next signal within its range
   (skipping locked-out channels) without stopping it, so you can leave a channel
@@ -299,7 +300,7 @@ Search (find activity within the captured band):
 
 `search on --low 144M --high 148M --threshold -60 --hold 2 --dwell 30` sets the
 edges, the trigger (dBFS within the channel, as the squelch measures it;
-by default 3 dB above the squelch, following it, so `u` / `U` set both), the
+by default the squelch itself, following it, so `u` / `U` set both), the
 hold time and the most time on one
 active channel (`--dwell 0`: unlimited, the default); `--full` forgets the
 edges. `search` shows the settings, `search off` stops, `search lockout
@@ -348,9 +349,11 @@ Display:
 The spectrum has a dB grid (every 10 dB, or 5 dB in a narrow window), labeled
 in a column on the left; the waterfall's column is its color key, strongest at
 the top. Each label is in the color a signal at that level takes on the
-waterfall (gray for the noise floor's dark blues). With the squelch on, a dashed orange line (`SQ`) marks the squelch,
-and while SEARCH runs a yellow line (`TR`) over the search range marks its
-trigger. The trace is power per FFT bin while the squelch measures the whole
+waterfall (gray for the noise floor's dark blues). With the squelch on, a dashed orange line (`SQ`) marks the squelch:
+the squelch opens, and SEARCH stops on a channel, when the channel reaches it.
+While SEARCH runs, a dimmer dashed line (`HY`) 3 dB below it over the search
+range marks where the squelch shuts again (a held channel has to drop under
+it), and a yellow line (`TR`) marks a trigger set by hand. The trace is power per FFT bin while the squelch measures the whole
 channel, so the lines sit where noise at those levels shows: a squelch set
 just above the noise floor is drawn just above it. A narrow carrier, all in
 one bin, has to rise further above the line (about 14 dB for NFM at 10 MS/s)

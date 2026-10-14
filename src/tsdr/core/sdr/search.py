@@ -4,9 +4,10 @@ The dial jumps between channels on the tuning-step grid inside the captured
 band while the hardware stays put (free tuning). Levels are in-channel power
 in dBFS, the squelch's units, summed from the unaveraged spectrum. A channel
 that stays above the trigger for ATTACK_S is eligible, and the strongest
-eligible channel wins. The squelch threshold is the hold threshold: SEARCH
-leaves the current channel only after it has stayed below the squelch for
-longer than the hold time, or after the maximum dwell time.
+eligible channel wins. The trigger is the squelch threshold (the SQ line) unless
+set by hand; SEARCH leaves the current channel only after it has stayed below
+the squelch's closing level (SQUELCH_HYSTERESIS_DB under the line) for longer
+than the hold time, or after the maximum dwell time.
 """
 
 from __future__ import annotations
@@ -18,11 +19,10 @@ from typing import Literal
 import numpy as np
 
 from tsdr.core.sdr.voice_squelch import Verdict
+from tsdr.radio.dsp.squelch import SQUELCH_HYSTERESIS_DB
 
 LOCKOUT_TAG = "lockout"
 DEFAULT_HOLD_S = 2.0
-# Without a trigger set, SEARCH stops on channels this far above the squelch.
-TRIGGER_ABOVE_SQUELCH_DB = 3.0
 # A channel must stay above the trigger this long before SEARCH jumps to it.
 ATTACK_S = 0.1
 # SEARCH is for narrowband channels: not broadcast FM, DAB or ADS-B.
@@ -40,7 +40,7 @@ class SearchConfig:
     low_hz: float
     high_hz: float
     step_hz: float
-    trigger_db: float | None = None  # None = TRIGGER_ABOVE_SQUELCH_DB over the squelch, live
+    trigger_db: float | None = None  # None = the squelch threshold (the SQ line), live
     hold_s: float = DEFAULT_HOLD_S
     max_dwell_s: float | None = None  # None = unlimited
     voice_squelch: bool = False  # VSQ: transmissions without speech are let go
@@ -63,9 +63,7 @@ class SearchConfig:
             raise ValueError(f"search max dwell must be positive, got {self.max_dwell_s}")
 
     def trigger_for(self, squelch_db: float) -> float:
-        if self.trigger_db is None:
-            return squelch_db + TRIGGER_ABOVE_SQUELCH_DB
-        return self.trigger_db
+        return squelch_db if self.trigger_db is None else self.trigger_db
 
     def channels(self) -> np.ndarray:
         """Channel centers: the step grid within [low_hz, high_hz]."""
@@ -227,6 +225,7 @@ class SearchController:
         self._arrived_at = 0.0
         self._last_open = -math.inf
         self._heard = False
+        self._frame_open = False  # the squelch as the frame levels see it, when not reported
         # Channels left at the maximum dwell or as not voice (VSQ): not eligible
         # until they drop below the hold.
         self._disarmed: set[float] = set()
@@ -257,9 +256,10 @@ class SearchController:
         past each end): SEARCH stops on a signal's center, never on the edge of
         a strong signal, locked out or not. The dial's channel is held while
         `squelch_open` (what the listener hears: the squelch averages the
-        channel and opens 3 dB over its threshold); a single FFT frame of
-        noise reads about 1 dB either side of its mean, so `current_db`
-        against `hold_db` decides only while the squelch state is unknown.
+        channel, opens at its threshold and closes SQUELCH_HYSTERESIS_DB below);
+        a single FFT frame of noise reads about 1 dB either side of its mean, so
+        `current_db` against the same two levels decides only while the squelch
+        state is unknown.
         `voice` is VSQ's verdict on the dial's transmission (None = VSQ off):
         "not_voice" closes the squelch for the hold, and SEARCH leaves the
         channel disarmed."""
@@ -268,8 +268,12 @@ class SearchController:
             self._above_since = np.full(len(channels_hz), np.nan)
         trigger_db = config.trigger_for(hold_db)
         hold_db = min(hold_db, trigger_db)
-        is_open = squelch_open if squelch_open is not None else current_db >= hold_db
-        is_open = is_open and voice != "not_voice"
+        release_db = hold_db - SQUELCH_HYSTERESIS_DB
+        if squelch_open is None:
+            was_open = self._frame_open and tuned_hz == self._current
+            squelch_open = current_db >= (release_db if was_open else hold_db)
+            self._frame_open = squelch_open
+        is_open = squelch_open and voice != "not_voice"
 
         if tuned_hz != self._current:
             # Within a run the dial moves only by SEARCH's jumps and `[` / `]`
@@ -297,7 +301,7 @@ class SearchController:
         self._disarmed = {
             f
             for f in self._disarmed
-            if np.any(levels_db[np.abs(channels_hz - f) < half] >= hold_db)
+            if np.any(levels_db[np.abs(channels_hz - f) < half] >= release_db)
         }
         pick = levels_db if locate_db is None else locate_db
         eligible = above & (now - self._above_since >= ATTACK_S)

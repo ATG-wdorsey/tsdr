@@ -524,3 +524,19 @@ def test_holds_while_the_squelch_is_open_even_if_a_frame_reads_low() -> None:
     run.squelch_open = False
     run.tick(2.2)
     assert run.jumps == [144.5e6, 145.5e6]
+
+
+def test_without_the_demodulators_squelch_the_level_holds_down_to_3_db_under_it() -> None:
+    """Decoders report no squelch: the frame level decides, with the squelch's own
+    hysteresis (open at the line, held until 3 dB under it)."""
+    run = _Run()
+    run.signals[round(144.5e6)] = -60.0
+    run.tick(0.2)
+    assert run.jumps == [144.5e6]
+    run.signals[round(145.5e6)] = -60.0
+    run.signals[round(144.5e6)] = SQUELCH - 2.0  # under the line, within the 3 dB
+    run.tick(5.0)
+    assert run.jumps == [144.5e6]
+    run.signals[round(144.5e6)] = SQUELCH - 4.0
+    run.tick(2.5)
+    assert run.jumps == [144.5e6, 145.5e6]

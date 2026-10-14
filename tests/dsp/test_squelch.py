@@ -40,17 +40,19 @@ def test_stays_closed_on_weak_signal():
     assert not gate.is_open
 
 
-def test_hysteresis_prevents_chatter_near_threshold():
-    """Signal at the exact threshold should not open the gate (needs +3 dB)."""
-    gate = _gate(threshold_db=-50.0)
-    _pump(gate, power_db=-50.0, chunks=80)
-    assert not gate.is_open
-
-
-def test_hysteresis_needs_3db_above_to_open():
-    gate = _gate(threshold_db=-50.0)
-    _pump(gate, power_db=-46.0, chunks=80)
+def test_opens_at_the_threshold_and_closes_3_db_below():
+    """The SQ line opens it; it closes only once the channel drops 3 dB under the line
+    (the owner's choice). It opened 3 dB over the line and closed 3 dB under it: a
+    squelch set just above the noise stayed open on it."""
+    gate = _gate(threshold_db=-50.0, hang_ms=0.0)
+    _pump(gate, power_db=-49.5, chunks=80)
     assert gate.is_open
+    _pump(gate, power_db=-52.5, chunks=80)
+    assert gate.is_open  # within the 3 dB below the line
+    _pump(gate, power_db=-53.5, chunks=80)
+    assert not gate.is_open
+    _pump(gate, power_db=-50.5, chunks=80)
+    assert not gate.is_open  # under the line: stays shut
 
 
 def test_hang_delays_closing():

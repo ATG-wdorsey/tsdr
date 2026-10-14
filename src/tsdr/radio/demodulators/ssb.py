@@ -138,6 +138,7 @@ class SSBDemodulator(Demodulator):
         return DemodStatus(
             squelch_open=self._squelch.is_open if self._squelch.enabled else None,
             squelch_threshold_db=self._squelch.threshold_db,
+            squelch_level_db=self._squelch.power_ema_db if self._squelch.enabled else None,
         )
 
     def set_squelch(self, enabled: bool, threshold_db: float, hang_ms: float) -> None:

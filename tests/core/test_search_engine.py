@@ -440,10 +440,10 @@ def test_a_stale_lockout_update_does_not_restart_search(engine: SDREngine) -> No
 
 def test_a_default_trigger_follows_the_squelch(engine: SDREngine) -> None:
     search = start_search("pluto")
-    assert search.trigger_for(-50.0) == -47.0
+    assert search.trigger_for(-50.0) == -50.0  # the SQ line itself
     engine.update_squelch("pluto", "audio", threshold_db=-80.0)
     assert _config(engine).search == search  # a squelch change keeps searching
-    assert search.trigger_for(-80.0) == -77.0
+    assert search.trigger_for(-80.0) == -80.0
 
 
 def test_a_trigger_set_by_hand_is_kept(engine: SDREngine) -> None:

@@ -29,6 +29,7 @@ from tsdr.core.tracing import traced
 from tsdr.core.tuning import click_snap_step, save_previous_tune_state
 from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import axis_si_prefix
+from tsdr.radio.dsp.squelch import SQUELCH_HYSTERESIS_DB
 from tsdr.tui.inline_edit import InlineEditor
 from tsdr.tui.pause import PAUSED_HINT, focused_paused
 from tsdr.tui.widgets.db_scale import (
@@ -78,13 +79,16 @@ _STYLE_SEARCH_BG = Style(bgcolor="#262000")  # text-mode SEARCH range
 _LINE_STYLES = {
     "grid": Style(color=GRID_GRAY),
     "squelch": Style(color="dark_orange"),
+    "hysteresis": Style(color="orange4"),
     "trigger": Style(color="yellow"),
 }
-_LINE_LABELS = {"squelch": "  SQ ", "trigger": "  TR "}
+_LINE_LABELS = {"squelch": "  SQ ", "hysteresis": "  HY ", "trigger": "  TR "}
 # A reference line off the dB window: its label at that edge, no line.
 _OFF_WINDOW_LABELS = {
     ("squelch", True): " SQ↑ ",
     ("squelch", False): " SQ↓ ",
+    ("hysteresis", True): " HY↑ ",
+    ("hysteresis", False): " HY↓ ",
     ("trigger", True): " TR↑ ",
     ("trigger", False): " TR↓ ",
 }
@@ -105,6 +109,7 @@ _SEARCH_EDGE = np.array([255, 190, 0, 120], dtype=np.uint8)
 _LINE_COLORS = {
     "grid": np.array([110, 110, 110, 90], dtype=np.uint8),
     "squelch": np.array([255, 140, 0, 230], dtype=np.uint8),
+    "hysteresis": np.array([175, 95, 0, 200], dtype=np.uint8),
     "trigger": np.array([255, 215, 0, 230], dtype=np.uint8),
 }
 # The grid runs behind the trace: over the background, the fill and the
@@ -162,6 +167,7 @@ class SpectrumWidget(ImageModeMixin, Widget):
         # Where the squelch and SEARCH trigger read on the trace (None = not shown).
         self._squelch_line_db: float | None = None
         self._trigger_line_db: float | None = None
+        self._hysteresis_line_db: float | None = None
         self._image_gutter: dict[int, tuple[str, Style]] = {}
         self._memories: tuple[Memory, ...] = ()
         self._bandplan: Bandplan | None = None
@@ -225,10 +231,12 @@ class SpectrumWidget(ImageModeMixin, Widget):
             self._channel_bandwidth = profile.channel_bandwidth if profile else None
 
     def _read_reference_lines(self, config: DeviceConfig) -> None:
-        """The squelch line while the squelch is on, and the trigger line while
-        SEARCH runs, at the levels where noise reading those in the channel
-        shows on the trace (db_scale)."""
-        self._squelch_line_db = self._trigger_line_db = None
+        """The squelch line (SQ: the squelch opens there, and SEARCH stops on a channel
+        reaching it) while the squelch is on; while SEARCH runs, the hysteresis line
+        (HY, SQUELCH_HYSTERESIS_DB below: a held channel must drop under it) and a
+        trigger set by hand (TR). At the levels where noise reading those in the
+        channel shows on the trace (db_scale)."""
+        self._squelch_line_db = self._trigger_line_db = self._hysteresis_line_db = None
         audio = config.pipelines.get("audio")
         channel = audio_channel(config)
         if audio is None or channel is None or self._provides_spectrum:
@@ -246,7 +254,9 @@ class SpectrumWidget(ImageModeMixin, Widget):
         if audio.squelch_enabled:
             self._squelch_line_db = on_trace(channel.squelch_db)
         if config.search is not None:
-            self._trigger_line_db = on_trace(config.search.trigger_for(channel.squelch_db))
+            self._hysteresis_line_db = on_trace(channel.squelch_db - SQUELCH_HYSTERESIS_DB)
+            if config.search.trigger_db is not None:
+                self._trigger_line_db = on_trace(config.search.trigger_db)
 
     def _scale_lines(
         self, width: int, freq_min: float, freq_max: float, span: int, *, text: bool
@@ -272,13 +282,11 @@ class SpectrumWidget(ImageModeMixin, Widget):
                 label = (grid_label(level), _grid_label_style(level, db_min, db_max))
                 lines.append((r, "grid", 0, width, label))
         search_x = self._search_x(width, freq_min, freq_max)
+        in_range = None if search_x is None else (max(0, search_x[0]), min(width, search_x[1]))
         references = (
             ("squelch", self._squelch_line_db, (0, width)),
-            (
-                "trigger",
-                self._trigger_line_db,
-                None if search_x is None else (max(0, search_x[0]), min(width, search_x[1])),
-            ),
+            ("hysteresis", self._hysteresis_line_db, in_range),
+            ("trigger", self._trigger_line_db, in_range),
         )
         for kind, ref_level, cols in references:
             if ref_level is None or cols is None:
@@ -499,7 +507,7 @@ class SpectrumWidget(ImageModeMixin, Widget):
                     buf, row, col_low, col_high, _LINE_COLORS[kind], over_alpha=_GRID_OVER_ALPHA
                 )
             else:
-                dash = _SQUELCH_DASH_PX if kind == "squelch" else 0
+                dash = _SQUELCH_DASH_PX if kind in ("squelch", "hysteresis") else 0
                 draw_hline(
                     buf, row, col_low, col_high, _LINE_COLORS[kind], keep=_TRACE_COLOR, dash=dash
                 )
@@ -707,7 +715,9 @@ class SpectrumWidget(ImageModeMixin, Widget):
         for dot, kind, col_low, col_high in lines:
             bits = int(_BRAILLE_LEFT_BITS[dot] | _BRAILLE_RIGHT_BITS[dot])
             for col in range(col_low, col_high):
-                if kind != "squelch" or col % 2 == 0:  # the squelch line is dashed
+                if (
+                    kind not in ("squelch", "hysteresis") or col % 2 == 0
+                ):  # the squelch's are dashed
                     # Lines sharing a cell combine; the later (squelch, trigger) colors it.
                     prev = overlay.get(col)
                     overlay[col] = ((prev[0] if prev else 0) | bits, kind)

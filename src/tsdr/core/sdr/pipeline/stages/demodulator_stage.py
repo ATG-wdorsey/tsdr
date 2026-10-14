@@ -1,8 +1,13 @@
 import logging
+import math
+import time
 from dataclasses import replace
+
+import numpy as np
 
 from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.sdr.config import DeviceConfig, SDRConfig
+from tsdr.core.sdr.datatypes import DemodStatus
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
 from tsdr.core.sdr.samples_batch import SamplesBatch
 from tsdr.core.tracing import span
@@ -11,6 +16,9 @@ from tsdr.radio.demodulators import Demodulator
 from tsdr.radio.registry import make_demodulator
 
 logger = logging.getLogger(__name__)
+
+# While the squelch stays open, its level is logged this often (a hiss that won't go away).
+SQUELCH_HELD_LOG_S = 10.0
 
 
 class DemodulatorStage:
@@ -42,6 +50,9 @@ class DemodulatorStage:
         self._last_sstv_mode: str | None = None
         self._decoder: AudioDecoder | None = None
         self._decoder_name: str | None = None
+        self._squelch_open: bool | None = None
+        self._squelch_since = time.monotonic()
+        self._squelch_logged = 0.0
         if spec is not None:
             self._follow_decoder(spec)
 
@@ -80,6 +91,7 @@ class DemodulatorStage:
             description = self._decoder.description()
             if description is not None:
                 status = replace(status, description=description)
+        self._log_squelch(status, data, context)
         changes: dict = {
             "stage_name": "demodulator",
             "demod_status": status,
@@ -159,6 +171,42 @@ class DemodulatorStage:
             enabled=pipeline_config.squelch_enabled,
             threshold_db=pipeline_config.squelch_threshold_db,
             hang_ms=pipeline_config.squelch_hang_ms,
+        )
+
+    def _log_squelch(
+        self, status: DemodStatus, data: SamplesBatch, context: PipelineContext
+    ) -> None:
+        """Log each squelch opening and closing, and its level every SQUELCH_HELD_LOG_S while
+        it stays open, with what decides it (the in-channel level against the threshold) and
+        the capture's peak (an overloaded radio makes in-channel noise of its own)."""
+        is_open = status.squelch_open
+        if is_open is None:
+            self._squelch_open = None
+            return
+        now = time.monotonic()
+        lasted = now - self._squelch_since  # how long the state before this one held
+        if is_open == self._squelch_open:
+            if not is_open or now - self._squelch_logged < SQUELCH_HELD_LOG_S:
+                return
+            state = "held_open"
+        else:
+            state = "opened" if is_open else "closed"
+            self._squelch_open = is_open
+            self._squelch_since = now
+        self._squelch_logged = now
+        device = context.device_context
+        iq = data.iq_samples
+        peak = float(np.max(np.abs(iq))) if iq is not None and len(iq) else 0.0
+        logger.info(
+            "squelch_change device=%s state=%s after_s=%.0f freq_hz=%.0f level_db=%.1f "
+            "threshold_db=%.1f adc_peak_dbfs=%.1f",
+            device.device_id if device is not None else None,
+            state,
+            lasted,
+            device.config.tuned_frequency if device is not None else 0.0,
+            status.squelch_level_db if status.squelch_level_db is not None else math.nan,
+            status.squelch_threshold_db if status.squelch_threshold_db is not None else math.nan,
+            20 * math.log10(peak + 1e-12),
         )
 
     def _follow_decoder(self, spec: DemodSpec, *, rebuild: bool = False) -> None:

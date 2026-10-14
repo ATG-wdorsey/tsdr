@@ -4,11 +4,15 @@ import math
 
 import numpy as np
 
+# The squelch opens at its threshold (the SQ line) and closes once the channel drops
+# this far below it: the line SEARCH holds a channel down to (the owner's choice).
+SQUELCH_HYSTERESIS_DB = 3.0
+
 
 class SquelchGate:
-    """Audio-muting gate driven by pre-demod RMS power."""
+    """Audio-muting gate driven by pre-demod RMS power: open at the threshold,
+    closed below threshold - SQUELCH_HYSTERESIS_DB (after the hang)."""
 
-    _HYSTERESIS_DB = 3.0
     _EMA_TC_MS = 50.0
 
     def __init__(self, audio_rate: float, ramp_ms: float = 10.0) -> None:
@@ -72,13 +76,10 @@ class SquelchGate:
         alpha = math.exp(-dt / self._ema_tc_s)
         self._power_ema_db = alpha * self._power_ema_db + (1.0 - alpha) * power_db
 
-        open_threshold = self._threshold_db + self._HYSTERESIS_DB
-        close_threshold = self._threshold_db - self._HYSTERESIS_DB
-
-        if self._power_ema_db >= open_threshold:
+        if self._power_ema_db >= self._threshold_db:
             self._is_open = True
             self._hang_counter = self._hang_samples
-        elif self._power_ema_db <= close_threshold:
+        elif self._power_ema_db < self._threshold_db - SQUELCH_HYSTERESIS_DB:
             if self._hang_counter > 0:
                 self._hang_counter = max(0, self._hang_counter - n_audio_samples)
             else:

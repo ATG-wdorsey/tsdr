@@ -68,6 +68,7 @@ class DemodStatus:
     description: str | None = None
     squelch_open: bool | None = None
     squelch_threshold_db: float | None = None
+    squelch_level_db: float | None = None  # the in-channel level the squelch compares
 
 
 @dataclass(frozen=True)

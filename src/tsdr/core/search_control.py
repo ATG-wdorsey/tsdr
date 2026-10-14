@@ -21,7 +21,6 @@ from tsdr.core.sdr.search import (
     DEFAULT_HOLD_S,
     LOCKOUT_TAG,
     MAX_CHANNEL_BANDWIDTH_HZ,
-    TRIGGER_ABOVE_SQUELCH_DB,
     SearchConfig,
     channel_powers_db,
     locate_levels,
@@ -339,7 +338,7 @@ def start_search(
         low,
         high,
         config.step_hz,
-        f"squelch+{TRIGGER_ABOVE_SQUELCH_DB:g}" if trigger_db is None else f"{trigger_db:.1f}",
+        "squelch" if trigger_db is None else f"{trigger_db:.1f}",
         channel.squelch_db,
         hold,
     )

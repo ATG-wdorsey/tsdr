@@ -364,9 +364,13 @@ alone. `SDRDeviceContext.analog_bandwidth_hz` holds the read-back width.
 
 A left column (`tui/widgets/db_scale.py:gutter_cols`) labels the spectrum's dB
 grid and holds the waterfall's color key; the plot, its strips and the
-waterfall start past it, and clicks map past it. The squelch line (squelch on)
-and SEARCH trigger line (SEARCH running) are drawn at `noise_equivalent_db`:
-where noise the channel measures at that level shows on the per-bin trace.
+waterfall start past it, and clicks map past it. The squelch line (`SQ`, squelch on:
+the squelch opens at it, and it is SEARCH's default trigger), while SEARCH runs the
+hysteresis line (`HY`, `SQUELCH_HYSTERESIS_DB` = 3 dB below: the squelch closes under
+it, which releases a held channel) and a trigger set by hand (`TR`) are drawn at
+`noise_equivalent_db`: where noise the channel measures at that level shows on the
+per-bin trace. The squelch logs each change (`squelch_change`, with the level, the
+threshold and the capture's peak), and while it stays open every 10 s.
 
 The view is client state: `spectrum_center` / `spectrum_span` on `DeviceConfig`
 (None = track dial / full band). `spectrum_center` (panning) applies only in
