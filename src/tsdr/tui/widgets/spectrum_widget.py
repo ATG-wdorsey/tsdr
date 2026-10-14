@@ -938,7 +938,9 @@ class SpectrumWidget(ImageModeMixin, Widget):
                     event.stop()
                     return
 
-        step = click_snap_step(get_tuning_state().step, device.active_mode, freq)
+        step = click_snap_step(
+            get_tuning_state().step_for(device.active_mode), device.active_mode, freq
+        )
         freq = round(freq / step) * step
         if freq == device.config.tuned_frequency:
             # Keep the A/B slot: a click that lands on the dial is not a retune.

@@ -293,6 +293,11 @@ the dial. Free mode applies the offset when it recenters, when `o`/`O`
 (`config --lo-offset`) change it, and when a new demodulator would find the
 LO inside its channel.
 
+The tuning step (`s`/`S`, `next_step` over the mode's `step_ladder`, auto first) is
+kept per mode (`TuningState.steps`, saved in the preferences): changing the mode, a
+memory, a band register or A/B brings back that mode's step; a mode never set steps by
+`resolve_auto_step`.
+
 ## Search
 
 SEARCH (`/`, the `search` command) finds activity within the capture and puts

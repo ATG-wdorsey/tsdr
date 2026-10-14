@@ -65,15 +65,16 @@ def _search(engine: SDREngine):
 def test_the_step_key_changes_the_search_step_down_to_its_floor(engine: SDREngine) -> None:
     """A 10 Hz step over 9 MHz is 890,000 channels a batch and stalled the
     audio: SEARCH stays at 1 kHz or coarser, and says so."""
+    engine.set_audio_demod("pluto", DemodSpec(mode="USB"))  # NFM's steps start at 2.5 kHz
     keys = _keys(engine)
     TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
     TuningMixin._cycle_step(keys, True)  # type: ignore[arg-type]
-    assert get_tuning_state().step == 10
+    assert get_tuning_state().step_for("USB") == 10
     assert _search(engine).step_hz == 1_000.0
     assert keys.statuses[-1] == "Step: 10 Hz (SEARCH: 1 kHz)"
-    for _ in range(3):  # 100 Hz, 1 kHz, 5 kHz
+    for _ in range(5):  # 50 Hz, 100 Hz, 500 Hz, 1 kHz, 2.5 kHz
         TuningMixin._cycle_step(keys, True)  # type: ignore[arg-type]
-    assert _search(engine).step_hz == get_tuning_state().step == 5_000
+    assert _search(engine).step_hz == get_tuning_state().step_for("USB") == 2_500
 
 
 def _fft(config: DeviceConfig, tones: dict[float, float]) -> FFTUpdateEvent:

@@ -4,7 +4,15 @@ KiwiSDR was dropped on restart because `_build_params` had no case for it (and
 """
 
 from tsdr.core.devices import PersistedDevice
-from tsdr.core.preferences import _build_device_config, _build_params, _persist_params
+from tsdr.core.preferences import (
+    _build_device_config,
+    _build_params,
+    _persist_params,
+    load_preferences,
+    restore_tuning_state,
+    save_tuning_state,
+)
+from tsdr.core.tuning_state import TuningState
 from tsdr.devices import KiwiSDRParams
 
 
@@ -83,3 +91,19 @@ def test_lo_offset_absent_defaults_to_auto():
     assert config is not None
     assert config.lo_offset == "auto"
     assert config.lo_offset_hz is None
+
+
+def test_each_mode_keeps_its_own_tuning_step_across_a_restart() -> None:
+    # Switching to NFM put the step back to 12.5 kHz (auto) every time; the owner's 5 kHz
+    # had to be set again after each SSB or memory detour.
+    state = TuningState()
+    state.set_step("NFM", 5_000)
+    state.set_step("USB", 100)
+    save_tuning_state(state)
+    restored = TuningState()
+    restore_tuning_state(restored, load_preferences())
+    assert restored.step_for("NFM") == 5_000
+    assert restored.step_for("USB") == 100
+    assert restored.step_for("WFM") is None  # never chosen: the mode's own (auto) step
+    restored.set_step("NFM", None)  # the ladder's "auto" forgets the choice
+    assert restored.step_for("NFM") is None

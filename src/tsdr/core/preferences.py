@@ -149,8 +149,8 @@ def restore_bandplan(prefs: dict[str, Any]) -> None:
 def save_tuning_state(state: TuningState) -> None:
     prefs = load_preferences()
     tuning: dict[str, Any] = {}
-    if state.step is not None:
-        tuning["step"] = float(state.step)
+    if state.steps:
+        tuning["steps"] = {mode: float(step) for mode, step in sorted(state.steps.items())}
     if state.previous is not None:
         tuning["previous"] = state.previous.model_dump(exclude_none=True)
     if state.current_band_key is not None:
@@ -164,8 +164,16 @@ def save_tuning_state(state: TuningState) -> None:
 
 def restore_tuning_state(state: TuningState, prefs: dict[str, Any]) -> None:
     tuning = prefs.get("tuning", {})
-    if "step" in tuning:
-        state.step = float(tuning["step"])
+    steps = tuning.get("steps")
+    if isinstance(steps, dict):
+        for mode, step in steps.items():
+            if (
+                isinstance(mode, str)
+                and isinstance(step, int | float)
+                and not isinstance(step, bool)
+                and step > 0
+            ):
+                state.set_step(mode, float(step))
     prev = tuning.get("previous")
     if isinstance(prev, dict):
         state.previous = PreviousTuneState.model_validate(prev)

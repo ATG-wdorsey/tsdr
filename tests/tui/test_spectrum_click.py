@@ -39,7 +39,9 @@ def engine(monkeypatch: pytest.MonkeyPatch) -> SDREngine:
     engine.set_audio_demod("m", DemodSpec(mode="NFM"))
     monkeypatch.setattr(engine_module, "_active_engine", engine)
     # A coarse keyboard step, as when crossing a band by key.
-    monkeypatch.setattr(spectrum_widget, "get_tuning_state", lambda: SimpleNamespace(step=1e6))
+    monkeypatch.setattr(
+        spectrum_widget, "get_tuning_state", lambda: SimpleNamespace(step_for=lambda mode: 1e6)
+    )
     return engine
 
 

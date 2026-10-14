@@ -112,7 +112,7 @@ def search_step_floor(config: DeviceConfig) -> float:
 
 def search_step(context: SDRDeviceContext, mode: str) -> float:
     """The tuning step (`s`), or the mode's channel raster when it is on auto; see grid_step."""
-    return grid_step(context, mode, get_tuning_state().step)
+    return grid_step(context, mode, get_tuning_state().step_for(mode))
 
 
 def grid_step(context: SDRDeviceContext, mode: str, step: float | None) -> float:
@@ -307,7 +307,9 @@ def start_search(
         low_hz=low,
         high_hz=high,
         step_hz=grid_step(
-            context, channel.mode, get_tuning_state().step if step_hz is None else step_hz
+            context,
+            channel.mode,
+            get_tuning_state().step_for(channel.mode) if step_hz is None else step_hz,
         ),
         trigger_db=trigger_db,
         hold_s=hold,

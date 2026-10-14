@@ -175,7 +175,7 @@ def test_stop_leaves_the_dial_and_free_tuning(engine: SDREngine) -> None:
 
 
 def test_the_grid_is_never_finer_than_1_khz_or_an_fft_bin(engine: SDREngine) -> None:
-    get_tuning_state().step = 10.0
+    get_tuning_state().set_step("NFM", 10.0)
     assert start_search("pluto").step_hz == 1_000.0
     assert start_search("pluto", step_hz=100.0).step_hz == 1_000.0
     engine.update_device_config("pluto", fft_size=4096)  # 2.4 kHz bins at 10 MS/s
@@ -576,7 +576,7 @@ def test_search_does_not_stop_on_its_edge_for_a_signal_beyond_it(engine: SDREngi
 
 
 def test_jump_targets_land_on_the_signal_with_a_fine_step(engine: SDREngine) -> None:
-    get_tuning_state().step = 5_000.0
+    get_tuning_state().set_step("NFM", 5_000.0)
     engine.update_squelch("pluto", "audio", threshold_db=-80.0)
     context = engine.devices["pluto"]
     targets, limits = jump_targets(context, _fft(context.config, {147.0e6: -30.0}))

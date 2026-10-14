@@ -53,13 +53,13 @@ def engine(monkeypatch: pytest.MonkeyPatch) -> SDREngine:
 def test_a_tuning_step_coarser_than_the_channel_gives_way(
     engine: SDREngine, step: float, grid: float
 ) -> None:
-    get_tuning_state().step = step
+    get_tuning_state().set_step("NFM", step)
     assert start_search("pluto").step_hz == grid
 
 
 def test_am_falls_back_to_its_own_automatic_step(engine: SDREngine) -> None:
     engine.set_audio_demod("pluto", DemodSpec(mode="AM"))
-    get_tuning_state().step = 25_000  # AM is 10 kHz wide
+    get_tuning_state().set_step("AM", 25_000)  # AM is 10 kHz wide
     assert start_search("pluto").step_hz == 1_000
 
 
@@ -84,7 +84,7 @@ def _batch(config: DeviceConfig, t: float, tones: dict[float, float]) -> Samples
 
 
 def test_a_station_between_100_khz_grid_points_is_found(engine: SDREngine) -> None:
-    get_tuning_state().step = 100_000
+    get_tuning_state().set_step("NFM", 100_000)
     start_search("pluto", trigger_db=-40.0)
     context = engine.devices["pluto"]
     stage = SearchStage(context.config)

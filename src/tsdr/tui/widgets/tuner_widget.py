@@ -425,11 +425,12 @@ class TunerWidget(Vertical):
         self, mode: str, freq_hz: float, search: SearchConfig | None = None
     ) -> None:
         ts = get_tuning_state()
-        if ts.step is None:
+        step = ts.step_for(mode)
+        if step is None:
             value = resolve_auto_step(mode, freq_hz)
             label = "auto"
         else:
-            value = ts.step
+            value = step
             label = "step"
         step_value = format_hz(value, decimals=1, long_suffix=True)
         step_line = f"[bold]{step_value}[/bold] [dim]{label}[/dim]"

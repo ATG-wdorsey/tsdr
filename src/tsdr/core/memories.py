@@ -9,7 +9,6 @@ from tsdr.core import storage
 from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.tuning import save_previous_tune_state
-from tsdr.core.tuning_state import get_tuning_state
 from tsdr.radio.registry import DEMODULATORS
 
 logger = logging.getLogger(__name__)
@@ -170,8 +169,6 @@ def recall_memory(memory: Memory, device_id: str) -> None:
     engine = get_engine()
     context = engine.get_device(device_id)
 
-    ts = get_tuning_state()
-    ts.step = None  # context change → reset step ladder to auto
     save_previous_tune_state(context)
 
     if memory.audio_spec.mode in DEMODULATORS and memory.audio_spec.mode != context.active_mode:

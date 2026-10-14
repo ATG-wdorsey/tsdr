@@ -38,6 +38,62 @@ STEP_LADDER: tuple[float | None, ...] = (
     1_000_000,
 )
 
+# The steps `s` / `S` cycle through in each mode, auto (the mode's own step) first:
+# what radios offer for that kind of channel. Modes not listed use STEP_LADDER.
+_SSB_LADDER: tuple[float | None, ...] = (None, 10, 50, 100, 500, 1_000, 2_500, 5_000, 10_000)
+_FM_LADDER: tuple[float | None, ...] = (
+    None,
+    2_500,
+    5_000,
+    6_250,
+    10_000,
+    12_500,
+    15_000,
+    20_000,
+    25_000,
+    50_000,
+    100_000,
+)
+_MODE_LADDERS: dict[str, tuple[float | None, ...]] = {
+    "USB": _SSB_LADDER,
+    "LSB": _SSB_LADDER,
+    "SSTV": _SSB_LADDER,
+    "FT8": _SSB_LADDER,
+    "FT4": _SSB_LADDER,
+    "RTTY": _SSB_LADDER,
+    "NAVTEX": _SSB_LADDER,
+    "FSK": _SSB_LADDER,
+    "CW": (None, 10, 50, 100, 500, 1_000, 5_000),
+    "AM": (None, 1_000, 5_000, 9_000, 10_000, 25_000, 50_000, 100_000),
+    "ACARS": (None, 5_000, 25_000, 100_000),
+    "NFM": _FM_LADDER,
+    "APRS": _FM_LADDER,
+    "DMR": _FM_LADDER,
+    "FLEX": _FM_LADDER,
+    "TETRA": _FM_LADDER,
+    "WFM": (None, 50_000, 100_000, 200_000),
+}
+
+
+def step_ladder(mode: str) -> tuple[float | None, ...]:
+    """The tuning steps offered in `mode`, auto (None) first."""
+    return _MODE_LADDERS.get(mode, STEP_LADDER)
+
+
+def next_step(mode: str, current: float | None, forward: bool) -> float | None:
+    """The step after (or before) `current` on `mode`'s ladder, wrapping through auto.
+    A step that is not on the ladder (saved before the ladders, or another mode's) moves
+    to its neighbor in that direction."""
+    ladder = step_ladder(mode)
+    if current in ladder:
+        return ladder[(ladder.index(current) + (1 if forward else -1)) % len(ladder)]
+    steps = [s for s in ladder if s is not None]
+    if forward:
+        return next((s for s in steps if s > current), None) if current is not None else steps[0]
+    below = [s for s in steps if current is None or s < current]
+    return below[-1] if below else None
+
+
 _MODE_STEP_MAP: dict[str, float] = {
     "CW": 50,
     "USB": 100,

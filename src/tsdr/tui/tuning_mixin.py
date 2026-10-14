@@ -37,11 +37,11 @@ from tsdr.core.search_control import (
     unlock,
 )
 from tsdr.core.tuning import (
-    STEP_LADDER,
     bandwidth_step,
     current_channel_bandwidth,
     current_spec_or_default,
     default_bandwidth,
+    next_step,
     resolve_auto_step,
     save_previous_tune_state,
     snap_to_grid,
@@ -72,9 +72,9 @@ class TuningMixin(MixinBase):
         return get_engine().get_focused_device()
 
     def _resolve_step(self, device: SDRDeviceContext) -> float:
-        ts = get_tuning_state()
-        if ts.step is not None:
-            return ts.step
+        step = get_tuning_state().step_for(device.active_mode)
+        if step is not None:
+            return step
         return resolve_auto_step(device.active_mode, device.config.tuned_frequency)
 
     def _clamp_to_range(self, device: SDRDeviceContext, freq: float) -> float:
@@ -196,13 +196,14 @@ class TuningMixin(MixinBase):
         # A tuning step coarser than the channel would blind SEARCH between its grid
         # points; it searched on the mode's automatic step, so the tuner shows that.
         ts = get_tuning_state()
+        step = ts.step_for(device.active_mode)
         coarse = ""
-        if ts.step is not None and search.step_hz < ts.step:
+        if step is not None and search.step_hz < step:
             coarse = (
                 f"; step {format_hz(search.step_hz, decimals=1, long_suffix=True)} (auto: the "
-                f"{format_hz(ts.step, decimals=1, long_suffix=True)} step would miss stations)"
+                f"{format_hz(step, decimals=1, long_suffix=True)} step would miss stations)"
             )
-            ts.step = None
+            ts.set_step(device.active_mode, None)
             self._publish_tuning_state_changed()
         low = format_hz(search.low_hz, decimals=3, long_suffix=True)
         high = format_hz(search.high_hz, decimals=3, long_suffix=True)
@@ -282,35 +283,30 @@ class TuningMixin(MixinBase):
         self.show_status("View: dial")
 
     def _cycle_step(self, forward: bool) -> None:
+        """Step through the ladder for the focused device's mode; each mode keeps its own."""
+        device = self._focused()
+        if device is None:
+            self._show_error("No device")
+            return
+        mode = device.active_mode
         ts = get_tuning_state()
-        try:
-            idx = STEP_LADDER.index(ts.step)
-        except ValueError:
-            idx = 0
-        idx = (idx + (1 if forward else -1)) % len(STEP_LADDER)
-        ts.step = STEP_LADDER[idx]
+        chosen = next_step(mode, ts.step_for(mode), forward)
+        ts.set_step(mode, chosen)
         self._publish_tuning_state_changed()
 
-        device = self._focused()
         searched = ""
-        if device is not None and device.config.search is not None:
-            step = ts.step or resolve_auto_step(device.active_mode, device.config.tuned_frequency)
+        if device.config.search is not None:
+            step = chosen or resolve_auto_step(mode, device.config.tuned_frequency)
             used = set_search_step(device.device_id, step)
             if used != step:
                 searched = f" (SEARCH: {format_hz(used, decimals=1, long_suffix=True)})"
-        if ts.step is None and device is not None:
-            resolved = resolve_auto_step(device.active_mode, device.config.tuned_frequency)
+        if chosen is None:
+            resolved = resolve_auto_step(mode, device.config.tuned_frequency)
             self.show_status(
                 f"Step: auto ({format_hz(resolved, decimals=1, long_suffix=True)}){searched}"
             )
-        elif ts.step is not None:
-            self.show_status(f"Step: {format_hz(ts.step, decimals=1, long_suffix=True)}{searched}")
-
-    def _reset_step_to_auto(self) -> None:
-        ts = get_tuning_state()
-        if ts.step is not None:
-            ts.step = None
-            self._publish_tuning_state_changed()
+        else:
+            self.show_status(f"Step: {format_hz(chosen, decimals=1, long_suffix=True)}{searched}")
 
     def _jump_target(self, direction: int) -> None:
         device = self._focused()
@@ -382,7 +378,6 @@ class TuningMixin(MixinBase):
             tuned_frequency=prev.frequency_hz,
             channel_bandwidth=int(prev.bandwidth_hz),
         )
-        self._reset_step_to_auto()
         self._publish_tuning_state_changed()
         self.show_status(
             f"A/B: {format_hz(prev.frequency_hz, interval=1.0, long_suffix=True)} {prev.spec.mode}"
@@ -448,11 +443,10 @@ class TuningMixin(MixinBase):
                 return
         store.set_current_idx(key, new_idx)
         ts.current_band_key = key
-        ts.step = None
         self._publish_tuning_state_changed()
         get_engine().event_bus.publish(BandStackChangedEvent(band_stack=store))
         self.show_status(f"BAND {stack.band.name} REG {new_idx + 1}/{REGISTERS_PER_BAND}")
 
     def notify_demod_changed(self) -> None:
-        """Called when mode changes via demod chord — reset step ladder."""
-        self._reset_step_to_auto()
+        """Called when the mode changes via a demod chord: the tuner shows the new mode's step."""
+        self._publish_tuning_state_changed()

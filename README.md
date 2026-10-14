@@ -240,7 +240,13 @@ Tuning:
   demodulator, spectrum peaks). They stop at the band's edge, so in free
   tuning they never move the LO. While SEARCH runs they stay within its range
   and keep it running (see below).
-- `s` / `S`: cycle the tuning step size forward / backward.
+- `s` / `S`: cycle the tuning step forward / backward through the steps that fit the mode,
+  starting from auto (the mode's own step): NFM and the FM decoders 2.5, 5, 6.25, 10,
+  12.5, 15, 20, 25, 50 and 100 kHz; USB/LSB and the decoders on them 10 Hz to 10 kHz; CW
+  10 Hz to 5 kHz; AM 1 to 100 kHz (9 and 10 kHz for broadcast); WFM 50, 100 and 200 kHz.
+  Each mode keeps its own step (5 kHz in NFM stays 5 kHz after a detour to USB),
+  remembered across restarts; a mode you never set steps by auto (12.5 kHz for NFM,
+  100 kHz for WFM).
 - Click the spectrum to tune there. The click snaps to the mode's channel raster
   (12.5 kHz for NFM, 100 kHz for WFM), or to the tuning step when that is finer.
 - `c`: toggle center / free tuning (center: hardware follows every dial move;
@@ -262,7 +268,7 @@ Search (find activity within the captured band):
   the FFT resolves: with the tuning step at 10 Hz it searches 1 kHz steps. Nor
   is it coarser than the channel, which would leave stations between grid
   points unseen: a 100 kHz step gives way to the mode's automatic step (12.5 kHz
-  for NFM), and the tuning step goes to auto. The squelch holds the channel:
+  for NFM), and that mode's tuning step goes to auto. The squelch holds the channel:
   SEARCH moves on only after the squelch has stayed shut for the hold time
   (2 s), so replies are heard, and between hits it stays on the last
   channel. `[` / `]` move it on to the previous / next signal within its range

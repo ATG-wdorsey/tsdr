@@ -4,9 +4,11 @@ from tsdr.core.tuning import (
     STEP_LADDER,
     bandwidth_step,
     click_snap_step,
+    next_step,
     resolve_auto_step,
     snap_step_value,
     snap_to_grid,
+    step_ladder,
 )
 
 
@@ -107,3 +109,17 @@ def test_click_without_a_step_uses_the_auto_step_at_the_click() -> None:
     # No demodulator: the band at the clicked frequency picks the raster.
     assert click_snap_step(None, "RAW", 120_000_000) == 25_000
     assert click_snap_step(None, "RAW", 100_000_000) == 100_000
+
+
+def test_each_mode_cycles_its_own_steps_through_auto() -> None:
+    # `s` from auto in NFM: the channel steps a 2 m radio offers, then back to auto.
+    steps, step = [], None
+    for _ in range(len(step_ladder("NFM"))):
+        step = next_step("NFM", step, forward=True)
+        steps.append(step)
+    assert steps[:3] == [2_500, 5_000, 6_250] and steps[-1] is None
+    assert next_step("USB", None, forward=True) == 10
+    assert next_step("WFM", None, forward=False) == 200_000
+    # A step off the ladder (saved earlier, or another mode's) moves to its neighbor.
+    assert next_step("NFM", 7_000, forward=True) == 10_000
+    assert next_step("NFM", 7_000, forward=False) == 6_250
