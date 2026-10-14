@@ -35,6 +35,7 @@ from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import format_hz
 from tsdr.tui.commands._format import format_rate
 from tsdr.tui.model.store import get_ui_store
+from tsdr.tui.pause import PAUSED_HINT, focused_paused
 from tsdr.tui.widgets.snr_widget import VSQ_COLOR, SNRWidget
 
 Half = Literal["top", "bottom"]
@@ -303,6 +304,7 @@ _SEARCH_BADGES: dict[SearchState, str] = {
     "waiting": "[black on cyan] WAIT [/]",
 }
 _VSQ_BADGE = f"[black on {VSQ_COLOR}] VSQ [/]"
+_PAUSED_BADGE = "[black on magenta] PAUSED [/] [dim]Space[/dim]"
 
 
 def _search_lines(status: SearchStatus | None, lockouts: int = 0) -> tuple[str, str]:
@@ -371,6 +373,8 @@ class TunerWidget(Vertical):
         if focused is not None and event.device_id != focused:
             return
         self._sync_running_class()
+        # Pausing or resuming changes the state column (the PAUSED badge).
+        self._read_config()
 
     def _read_config(self) -> None:
         engine = get_engine()
@@ -429,6 +433,8 @@ class TunerWidget(Vertical):
             label = "step"
         step_value = format_hz(value, decimals=1, long_suffix=True)
         step_line = f"[bold]{step_value}[/bold] [dim]{label}[/dim]"
+        if focused_paused():
+            step_line = _PAUSED_BADGE
 
         band_line = "[dim]—[/dim]"
         reg_line = ""
@@ -503,6 +509,9 @@ class TunerWidget(Vertical):
         meter.update_squelch(status.squelch_threshold_db, status.squelch_open)
 
     def on_hoverable_digits_digit_adjusted(self, event: HoverableDigits.DigitAdjusted) -> None:
+        if focused_paused():
+            self.app.show_status(PAUSED_HINT)  # type: ignore[attr-defined]
+            return
         with span("ui.tuner_scroll"):
             value = self.query_one("#tuner-frequency", HoverableDigits).value
             digits_right = sum(1 for c in value[event.char_idx + 1 :] if c.isdigit())

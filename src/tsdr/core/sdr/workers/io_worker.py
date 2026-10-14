@@ -458,6 +458,8 @@ class IOWorker:
         if source is None:
             return
         for frame in source.drain_spectrum_frames():
+            if self.device_context.paused:
+                continue  # drained, not shown: the display holds still while paused
             context.emit_event(
                 FFTUpdateEvent(
                     source_id=context.worker_id,

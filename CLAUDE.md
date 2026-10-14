@@ -230,6 +230,19 @@ Adding a configurable parameter:
 5. Call `engine.update_global_config()` or `engine.update_device_config(device_id, ...)` from the command.
 6. If the field should persist: add it to `PersistedDevice` (`core/devices.py`), `_DEVICE_CONFIG_FIELDS`, and the fields dict in `_build_persisted_device` (`core/preferences.py`).
 
+## Pause
+
+Space pauses a running device (`SDREngine.set_paused`; `SDRDeviceContext.paused`,
+not a `DeviceState`: the device stays RUNNING). The I/O worker keeps reading, so
+the radio's buffers never back up and a resume is instant; the pipeline worker
+drops every batch (`SDRDeviceContext.drops`: also those captured during the pause
+and still queued at the resume), and a device's own spectrum frames are drained
+unshown. The audio worker is flushed at both ends. SEARCH's clock is capture time
+less `paused_seconds`, so holds, attacks and dwells resume where they were; VSQ
+counts audio samples and needs nothing. While the focused device is paused the
+keyboard ignores what is not in `PAUSE_ALLOWED` (`tui/keybindings.py`) and the
+spectrum, tuner digits and memory recall ignore clicks (`tui/pause.py`).
+
 ## Pipeline Architecture
 
 Each device owns multiple peer pipelines via `SDRDeviceContext.pipelines: dict[str, ProcessingPipeline]`. Default composition (see `DEFAULT_PIPELINES` in `core/sdr/config.py` and `SDREngine.set_audio_demod`):

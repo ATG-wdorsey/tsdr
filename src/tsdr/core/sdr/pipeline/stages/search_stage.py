@@ -134,8 +134,10 @@ class SearchStage:
             caps=context.device_context.device.capabilities,
         )
         # Capture time (0.0 = not stamped, as in tests). Clock sync can step it;
-        # a step only shortens or lengthens one hold or attack.
+        # a step only shortens or lengthens one hold or attack. Time spent paused is
+        # left out, so a pause freezes holds, attacks and dwells where they were.
         now = data.capture_utc_s if data.capture_utc_s > 0.0 else clock_sync.now_utc_seconds()
+        now -= context.device_context.paused_seconds
         demod = context.device_context.demod_status
         squelch_open = demod.squelch_open if demod is not None else None
         target, status = self._controller.update(

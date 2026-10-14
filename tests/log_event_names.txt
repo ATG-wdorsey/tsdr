@@ -57,8 +57,10 @@ device_config_update
 device_entry_invalid
 device_failed
 device_open
+device_paused
 device_read_failed
 device_read_unexpected_error
+device_resumed
 device_started
 device_starting
 device_stopped
