@@ -111,10 +111,17 @@ def search_step_floor(config: DeviceConfig) -> float:
 
 
 def search_step(context: SDRDeviceContext, mode: str) -> float:
-    """The tuning step (`s`), or the mode's channel raster when it is on auto,
-    no finer than search_step_floor."""
-    step = get_tuning_state().step
-    if step is None:
+    """The tuning step (`s`), or the mode's channel raster when it is on auto; see grid_step."""
+    return grid_step(context, mode, get_tuning_state().step)
+
+
+def grid_step(context: SDRDeviceContext, mode: str, step: float | None) -> float:
+    """SEARCH's grid for a tuning step (None = auto): no finer than search_step_floor, and
+    never coarser than the channel. Channels are measured at the grid points, one channel
+    wide, so a coarser grid leaves gaps: a station between grid points is never seen (a
+    100 kHz step left a whole 2 m band blind). Then the mode's automatic step is used."""
+    channel = audio_channel(context.config)
+    if step is None or (channel is not None and step > channel.bandwidth_hz):
         step = resolve_auto_step(mode, context.config.tuned_frequency)
     return max(float(step), search_step_floor(context.config))
 
@@ -299,10 +306,8 @@ def start_search(
     config = SearchConfig(
         low_hz=low,
         high_hz=high,
-        step_hz=(
-            search_step(context, channel.mode)
-            if step_hz is None
-            else max(step_hz, search_step_floor(context.config))
+        step_hz=grid_step(
+            context, channel.mode, get_tuning_state().step if step_hz is None else step_hz
         ),
         trigger_db=trigger_db,
         hold_s=hold,
@@ -510,11 +515,13 @@ def _load_detector() -> None:
 
 
 def set_search_step(device_id: str, step_hz: float) -> float:
-    """Follow a tuning-step change (`s`) in a running SEARCH, no finer than
-    search_step_floor. Returns the step SEARCH uses."""
+    """Follow a tuning-step change (`s`) in a running SEARCH, within grid_step's
+    limits. Returns the step SEARCH uses."""
     engine = get_engine()
-    config = engine.get_device(device_id).config
-    step_hz = max(step_hz, search_step_floor(config))
+    context = engine.get_device(device_id)
+    config = context.config
+    channel = audio_channel(config)
+    step_hz = grid_step(context, channel.mode if channel is not None else "", step_hz)
     search = config.search
     if search is not None and search.step_hz != step_hz:
         engine.update_device_config(

@@ -1,7 +1,8 @@
 """AMBE+2 vocoder tests.
 
-Minimal regression suite: API contract, FEC primitives, and end-to-end
-WAV smoke test. No external fixtures required.
+API contract, FEC primitives, an end-to-end WAV smoke test, and the decoded
+parameters checked frame by frame against mbelib on a speech recording
+(tests/samples/ambe).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tsdr.radio.vocoder.ambe import decoder as ambe_decoder
 from tsdr.radio.vocoder.ambe._constants import GOLAY_GENERATOR
 from tsdr.radio.vocoder.ambe.decoder import (
     AmbePlus2Decoder,
@@ -22,7 +24,8 @@ from tsdr.radio.vocoder.ambe.fec import golay_23_12, hamming_15_11
 from tsdr.radio.vocoder.ambe.params_decode import extract_bit_fields
 
 ROOT = Path(__file__).resolve().parents[2]
-AMB_SOURCE = ROOT / "reference" / "mbelib-testing" / "bmh_gasline.amb"
+AMB_SOURCE = ROOT / "tests" / "samples" / "ambe" / "bmh_gasline.amb"
+MBELIB_PARAMS = ROOT / "tests" / "samples" / "ambe" / "bmh_gasline_mbelib.npz"
 
 
 # API contract
@@ -155,3 +158,51 @@ def test_decode_amb_file_to_wav(tmp_path):
 
     rms = float(np.sqrt(np.mean(out.astype(np.float64) ** 2)))
     assert rms > 100.0, f"output rms {rms:.0f} too low -- sounds like silence"
+
+
+def _amb_records(path: Path) -> list[tuple[int, np.ndarray]]:
+    data = path.read_bytes()
+    assert data[:4] == b".amb"
+    records = []
+    pos = 4
+    while pos + 8 <= len(data):
+        errs2 = data[pos]
+        bits = np.zeros(49, dtype=np.int8)
+        for i in range(6):
+            for j in range(8):
+                bits[i * 8 + j] = (data[pos + 1 + i] >> (7 - j)) & 1
+        bits[48] = data[pos + 7] & 1
+        pos += 8
+        records.append((errs2, bits))
+    return records
+
+
+def test_decoded_parameters_match_mbelib(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pitch, harmonics, voicing and amplitudes, frame by frame, as mbelib decodes them
+    (the decoder's own path, state carried between frames)."""
+    ref = np.load(MBELIB_PARAMS)
+    seen: list[tuple[int, float, int, int, np.ndarray]] = []
+    decode = ambe_decoder.decode_ambe2450_parms
+
+    def snapshot(ambe_d, cur_mp, prev_mp):  # type: ignore[no-untyped-def]
+        bad = decode(ambe_d, cur_mp, prev_mp)
+        L = cur_mp.L
+        seen.append(
+            (bad, float(cur_mp.w0), L, int(cur_mp.Vl[1 : L + 1].sum()), cur_mp.Ml[1 : L + 1].copy())
+        )
+        return bad
+
+    monkeypatch.setattr(ambe_decoder, "decode_ambe2450_parms", snapshot)
+    dec = AmbePlus2Decoder()
+    for errs2, bits in _amb_records(AMB_SOURCE):
+        dec.decode_ambe_d(bits, errs2=errs2)
+
+    assert len(seen) == len(ref["L"])
+    for i, (bad, w0, L, voiced, ml) in enumerate(seen):
+        assert bad == ref["bad"][i], i
+        assert w0 == pytest.approx(float(ref["w0"][i]), rel=1e-5), i
+        assert L == ref["L"][i], i
+        assert voiced == ref["voiced"][i], i
+        np.testing.assert_allclose(
+            ml, ref["ml"][i, 1 : L + 1], rtol=5e-3, atol=1e-6, err_msg=str(i)
+        )

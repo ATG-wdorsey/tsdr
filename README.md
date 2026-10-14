@@ -259,7 +259,10 @@ Search (find activity within the captured band):
   then puts the dial on the strongest channel that stays above the trigger for
   100 ms (channels on the tuning-step grid, within the captured band; the
   range is shaded on the spectrum). Its grid is never finer than 1 kHz, or than
-  the FFT resolves: with the tuning step at 10 Hz it searches 1 kHz steps. The squelch holds the channel:
+  the FFT resolves: with the tuning step at 10 Hz it searches 1 kHz steps. Nor
+  is it coarser than the channel, which would leave stations between grid
+  points unseen: a 100 kHz step gives way to the mode's automatic step (12.5 kHz
+  for NFM), and the tuning step goes to auto. The squelch holds the channel:
   SEARCH moves on only after the squelch has stayed shut for the hold time
   (2 s), so replies are heard, and between hits it stays on the last
   channel. `[` / `]` move it on to the previous / next signal within its range

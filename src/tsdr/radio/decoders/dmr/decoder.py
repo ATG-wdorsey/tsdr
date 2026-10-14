@@ -45,9 +45,10 @@ _VOICE_TIMEOUT_SEC = 0.5
 _VOICE_CONFIDENCE_BURSTS = 3
 _SLOT_ACTIVE_WINDOW_SEC = 2.0
 _SLOT_SWITCH_HOLD_SEC = 0.5
-# DMR superframe = 6 bursts (A has sync, B-E have EMB, F has sync).
-# Allow up to 5 continuation bursts without a fresh sync match before
-# forcing a re-sync.
+# A timeslot's voice superframe is 6 bursts: A carries the voice sync, B-F
+# embedded signalling instead. Allow a timeslot up to 5 continuation bursts
+# since its own last sync before forcing a re-sync. The count is per slot: with
+# voice on both slots, up to 10 bursts in a row carry no sync.
 _MAX_CONTINUATION_BURSTS = 5
 
 
@@ -188,7 +189,8 @@ class DMRDecoder(Demodulator):
         self._burst_collect_pos = 0
         self._burst_sync_type = SyncType.BS_DATA
         self._lock_remaining = 0
-        self._continuation_count = 0  # bursts since last real sync match
+        # Continuation bursts per timeslot since that slot's last real sync match.
+        self._continuation = {0: 0, 1: 0}
 
         # Voice call state per timeslot (DMR has 2: TS0, TS1)
         self._ts_state: dict[int, TimeslotState] = {0: TimeslotState(), 1: TimeslotState()}
@@ -327,20 +329,27 @@ class DMRDecoder(Demodulator):
             sync_type, _errors = result
             self._lock_hits += 1
             self._syncs_found += 1
-            self._continuation_count = 0
+            self._reset_continuation()
             self._burst_sync_type = sync_type
             self._extract_first_half()
             self._begin_collecting()
         elif self._voice_continuation_expected(timestamp):
             self._lock_hits += 1
-            self._continuation_count += 1
             expected_slot = 1 - self._last_slot
+            self._continuation[expected_slot] += 1
             self._burst_sync_type = self._ts_state[expected_slot].voice_sync_type
             self._extract_first_half()
             self._begin_collecting()
         else:
             self._lock_misses += 1
             self._drop_lock()
+
+    def _reset_continuation(self) -> None:
+        """A sync match: the burst is the slot after the last one (TDMA alternation)."""
+        if self._last_slot < 0:
+            self._continuation = {0: 0, 1: 0}
+        else:
+            self._continuation[1 - self._last_slot] = 0
 
     def _drop_lock(self) -> None:
         """Return to SEARCHING and reset all transient state so the UI
@@ -361,9 +370,9 @@ class DMRDecoder(Demodulator):
     def _voice_continuation_expected(self, timestamp: float) -> bool:
         if self._last_slot < 0:
             return False
-        if self._continuation_count >= _MAX_CONTINUATION_BURSTS:
-            return False
         expected_slot = 1 - self._last_slot
+        if self._continuation[expected_slot] >= _MAX_CONTINUATION_BURSTS:
+            return False
         ts = self._ts_state.get(expected_slot)
         if ts is None or not ts.in_voice_call:
             return False
@@ -672,7 +681,7 @@ class DMRDecoder(Demodulator):
         self._burst_buf[:] = 0
         self._burst_collect_pos = 0
         self._lock_remaining = 0
-        self._continuation_count = 0
+        self._continuation = {0: 0, 1: 0}
         self._last_slot = -1
         for ts in self._ts_state.values():
             ts.in_voice_call = False

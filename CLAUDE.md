@@ -299,7 +299,8 @@ SEARCH (`/`, the `search` command) finds activity within the capture and puts
 the dial on it. `DeviceConfig.search` (`SearchConfig` in `core/sdr/search.py`;
 None = off) holds a run: range, step (the tuning step), trigger, hold time, max
 dwell, lockouts; the step is never finer than `search_step_floor` (1 kHz, at
-least an FFT bin: cost and resolution); the edges (`{`/`}`, `--low/--high`) and an explicit trigger
+least an FFT bin: cost and resolution) nor coarser than the channel (`grid_step`: the
+mode's automatic step instead; channels are measured one channel wide at the grid points); the edges (`{`/`}`, `--low/--high`) and an explicit trigger
 are remembered per device for the session. `SearchStage` in the visualization pipeline measures every
 step-grid channel's in-channel power from the FFT stage's unaveraged
 `instant_spectrum` (dBFS, the squelch's units: summed bins over the window's
