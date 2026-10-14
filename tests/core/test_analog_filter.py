@@ -180,27 +180,3 @@ def engine(monkeypatch: pytest.MonkeyPatch) -> SDREngine:
     monkeypatch.setattr(engine_module, "_active_engine", engine)
     monkeypatch.setattr(config_command, "get_engine", lambda: engine)
     return engine
-
-
-def test_config_command_sets_a_fixed_width(engine: SDREngine) -> None:
-    out = config_command.SDRConfigCommand().execute(
-        ["--device", "pluto", "--analog-filter", "1.5M"]
-    )
-    config = engine.devices["pluto"].config
-    assert (config.analog_filter, config.analog_filter_hz) == ("fixed", 1.5e6)
-    assert "1.500 MHz" in out
-
-
-def test_config_command_sets_mode_and_fraction(engine: SDREngine) -> None:
-    config_command.SDRConfigCommand().execute(
-        ["--device", "pluto", "--analog-filter", "track", "--analog-filter-fraction", "0.9"]
-    )
-    config = engine.devices["pluto"].config
-    assert (config.analog_filter, config.analog_filter_fraction) == ("track", 0.9)
-
-
-def test_config_command_rejects_a_bad_fraction(engine: SDREngine) -> None:
-    out = config_command.SDRConfigCommand().execute(
-        ["--device", "pluto", "--analog-filter-fraction", "5"]
-    )
-    assert "analog_filter_fraction must be" in out

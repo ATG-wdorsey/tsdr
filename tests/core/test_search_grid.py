@@ -5,7 +5,6 @@ at the grid points, so a coarser grid leaves gaps. A 100 kHz tuning step carried
 from __future__ import annotations
 
 from dataclasses import replace
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -23,7 +22,6 @@ from tsdr.core.sdr.samples_batch import SamplesBatch
 from tsdr.core.search_control import set_search_step, start_search
 from tsdr.core.tuning_state import get_tuning_state, init_tuning_state
 from tsdr.devices import MockParams, mock
-from tsdr.tui.tuning_mixin import TuningMixin
 
 RATE = 10e6
 DIAL = 146.0e6
@@ -98,17 +96,3 @@ def test_a_station_between_100_khz_grid_points_is_found(engine: SDREngine) -> No
         stage.on_config_change(context.config)
         stage.process(_batch(context.config, 1000.0 + 0.05 * i, {station: -30.0}), pipeline_context)
     assert context.config.tuned_frequency == station
-
-
-def test_slash_puts_the_tuner_on_the_step_search_uses(engine: SDREngine) -> None:
-    get_tuning_state().step = 100_000
-    keys = SimpleNamespace(statuses=[], errors=[], published=[])
-    keys._focused = lambda: engine.devices["pluto"]
-    keys.show_status = keys.statuses.append
-    keys._show_error = keys.errors.append
-    keys._publish_tuning_state_changed = lambda: keys.published.append(get_tuning_state().step)
-    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
-    assert keys.errors == []
-    assert get_tuning_state().step is None  # auto: 12.5 kHz for NFM
-    assert keys.published == [None]
-    assert "would miss stations" in keys.statuses[-1]

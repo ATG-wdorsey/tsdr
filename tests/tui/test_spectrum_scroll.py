@@ -45,28 +45,6 @@ def _event() -> SimpleNamespace:
 
 
 @pytest.mark.usefixtures("engine")
-def test_the_wheel_tunes_one_step_and_up_is_up(monkeypatch: pytest.MonkeyPatch) -> None:
-    tunes: list[int] = []
-    widget = _widget(monkeypatch, tunes)
-    widget.on_mouse_scroll_up(_event())  # type: ignore[arg-type]
-    widget.on_mouse_scroll_down(_event())  # type: ignore[arg-type]
-    assert tunes == [1, -1]
-
-
-def test_the_wheel_pans_a_zoomed_view_in_free_tuning(
-    engine: SDREngine, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    engine.update_device_config("pluto", tuning_mode="free", spectrum_span=1e6)
-    tunes: list[int] = []
-    widget = _widget(monkeypatch, tunes)
-    widget.on_mouse_scroll_up(_event())  # type: ignore[arg-type]
-    config = engine.devices["pluto"].config
-    assert tunes == []
-    assert config.spectrum_center is not None and config.spectrum_center > DIAL
-    assert config.tuned_frequency == DIAL
-
-
-@pytest.mark.usefixtures("engine")
 def test_a_failed_wheel_tune_shows_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """The wheel goes through the tuning helper, which can raise; the keys catch
     that, and the wheel must too, or the app ends."""

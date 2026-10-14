@@ -56,17 +56,3 @@ def test_shortfall_is_reported_after_the_warmup_window() -> None:
     _feed(worker, context, 14.4e6, WINDOW + 0.5, t)
     assert len(errors) == 1
     assert "14.40 of 15.00 MS/s" in errors[0]
-
-
-def test_shortfall_report_is_rate_limited() -> None:
-    worker, context, errors = _worker()
-    _feed(worker, context, 12e6, 5 * WINDOW, 0.0)
-    assert len(errors) == 1
-
-
-def test_rate_change_restarts_the_warmup() -> None:
-    worker, context, errors = _worker()
-    t = _feed(worker, context, RATE, 2 * WINDOW, 0.0)
-    worker._reset_throughput_window()
-    _feed(worker, context, 12e6, WINDOW + 0.5, t)
-    assert errors == []

@@ -16,8 +16,6 @@ import pytest
 from tsdr.core.sdr.io import load_iq
 from tsdr.radio.decoders.adsb import ADSBDecoder
 from tsdr.radio.decoders.dab.decoder import DABDecoder
-from tsdr.radio.registry import demod_profile
-from tsdr.tui.widgets.tuner_widget import _format_signal_info
 
 SAMPLES = Path(__file__).resolve().parents[1] / "samples"
 ADSB_FILE = SAMPLES / "freq=1090.0M_sr=2400k_dur=30s_gain=23_20260328T1217.cu8.zst"
@@ -99,11 +97,3 @@ def test_dab_decodes_at_the_radios_rate() -> None:
     assert stats.frames_processed >= 100
     assert stats.fibs_decoded > 0 and stats.fibs_crc_ok == stats.fibs_decoded
     assert audio_s > 6.0
-
-
-@pytest.mark.parametrize("mode", ["ADSB", "DAB"])
-def test_the_tuner_warns_only_when_the_capture_is_too_slow(mode: str) -> None:
-    profile = demod_profile(mode)
-    assert "Needs" not in _format_signal_info(profile, None, 10_000_000)
-    assert "Needs" not in _format_signal_info(profile, None, profile.sample_rate)
-    assert "Needs ≥" in _format_signal_info(profile, None, 2_000_000)

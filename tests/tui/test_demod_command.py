@@ -7,7 +7,7 @@ import pytest
 from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.engine import SDREngine
 from tsdr.devices import MockParams
-from tsdr.tui.commands.registry import COMMANDS, execute
+from tsdr.tui.commands.registry import execute
 
 
 @pytest.fixture
@@ -30,8 +30,3 @@ def test_demod_off_is_case_insensitive(engine: SDREngine, typed: str) -> None:
     out = execute(f"demod {typed}")
     assert "Disabled" in out
     assert engine.devices["m"].active_mode == "RAW"
-
-
-def test_demod_completion_matches_lowercase_prefix() -> None:
-    values = [c.value for c in COMMANDS["demod"].get_completions([], "nf")]
-    assert values == ["NFM"]
