@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -130,3 +133,40 @@ def test_reset_starts_a_new_transmission() -> None:
     first = stream.feed(audio)
     stream.reset()
     assert [c.probability for _, c in stream.feed(audio)] == [c.probability for _, c in first]
+
+
+# In a fresh interpreter, as the app starts: import tsdr (before numpy), score a window, then ask every OpenBLAS the
+# process loaded (numpy's, scipy's) how many threads it runs.
+_BLAS_THREADS = """
+import ctypes
+import tsdr
+import numpy as np
+from tsdr.radio.voice.detector import detector
+detector().prob(np.zeros((32, 124), np.float32))
+libs = sorted({l.split()[-1] for l in open("/proc/self/maps") if "openblas" in l.lower() and ".so" in l})
+for path in libs:
+    lib = ctypes.CDLL(path)
+    for name in ("scipy_openblas_get_num_threads64_", "scipy_openblas_get_num_threads",
+                 "openblas_get_num_threads64_", "openblas_get_num_threads"):
+        if hasattr(lib, name):
+            print(getattr(lib, name)())
+            break
+"""
+
+
+@pytest.mark.skipif(not Path("/proc/self/maps").exists(), reason="reads /proc/self/maps")
+def test_blas_runs_on_one_thread() -> None:
+    # OpenBLAS's pool spins after each product: with it, the detector cost ~0.5 s
+    # of CPU per second of audio, nearly all on other cores (vs 9 ms on one thread).
+    env = {k: v for k, v in os.environ.items() if k != "OPENBLAS_NUM_THREADS"}
+    out = subprocess.run(
+        [sys.executable, "-c", _BLAS_THREADS, "test"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    ).stdout.split()
+    if not out:
+        pytest.skip("no OpenBLAS loaded")
+    assert out == ["1"] * len(out)
