@@ -32,6 +32,10 @@ from tsdr.tui.widgets import SpectrumWidget
 _LOOKUP = build_lookup()
 
 
+# `u` / `U`: fine enough to set the squelch, and with it SEARCH's trigger, just above the noise.
+SQUELCH_STEP_DB = 1.0
+
+
 class KeyboardMixin(MixinBase):
     """Handles keyboard shortcuts for autocomplete and frequency/bandwidth tuning."""
 
@@ -377,8 +381,7 @@ class KeyboardMixin(MixinBase):
             self._show_error("No audio demodulator active")
             return
 
-        step_db = 3.0
-        new_threshold = audio_pc.squelch_threshold_db + direction * step_db
+        new_threshold = audio_pc.squelch_threshold_db + direction * SQUELCH_STEP_DB
         new_threshold = max(-100.0, min(0.0, new_threshold))
         engine.update_squelch(
             device.device_id,

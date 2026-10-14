@@ -299,7 +299,7 @@ Reception:
 - `Alt+↑` / `Ctrl+↑`, `Alt+↓` / `Ctrl+↓`: adjust channel bandwidth finely.
 - `g` / `G`: decrease / increase RF gain.
 - `Ctrl+G`: toggle AGC.
-- `u` / `U`: lower / raise the squelch threshold.
+- `u` / `U`: lower / raise the squelch threshold 1 dB.
 - `Ctrl+U`: disable squelch.
 - `Shift+↑` / `Shift+↓`: decrease / increase volume.
 - `n`: toggle RNNoise denoising (`DN` beside the volume).
