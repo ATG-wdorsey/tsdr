@@ -76,6 +76,9 @@ _MISSED_SYNC_MAX_ERRORS = 6
 # The reference harness's speech gain (DSD, mbelib's decode_ambe): starts at x25, at most x50.
 _AGC_MAX_GAIN = 50.0
 _AGC_START_GAIN = 25.0
+# DSD's target: the 8 -> 48 kHz resampler overshoots full-scale 8 kHz peaks (clipped
+# 100 of 342,720 samples on the 443.7 MHz recording, by up to 0.45 dB).
+_AGC_PEAK = 30000 / 32768
 
 
 @dataclass
@@ -238,8 +241,8 @@ class DMRDecoder(Demodulator):
         # Speech level per timeslot (each carries its own talkers), as mbelib's reference
         # harness sets it: at most x50 on the synthesis scale (the old fixed gain was x56).
         self._agc: dict[int, VoiceAGC] = {
-            0: VoiceAGC(max_gain=_AGC_MAX_GAIN, start_gain=_AGC_START_GAIN),
-            1: VoiceAGC(max_gain=_AGC_MAX_GAIN, start_gain=_AGC_START_GAIN),
+            0: VoiceAGC(max_gain=_AGC_MAX_GAIN, start_gain=_AGC_START_GAIN, peak=_AGC_PEAK),
+            1: VoiceAGC(max_gain=_AGC_MAX_GAIN, start_gain=_AGC_START_GAIN, peak=_AGC_PEAK),
         }
         self._selected_ts: int | None = None
         self._candidate_ts: int | None = None
@@ -507,6 +510,7 @@ class DMRDecoder(Demodulator):
             ts.in_voice_call = True
             ts.voice_burst_count = 0
             ts.voice_sync_type = sync_type
+            self._agc[timeslot].reset()  # a new talker: not the last call's level
             self._dirty = True
             logger.debug("dmr_voice_call_started slot=%d sync_type=%s", timeslot, sync_type)
 
@@ -566,6 +570,7 @@ class DMRDecoder(Demodulator):
         if slot_type.data_type == DataType.VOICE_LC_HEADER:
             ts.in_voice_call = True
             ts.confirmed = True  # header from Slot Type = high confidence
+            self._agc[timeslot].reset()
             ts.voice_burst_count = 0
             ts.last_voice_ts = timestamp
             self._dirty = True
@@ -575,6 +580,7 @@ class DMRDecoder(Demodulator):
             ts.confirmed = False
             self._dirty = True
             self._vocoders[timeslot] = AmbePlus2Decoder()
+            self._agc[timeslot].reset()
 
         try:
             dt_name = DataType(slot_type.data_type).name
