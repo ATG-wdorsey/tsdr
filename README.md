@@ -28,6 +28,10 @@
 >   no longer makes the trace noisy and several dB too high: each column
 >   averages the FFT bins it covers instead of showing just one.
 >   ([#10](https://github.com/floens/tsdr/pull/10))
+> - **Typing reaches the console.** After a click on a panel, `` ` `` opened
+>   the console but ignored the keys; and a gain change made by the automatic
+>   gain could leave the display on the old settings.
+>   ([#11](https://github.com/floens/tsdr/pull/11))
 >
 > **Enhancements**
 > - **SoapySDR radios use their real limits:** frequency range, fixed sample
