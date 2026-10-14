@@ -141,6 +141,14 @@ def test_lo_offset_mirrors_at_bottom_of_range() -> None:
     assert _derive(24.02e6, mode="center", lo_offset=-50e3) == 24.02e6 + 50e3
 
 
+def test_lo_offset_never_puts_the_lo_at_or_below_0_hz() -> None:
+    # A radio that reports no range (rtl_tcp): an LO below a 1 kHz dial was at -49 kHz, and
+    # the config check's ValueError ended the app.
+    no_range = replace(_caps(), frequency_range=None)
+    assert _derive(1e3, mode="center", caps=no_range, lo_offset=-50e3) == 1e3 + 50e3
+    assert _derive(50e3, mode="center", caps=no_range, lo_offset=-50e3) == 100e3
+
+
 def test_free_mode_keeps_fitting_center_despite_offset() -> None:
     assert _derive(100.5e6, lo_offset=-50e3) == 100e6
 

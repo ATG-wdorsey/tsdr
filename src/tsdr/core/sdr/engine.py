@@ -451,7 +451,11 @@ class SDREngine:
                 )
 
         expect = None if while_search is None else (lambda cfg: cfg.search is while_search)
-        if not context.update_config(expect=expect, **changes):
+        try:
+            applied = context.update_config(expect=expect, **changes)
+        except ValueError as e:  # DeviceConfig.validate(): refuse it like the checks above
+            raise ConfigurationError(str(e)) from e
+        if not applied:
             logger.info("search_update_dropped device=%s reason=search_changed", device_id)
             return False
         logger.info("device_config_update device=%s changes=%r", device_id, changes)

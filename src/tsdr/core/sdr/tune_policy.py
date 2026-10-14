@@ -71,12 +71,13 @@ def lo_offset_for(
 
 def _offset_center(tuned: float, lo_offset: float, caps: DeviceCapabilities) -> float:
     """`tuned + lo_offset`, mirrored to the dial's other side when that one
-    would leave the device's range (a dial at the bottom of the band)."""
-    if lo_offset == 0.0 or caps.frequency_range is None:
-        return tuned + lo_offset
-    lo, hi = caps.frequency_range
+    would leave the device's range (a dial at the bottom of the band), or go
+    to 0 Hz or below on a device that reports no range."""
+    if lo_offset == 0.0:
+        return tuned
+    lo, hi = caps.frequency_range if caps.frequency_range is not None else (0.0, float("inf"))
     for center in (tuned + lo_offset, tuned - lo_offset):
-        if lo <= center <= hi:
+        if center > 0.0 and lo <= center <= hi:
             return center
     return tuned
 
