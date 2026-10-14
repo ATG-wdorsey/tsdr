@@ -1,6 +1,10 @@
 """Changing (or re-selecting) the demodulator keeps the squelch: it used to come
 back off at -50 dBFS, so a squelch set just above the noise was silently lost."""
 
+import time
+from pathlib import Path
+
+import numpy as np
 import pytest
 
 from tsdr.core.demod_spec import DemodSpec
@@ -8,6 +12,7 @@ from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import SDREngine
 from tsdr.devices import MockParams
+from tsdr.devices.iq_file import IQFileParams
 
 
 @pytest.fixture
@@ -48,3 +53,29 @@ def test_squelch_survives_turning_demodulation_off_and_on(engine: SDREngine) -> 
     engine.remove_pipeline("radio", "audio")
     engine.set_audio_demod("radio", DemodSpec(mode="NFM"))
     assert _squelch(engine) == (True, -78.0, 100.0)
+
+
+def test_a_squelch_set_while_stopped_works_from_the_start(tmp_path: Path) -> None:
+    """Live 2026-10-14: the saved squelch is restored before the radio starts; the SQ line
+    showed -80 dBFS but the demodulator ran without a squelch until a key changed it.
+    (A mock radio hides it: its start sends a config of its own.)"""
+    iq = tmp_path / "noise.cf32"
+    (np.random.default_rng(0).standard_normal(400_000) * 1e-3).astype(np.float32).tofile(iq)
+    engine = SDREngine()
+    engine.add_device(
+        "file", "iq-file", IQFileParams(path=str(iq)), DeviceConfig(sample_rate=250e3)
+    )
+    engine.set_audio_demod("file", DemodSpec(mode="NFM"))
+    engine.update_squelch("file", "audio", enabled=True, threshold_db=-80.0, hang_ms=100.0)
+    engine.start_device("file")
+    try:
+        deadline = time.monotonic() + 5.0
+        status = engine.devices["file"].demod_status
+        while (status is None or status.squelch_open is None) and time.monotonic() < deadline:
+            time.sleep(0.05)
+            status = engine.devices["file"].demod_status
+        assert status is not None and status.squelch_open is not None  # the squelch runs
+        assert status.squelch_threshold_db == -80.0
+    finally:
+        engine.stop_device("file")
+        engine.shutdown(timeout=2.0)

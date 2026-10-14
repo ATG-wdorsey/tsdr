@@ -95,6 +95,7 @@ def test_pipeline_worker_applies_only_latest_pending_configs() -> None:
     ctx.pipelines["visualization"].stages = [spy]  # type: ignore[list-item]
     worker = PipelineWorker(ctx)
     worker.setup(_FakeWorkerContext(engine))
+    spy.seen.clear()  # setup applies the current configs; this is about the queue
 
     configs = [ctx.config.with_changes(tuned_frequency=100e6 + i) for i in range(5)]
     for c in configs[:3]:

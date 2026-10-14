@@ -47,6 +47,11 @@ class PipelineWorker:
             audio_queue=self.device_context.audio_queue,
             config=self.device_context.get_sdr_config(),
         )
+        # Changes made while the device was stopped (the saved squelch restored at
+        # startup, `config --deemphasis`) reached the config but not the stages, which
+        # were reused as they were: they apply now, before the first batch.
+        self._apply_config_to_stages(self.device_context.get_sdr_config())
+        self._apply_config_to_stages(self.device_context.config)
 
         logger.debug("pipeline_worker_initialized device=%s", device_id)
 
