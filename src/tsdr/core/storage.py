@@ -47,10 +47,16 @@ def read_text(filename: str) -> str:
     if not path.exists():
         return ""
     try:
-        return path.read_text(encoding="utf-8")
+        data = path.read_bytes()
     except OSError as e:
         logger.error("storage_read_failed path=%s error=%r", path, e)
         return ""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as e:
+        # Edited in another encoding, or damaged: keep what reads (a history keeps its entries).
+        logger.warning("storage_read_not_utf8 path=%s error=%r", path, e)
+        return data.decode("utf-8", errors="replace")
 
 
 def write_text(filename: str, content: str) -> None:
