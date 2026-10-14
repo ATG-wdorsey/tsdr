@@ -40,6 +40,8 @@ def make_demodulator(
             kw["shift_hz"] = spec.fsk_shift_hz
         if spec.fsk_reverse is not None:
             kw["reverse"] = spec.fsk_reverse
+    if mode == "DMR" and spec.dmr_slot is not None:
+        kw["audio_slot"] = spec.dmr_slot
     if mode == "FSK":
         if spec.fsk_alphabet is not None:
             kw["alphabet"] = spec.fsk_alphabet

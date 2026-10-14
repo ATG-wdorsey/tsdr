@@ -32,6 +32,9 @@ class DemodSpec(BaseModel):
     fsk_reverse: bool | None = None
     fsk_alphabet: str | None = None
     fsk_framing: str | None = None
+    # DMR: the timeslot heard. None = auto (the first call keeps the audio), "1" / "2"
+    # one timeslot, "both" TS1 left and TS2 right.
+    dmr_slot: str | None = None
 
     @model_validator(mode="before")
     @classmethod

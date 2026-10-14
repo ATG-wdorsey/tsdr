@@ -48,6 +48,7 @@ class DemodulatorStage:
         self._last_freq: float | None = None
         self._last_sample_rate: float | None = None
         self._last_sstv_mode: str | None = None
+        self._last_dmr_slot: str | None = spec.dmr_slot if spec is not None else None
         self._decoder: AudioDecoder | None = None
         self._decoder_name: str | None = None
         self._squelch_open: bool | None = None
@@ -135,6 +136,7 @@ class DemodulatorStage:
                 self._last_sample_rate = config.sample_rate
                 self._last_freq = config.tuned_frequency
                 self._last_sstv_mode = spec.sstv_mode
+                self._last_dmr_slot = spec.dmr_slot
                 self._demodulator.set_squelch(
                     enabled=pipeline_config.squelch_enabled,
                     threshold_db=pipeline_config.squelch_threshold_db,
@@ -167,6 +169,9 @@ class DemodulatorStage:
             self._last_sstv_mode = spec.sstv_mode
             if self._decoder is not None:
                 self._decoder.set_sstv_mode(spec.sstv_mode)
+        if spec.dmr_slot != self._last_dmr_slot:
+            self._last_dmr_slot = spec.dmr_slot
+            self._demodulator.set_audio_slot(spec.dmr_slot)
         self._demodulator.set_squelch(
             enabled=pipeline_config.squelch_enabled,
             threshold_db=pipeline_config.squelch_threshold_db,

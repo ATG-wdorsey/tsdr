@@ -179,6 +179,10 @@ class Demodulator(ABC):
         """
         pass
 
+    def set_audio_slot(self, choice: str | None) -> None:  # noqa: B027
+        """Which TDMA timeslot is heard (DMR; DemodSpec.dmr_slot). Default no-op."""
+        pass
+
     def set_deviation(self, deviation: float) -> None:  # noqa: B027
         """Update FM peak deviation. NFM-only; default no-op elsewhere."""
         pass

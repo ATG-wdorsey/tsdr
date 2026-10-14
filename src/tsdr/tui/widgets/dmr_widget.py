@@ -79,7 +79,8 @@ class DMRWidget(SectionPanel):
                 label = "[dim]IDLE [/dim]"
                 bar = _bar(0.0, _BAR_WIDTH)
                 suffix = ""
-            lines.append(f"TS{slot.timeslot} {label} {bar}{suffix}")
+            lines.append(f"TS{slot.timeslot + 1} {label} {bar}{suffix}")
+        lines.append(f"[dim]audio[/dim] {snap.audio}")
         return "\n".join(lines)
 
     def _render_quality(self, snap: DMRSnapshot) -> str:

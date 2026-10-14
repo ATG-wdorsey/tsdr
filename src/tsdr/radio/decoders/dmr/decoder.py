@@ -58,6 +58,13 @@ _VOICE_TIMEOUT_SEC = 0.5
 _VOICE_CONFIDENCE_BURSTS = 3
 _SLOT_ACTIVE_WINDOW_SEC = 2.0
 _SLOT_SWITCH_HOLD_SEC = 0.5
+# What is heard (DemodSpec.dmr_slot): None = auto, "1" / "2" one timeslot (TS1 is CACH
+# TC 0), "both" TS1 left and TS2 right.
+AUDIO_SLOT_CHOICES: tuple[str | None, ...] = (None, "1", "2", "both")
+# Both slots: a slot that has carried no voice for this long is not waited for (its
+# channel plays silence); one that is talking is waited for up to _BOTH_MAX_LAG_SEC.
+_BOTH_TALKING_SEC = 0.25
+_BOTH_MAX_LAG_SEC = 0.25
 # A timeslot's voice superframe is 6 bursts: A carries the voice sync, B-F
 # embedded signalling instead. In lock, a slot in a voice call is decoded by
 # timing for up to 11 bursts since its own last sync: B-F, one missed A, B-F.
@@ -119,6 +126,7 @@ class DMRSnapshot:
     color_code: int | None
     slots: tuple[SlotSnapshot, SlotSnapshot]
     quality: QualitySnapshot
+    audio: str = "auto"  # what is heard: "auto", "auto: TS1", "TS2", "both"
 
 
 def _slice_dibit(symbol: float) -> int:
@@ -187,9 +195,11 @@ class DMRDecoder(Demodulator):
     def audio_prebuffer_seconds(self) -> float:
         return 0.25
 
-    def __init__(self, sample_rate: float = 250_000):
+    def __init__(self, sample_rate: float = 250_000, audio_slot: str | None = None):
         super().__init__()
         self.sample_rate = sample_rate
+        self._audio_slot: str | None = None
+        self.set_audio_slot(audio_slot)
 
         # Decimate to ~48 kHz (10 samples/symbol) and FM-demodulate; output
         # normalized: +/-1.0 = +/-DEVIATION Hz.
@@ -642,7 +652,25 @@ class DMRDecoder(Demodulator):
             burst_count=self._bursts_decoded,
         )
 
-        return DMRSnapshot(color_code=cc, slots=slots, quality=quality)  # type: ignore[arg-type]
+        return DMRSnapshot(
+            color_code=cc,
+            slots=slots,  # type: ignore[arg-type]
+            quality=quality,
+            audio=self._audio_label(),
+        )
+
+    def _audio_label(self) -> str:
+        if self._audio_slot == "both":
+            return "both"
+        if self._audio_slot is not None:
+            return f"TS{self._audio_slot}"
+        return f"auto: TS{self._selected_ts + 1}" if self._selected_ts is not None else "auto"
+
+    def set_audio_slot(self, choice: str | None) -> None:
+        if choice not in AUDIO_SLOT_CHOICES:
+            raise ValueError(f"unknown DMR timeslot choice: {choice!r}")
+        self._audio_slot = choice
+        self._dirty = True
 
     # Audio output
 
@@ -681,7 +709,12 @@ class DMRDecoder(Demodulator):
 
     def _flush_selected_audio(self, timestamp: float) -> None:
         """Package the selected slot's buffered PCM into AudioBatch."""
+        if self._audio_slot == "both":
+            self._flush_both_slots(timestamp)
+            return
         selected = self._select_active_ts(timestamp)
+        if self._audio_slot is not None:
+            selected = int(self._audio_slot) - 1
 
         # Discard non-selected slot's PCM immediately to prevent backlog
         # buildup when both slots have active voice calls
@@ -702,6 +735,39 @@ class DMRDecoder(Demodulator):
                 samples=samples,
                 sample_rate=_DMR_PCM_RATE,
                 stereo=False,
+                prebuffer_seconds=self.audio_prebuffer_seconds,
+            )
+        )
+
+    def _flush_both_slots(self, timestamp: float) -> None:
+        """TS1 left, TS2 right, in step: each slot yields 60 ms of speech per 60 ms, a
+        burst apart. A talking slot is waited for (up to _BOTH_MAX_LAG_SEC), a silent
+        one is not: its channel plays silence."""
+        pending = [
+            np.concatenate(self._pcm_per_ts[ts]) if self._pcm_per_ts[ts] else np.zeros(0)
+            for ts in (0, 1)
+        ]
+        lens = [len(p) for p in pending]
+        if max(lens) == 0:
+            return
+        talking = [
+            timestamp - self._ts_state[ts].last_voice_ts < _BOTH_TALKING_SEC for ts in (0, 1)
+        ]
+        n = min(lens)
+        if not all(talking) or max(lens) - n > _BOTH_MAX_LAG_SEC * _DMR_PCM_RATE:
+            n = max(lens)
+        if n == 0:
+            return
+        out = np.zeros((n, 2), dtype=np.float32)
+        for ts in (0, 1):
+            k = min(n, lens[ts])
+            out[:k, ts] = pending[ts][:k]
+            self._pcm_per_ts[ts] = [pending[ts][k:]] if lens[ts] > k else []
+        self._audio_batches.append(
+            AudioBatch(
+                samples=out,
+                sample_rate=_DMR_PCM_RATE,
+                stereo=True,
                 prebuffer_seconds=self.audio_prebuffer_seconds,
             )
         )

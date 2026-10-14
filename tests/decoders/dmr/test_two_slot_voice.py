@@ -184,3 +184,32 @@ def test_a_lost_signal_is_not_decoded_as_voice() -> None:
         decoder.demodulate(iq[i : i + chunk], 1000.0 + i / RATE)
 
     assert len(after) <= 1, after
+
+
+def test_the_timeslot_heard_is_chosen() -> None:
+    """auto plays the first call; "1" / "2" one timeslot; "both" TS1 left, TS2 right,
+    in step, without waiting for a slot that carries no voice."""
+    decoder = DMRDecoder(sample_rate=RATE, audio_slot="both")
+    now = 1000.0
+    for slot, level in ((0, 0.25), (1, 0.5)):
+        decoder._ts_state[slot].last_voice_ts = now
+        decoder._pcm_per_ts[slot] = [np.full(480, level, dtype=np.float32)]
+    decoder._pcm_per_ts[1].append(np.full(160, 0.5, dtype=np.float32))  # TS2 a frame ahead
+    decoder._flush_selected_audio(now)
+    (both,) = decoder.get_audio()
+    assert both.stereo and both.samples.shape == (480, 2)
+    assert np.all(both.samples[:, 0] == 0.25) and np.all(both.samples[:, 1] == 0.5)
+
+    decoder._ts_state[1].last_voice_ts = now - 1.0  # TS2's call is over: not waited for
+    decoder._pcm_per_ts[0] = [np.full(320, 0.25, dtype=np.float32)]
+    decoder._flush_selected_audio(now)
+    (alone,) = decoder.get_audio()
+    assert alone.samples.shape == (320, 2)
+    assert np.all(alone.samples[:160, 1] == 0.5) and np.all(alone.samples[160:, 1] == 0.0)
+
+    decoder.set_audio_slot("2")
+    for slot, level in ((0, 0.25), (1, 0.5)):
+        decoder._pcm_per_ts[slot] = [np.full(480, level, dtype=np.float32)]
+    decoder._flush_selected_audio(now)
+    (one,) = decoder.get_audio()
+    assert not one.stereo and np.all(one.samples == 0.5)

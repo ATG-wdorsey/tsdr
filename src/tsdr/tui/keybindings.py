@@ -65,6 +65,8 @@ class Action(StrEnum):
     VOLUME_UP = "volume.up"
     VOLUME_DOWN = "volume.down"
     AUDIO_DENOISE = "audio.denoise"
+    DMR_SLOT_NEXT = "audio.dmr-slot-next"
+    DMR_SLOT_PREV = "audio.dmr-slot-prev"
     DEVICE_TOGGLE = "device.toggle"
     DEMOD_CHORD = "demod.chord"
     DECODER_CHORD = "decoder.chord"
@@ -254,6 +256,8 @@ BINDINGS: tuple[Binding, ...] = (
         ),
         (Action.DEMOD_CHORD, ("d",), _chord_description("demodulator", DEMOD_CHORD_MODES)),
         (Action.DECODER_CHORD, ("D",), _chord_description("decoder", DECODER_CHORD_MODES)),
+        (Action.DMR_SLOT_NEXT, ("t",), "DMR: the timeslot heard, auto > TS1 > TS2 > both (L/R)"),
+        (Action.DMR_SLOT_PREV, ("T",), "DMR: the timeslot heard, the other way"),
     ),
     *_section(
         Context.GLOBAL,

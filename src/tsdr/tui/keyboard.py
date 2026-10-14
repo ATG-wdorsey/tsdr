@@ -16,6 +16,7 @@ from tsdr.core.sdr.exceptions import SDRException
 from tsdr.core.tuning import active_demod_spec, current_spec_or_default
 from tsdr.core.units import parse_dial
 from tsdr.radio.audio_decoders import AUDIO_DECODERS, carried_decoder, with_decoder
+from tsdr.radio.decoders.dmr.decoder import AUDIO_SLOT_CHOICES
 from tsdr.radio.dsp.rnnoise import rnnoise_available
 from tsdr.tui._mixin_base import MixinBase
 from tsdr.tui.commands._format import freq_mhz
@@ -231,6 +232,10 @@ class KeyboardMixin(MixinBase):
                 self._adjust_volume(-1)
             case Action.AUDIO_DENOISE:
                 self._toggle_denoise()
+            case Action.DMR_SLOT_NEXT:
+                self._cycle_dmr_slot(forward=True)
+            case Action.DMR_SLOT_PREV:
+                self._cycle_dmr_slot(forward=False)
             case Action.DEVICE_TOGGLE:
                 self._toggle_device_running()
             case Action.DEMOD_CHORD:
@@ -469,6 +474,20 @@ class KeyboardMixin(MixinBase):
             return
         engine.update_global_config(denoise=want)
         self.show_status(f"Denoise {'on' if want else 'off'}")
+
+    def _cycle_dmr_slot(self, *, forward: bool) -> None:
+        engine = get_engine()
+        device = engine.get_focused_device()
+        spec = active_demod_spec(device) if device is not None else None
+        if device is None or spec is None or spec.mode.upper() != "DMR":
+            self._show_error("Timeslot: DMR only")
+            return
+        choices = AUDIO_SLOT_CHOICES
+        i = choices.index(spec.dmr_slot) if spec.dmr_slot in choices else 0
+        choice = choices[(i + (1 if forward else -1)) % len(choices)]
+        engine.set_audio_demod(device.device_id, spec.model_copy(update={"dmr_slot": choice}))
+        label = {None: "auto (first call heard)", "both": "both (TS1 left, TS2 right)"}
+        self.show_status(f"DMR audio: {label.get(choice, f'TS{choice}')}")
 
     def _adjust_squelch(self, direction: int) -> None:
         engine = get_engine()

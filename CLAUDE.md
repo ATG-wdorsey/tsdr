@@ -404,6 +404,7 @@ Available stages: `agc`, `demodulator`, `event_emitter`, `fft`, `frequency_shift
 - **AM**: Envelope detection with DC blocker, AGC, audio LPF, squelch
 - **USB/LSB**: Single sideband via shift-LPF-unshift (rejects opposite sideband)
 - **CW**: Morse code with explicit BFO; Morse text decoder runs alongside audio output
+- **DMR**: both timeslots decoded; `DemodSpec.dmr_slot` picks what is heard (auto: the first call keeps the audio; TS1; TS2; both, TS1 left and TS2 right), `t` / `T` or `demod dmr --slot`
 
 Audio decoders (`radio/audio_decoders.py`: SSTV) ride on a mode instead of replacing it (the
 owner's rule: picking a decoder doesn't change the mode; only decoders that define their own

@@ -44,6 +44,12 @@ class SDRDemodCommand(Command):
             help="Force a specific SSTV submode (e.g. martin_m1); SSTV only",
         )
         parser.add_argument(
+            "--slot",
+            choices=["auto", "1", "2", "both"],
+            default=None,
+            help="DMR: the timeslot heard (auto: the first call; both: TS1 left, TS2 right)",
+        )
+        parser.add_argument(
             "--preset",
             default=None,
             help=f"FSK preset ({', '.join(sorted(FSK_PRESETS))}); rtty/fsk only",
@@ -75,6 +81,9 @@ class SDRDemodCommand(Command):
             raise ConfigurationError(f"unknown SSTV mode '{sstv_mode}'. Known: {known}")
 
         fsk = self._resolve_fsk(args, mode)
+        if args.slot is not None and mode != "DMR":
+            raise ConfigurationError("--slot is only valid with mode 'dmr'")
+        dmr_slot = None if args.slot in (None, "auto") else args.slot
 
         if mode == "OFF":
             manager.stop_audio_output(did)
@@ -101,6 +110,7 @@ class SDRDemodCommand(Command):
             decoder=decoder,
             sstv_mode=carried_sstv_mode,
             fm_deviation_hz=deviation,
+            dmr_slot=dmr_slot,
             **fsk,
         )
         manager.set_audio_demod(did, spec)
@@ -111,6 +121,8 @@ class SDRDemodCommand(Command):
             extras["deviation"] = f"[yellow]±{deviation / 1000:.1f} kHz[/]"
         if sstv_mode is not None:
             extras["sstv_mode"] = f"[cyan]{sstv_mode}[/]"
+        if args.slot is not None:
+            extras["slot"] = f"[cyan]{args.slot}[/]"
         if mode in _FSK_MODES:
             extras["baud"] = f"[cyan]{fsk['fsk_baud']:g}[/]" if fsk["fsk_baud"] else "[cyan]auto[/]"
             extras["shift"] = (
