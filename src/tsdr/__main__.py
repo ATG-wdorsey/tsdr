@@ -5,6 +5,7 @@ import platform
 import signal
 import socket
 import sys
+from pathlib import Path
 
 from tsdr import __version__
 from tsdr.core.storage import config_dir
@@ -19,9 +20,25 @@ _LOG_FORMAT = "%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s:%(lineno)d - %(m
 _LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
+_LOGS_KEPT = 5  # tsdr.log and tsdr.log.1 .. .4: the sessions before survive a restart
+
+
+def _rotate_logs(log_path: Path) -> None:
+    try:
+        for i in range(_LOGS_KEPT - 2, 0, -1):
+            older = log_path.with_name(f"{log_path.name}.{i}")
+            if older.exists():
+                older.replace(log_path.with_name(f"{log_path.name}.{i + 1}"))
+        if log_path.exists():
+            log_path.replace(log_path.with_name(f"{log_path.name}.1"))
+    except OSError as e:  # a log that can't move is overwritten, as before
+        print(f"tsdr: could not keep the previous log: {e}", file=sys.stderr)
+
+
 def _configure_logging(verbose: bool) -> None:
     log_path = config_dir() / "tsdr.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_logs(log_path)
     logging.basicConfig(
         filename=str(log_path),
         filemode="w",
