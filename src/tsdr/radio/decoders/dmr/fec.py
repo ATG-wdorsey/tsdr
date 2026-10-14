@@ -37,6 +37,15 @@ class CACHInfo:
 
 
 @dataclass(frozen=True)
+class EMBInfo:
+    """Decoded EMB of a voice burst B-F (the field where burst A has its sync)."""
+
+    color_code: int
+    pi: int
+    lcss: int
+
+
+@dataclass(frozen=True)
 class SlotTypeInfo:
     """Decoded Slot Type PDU."""
 
@@ -298,3 +307,39 @@ def extract_voice_frames(burst: np.ndarray) -> list[bytes]:
         _deinterleave_ambe_frame(frame_b_dibits),
         _deinterleave_ambe_frame(frame_c_dibits),
     ]
+
+
+# QR(16,7,6) (ETSI TS 102 361-1 B.3.2): the EMB's 7 data bits (CC, PI, LCSS), then 9
+# parity bits. The parity of each data bit, least significant first; a word's parity is
+# the XOR of its data bits' rows.
+_QR_16_7_6_PARITY = (0x073, 0x0E5, 0x1C9, 0x1E2, 0x1B7, 0x11E, 0x04F)
+
+
+def _qr_16_7_6_codewords() -> np.ndarray:
+    words = np.zeros(128, dtype=np.uint16)
+    for data in range(128):
+        parity = 0
+        for bit, row in enumerate(_QR_16_7_6_PARITY):
+            if (data >> bit) & 1:
+                parity ^= row
+        words[data] = (data << 9) | parity
+    return words
+
+
+_QR_16_7_6_WORDS = _qr_16_7_6_codewords()
+
+
+def decode_emb(dibits: np.ndarray) -> EMBInfo | None:
+    """Decode the 8 EMB dibits (4 each side of the embedded signalling).
+
+    The code's distance is 6: None when the word is more than 2 bit errors from
+    every codeword (noise passes about 1 time in 4, before the color code check).
+    """
+    word = 0
+    for bit in dibits_to_bits(dibits):
+        word = (word << 1) | int(bit)
+    distances = np.bitwise_count(_QR_16_7_6_WORDS ^ np.uint16(word))
+    data = int(np.argmin(distances))
+    if distances[data] > 2:
+        return None
+    return EMBInfo(color_code=data >> 3, pi=(data >> 2) & 1, lcss=data & 3)

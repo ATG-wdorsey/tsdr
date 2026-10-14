@@ -21,16 +21,23 @@ from tsdr.radio.decoders.dmr.constants import (
     SLOT_TYPE_DIBITS,
     ST1_START,
     ST2_START,
+    SUPERFRAME_LEN,
     SYMBOL_RATE,
     SYNC_DIBITS,
     SYNC_MAX_ERRORS,
     SYNC_PATTERNS,
+    SYNC_START,
     VOICE_SYNC_TYPES,
     DataType,
     DecoderState,
     SyncType,
 )
-from tsdr.radio.decoders.dmr.fec import decode_cach, decode_slot_type, extract_voice_frames
+from tsdr.radio.decoders.dmr.fec import (
+    decode_cach,
+    decode_emb,
+    decode_slot_type,
+    extract_voice_frames,
+)
 from tsdr.radio.demodulators import Demodulator
 from tsdr.radio.dsp import DCBlocker, FMChannelizer, MuellerMuller
 from tsdr.radio.vocoder.agc import VoiceAGC
@@ -59,6 +66,13 @@ _MAX_CONTINUATION_BURSTS = 11
 # voice on both slots up to 10 carry none (11 with one missed A). Bounds what is
 # decoded after the signal is lost mid-call.
 _MAX_SYNCLESS_RUN = 12
+# A burst taken by timing must hold what its sync/EMB field should: at B-F a valid EMB
+# (within 2 bit errors of a QR(16,7,6) word, with the repeater's color code: noise
+# passes about 1 time in 60), at A (its sync missed) the voice sync within 6 of 24
+# symbols (noise: about 1 in 90). One that fails is not decoded; this many in a row
+# drop the lock (the signal is gone).
+_MAX_BAD_TIMED = 2
+_MISSED_SYNC_MAX_ERRORS = 6
 # The reference harness's speech gain (DSD, mbelib's decode_ambe): starts at x25, at most x50.
 _AGC_MAX_GAIN = 50.0
 _AGC_START_GAIN = 25.0
@@ -123,6 +137,10 @@ def _slice_4level(symbols: np.ndarray) -> np.ndarray:
     dibits[symbols > 0] = 0
     dibits[symbols > 2 / 3] = 1
     return dibits
+
+
+# The +3 symbols of each sync pattern (the rest are -3).
+_SYNC_HIGH = {t: np.frombuffer(p, dtype=np.uint8) == 1 for t, p in SYNC_PATTERNS.items()}
 
 
 def _match_sync(dibits: np.ndarray) -> tuple[SyncType, int] | None:
@@ -202,6 +220,7 @@ class DMRDecoder(Demodulator):
         # Continuation bursts per timeslot since that slot's last real sync match.
         self._continuation = {0: 0, 1: 0}
         self._syncless_run = 0
+        self._bad_timed_run = 0
         # The burst being collected: came with a sync; was framed by the lock.
         self._burst_synced = True
         self._burst_in_lock = False
@@ -373,6 +392,7 @@ class DMRDecoder(Demodulator):
         self._state = DecoderState.SEARCHING
         self._continuation = {0: 0, 1: 0}
         self._syncless_run = 0
+        self._bad_timed_run = 0
         self._lock_hits = 0
         self._lock_misses = 0
         self._cach_ok = 0
@@ -439,10 +459,39 @@ class DMRDecoder(Demodulator):
         self._last_slot = timeslot
         if self._burst_synced:
             self._continuation[timeslot] = 0
+            self._bad_timed_run = 0
+        elif self._timed_burst_ok(burst, timeslot):
+            self._bad_timed_run = 0
+        else:
+            self._bad_timed_run += 1
+            return self._bad_timed_run < _MAX_BAD_TIMED
 
         if sync_type in VOICE_SYNC_TYPES:
             return self._process_voice_burst(burst, sync_type, timeslot, timestamp)
         return self._process_data_burst(burst, sync_type, timeslot, cach.clean, timestamp)
+
+    def _timed_burst_ok(self, burst: np.ndarray, slot: int) -> bool:
+        """A burst taken by timing holds what its sync/EMB field should: the voice sync
+        (loosely) at the superframe's A, else an EMB with the repeater's color code."""
+        field = burst[SYNC_START : SYNC_START + SYNC_DIBITS]
+        if self._continuation[slot] % SUPERFRAME_LEN == 0:
+            high = _SYNC_HIGH[self._ts_state[slot].voice_sync_type]
+            errors = int(np.count_nonzero((field <= 1) != high))  # dibits 0, 1: positive
+            return errors <= _MISSED_SYNC_MAX_ERRORS
+        emb = decode_emb(np.concatenate([field[:4], field[-4:]]))
+        if emb is None:
+            return False
+        # Counted before the check: a noise EMB that decoded first must not lock out the
+        # repeater's own color code.
+        self._count_color_code(emb.color_code)
+        return emb.color_code == self._dominant_cc
+
+    def _count_color_code(self, cc: int) -> None:
+        count = self._color_code_counts.get(cc, 0) + 1
+        self._color_code_counts[cc] = count
+        if count > self._dominant_cc_count:
+            self._dominant_cc = cc
+            self._dominant_cc_count = count
 
     def _process_voice_burst(
         self, burst: np.ndarray, sync_type: SyncType, timeslot: int, timestamp: float
@@ -507,12 +556,7 @@ class DMRDecoder(Demodulator):
             return False
 
         self._slot_type_ok += 1
-        cc = slot_type.color_code
-        new_cc_count = self._color_code_counts.get(cc, 0) + 1
-        self._color_code_counts[cc] = new_cc_count
-        if new_cc_count > self._dominant_cc_count:
-            self._dominant_cc = cc
-            self._dominant_cc_count = new_cc_count
+        self._count_color_code(slot_type.color_code)
         self._data_type_counts[slot_type.data_type] = (
             self._data_type_counts.get(slot_type.data_type, 0) + 1
         )
@@ -709,6 +753,7 @@ class DMRDecoder(Demodulator):
         self._lock_remaining = 0
         self._continuation = {0: 0, 1: 0}
         self._syncless_run = 0
+        self._bad_timed_run = 0
         self._last_slot = -1
         for ts in self._ts_state.values():
             ts.in_voice_call = False
