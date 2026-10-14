@@ -83,11 +83,22 @@ class AmbePlus2Decoder:
         bits), row 1 is C1 (23 bits, bit 23 unused), row 2 is C2 (11
         bits), row 3 is C3 (14 bits), with unused slots zero-filled.
         """
+        return float_to_short(self.decode_codewords_float(ambe_fr))
+
+    def decode_codewords_float(self, ambe_fr: np.ndarray) -> np.ndarray:
+        """``decode_codewords`` without the final gain and int16 clip: ``float32[160]``
+        on mbelib's synthesis scale (speech peaks of hundreds to a few thousand)."""
         fr = np.asarray(ambe_fr, dtype=np.int8).copy()
         c0_errs = ecc_c0(fr)
         demodulate_c1(fr)
         ambe_d, c1_errs = pack_ambe_d(fr)
-        return self.decode_ambe_d(ambe_d, errs2=c0_errs + c1_errs)
+        return self.decode_ambe_d_float(ambe_d, errs2=c0_errs + c1_errs)
+
+    def decode_frame_float(self, voice_bits: bytes) -> np.ndarray:
+        """``decode_frame`` without the final gain and int16 clip (see decode_codewords_float)."""
+        if len(voice_bits) < 9:
+            raise ValueError(f"expected at least 9 bytes, got {len(voice_bits)}")
+        return self.decode_codewords_float(_unpack_voice_bits(voice_bits))
 
     def decode_ambe_d(self, ambe_d: np.ndarray, errs2: int = 0) -> np.ndarray:
         """Decode an already-FEC'd 49-bit ambe_d vector into ``int16[160]``.
