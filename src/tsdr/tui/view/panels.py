@@ -49,6 +49,9 @@ def _demod_title(m: UIModel) -> str | None:
     return _DEMOD_TITLES.get(focused.active_decoder_kind)
 
 
+# Panels toggled by a key other than a digit: the key shown for them on the panel bar.
+PANEL_KEY_GLYPHS: Final[dict[str, str]] = {"keys": "?"}
+
 PANELS: Final[dict[str, PanelDef]] = {
     "demod": PanelDef("demod", "Demod", "_demod_placeholder", title_of=_demod_title),
     "decoder-output": PanelDef("decoder-output", "Decoder", "decoder_text"),
@@ -56,4 +59,5 @@ PANELS: Final[dict[str, PanelDef]] = {
     "performance": PanelDef("performance", "Performance", "performance"),
     "directory": PanelDef("directory", "Directory", "directory"),
     "memories": PanelDef("memories", "Memories", "memories"),
+    "keys": PanelDef("keys", "Keys", "keys"),
 }

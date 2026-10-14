@@ -50,9 +50,9 @@ def _format_signal_info(
     Layout:
         <label>            (structural, from the profile)
         <modulation>       (structural, from the profile)
-        <description, or sample-rate mismatch warning if the decoder requires
-        a rate different from the device's: in that case it's producing
-        garbage and the description is moot>
+        <description, or a sample-rate warning if the decoder needs a faster
+        capture than the device's (it converts any rate at or above its own):
+        in that case it's producing garbage and the description is moot>
 
     Decoder-specific role badges (e.g. TETRA MCCH/TCH) live inside
     `status.description`; the tuner just renders it as-is.
@@ -61,10 +61,10 @@ def _format_signal_info(
     if (
         profile.sample_rate is not None
         and device_sample_rate is not None
-        and abs(profile.sample_rate - device_sample_rate) > 1.0
+        and device_sample_rate < profile.sample_rate * (1 - 1e-4)
     ):
         value, unit = format_rate(profile.sample_rate, precision=3)
-        lines.append(f"[red bold]Needs {value} {unit}[/red bold]")
+        lines.append(f"[red bold]Needs ≥ {value} {unit}[/red bold]")
     elif status is not None and status.description:
         lines.append(f"[dim]{status.description}[/dim]")
     return "\n".join(lines)

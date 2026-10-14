@@ -166,6 +166,10 @@ panels' fixed heights.
   (`tui/inline_edit.py`): calling `start()` registers it as
   `app.active_inline_editor`, so `on_key` dispatches every key to it until commit
   (Enter) / cancel (Esc). Reuse it instead of adding a focusable widget.
+  A prompt on the status line, vi style (`f`: "Frequency: "), is `StatusPrompt`
+  (`tui/widgets/status_prompt.py`, the console's line editing with a history of
+  its own): always mounted over the status bar, shown while `UIModel.status_prompt`
+  holds its label, and `on_key` hands it every key while it is shown.
 - **The four `_force_refresh_all` timers in `TSDRApp.on_mount`** work around
   a terminal-IO drop bug on startup. Not a mount race — keep them.
 - **Kitty images are out-of-band**: `KittyImageWidget` paints via escape
@@ -432,7 +436,9 @@ All have a `process(x) -> y` method and a `reset()` method, with state persistin
 
 - **`MultistageDecimator`** (`radio/dsp/decimator.py`): decimation by a large factor (capture rate to audio rate) as a cascade of `StreamingDecimFilter` stages, planned for the fewest multiply-accumulates (Crochiere and Rabiner), each stopping only what would fold into the final passband (at least 80 dB). Use it instead of a single `StreamingDecimFilter` whenever the factor is more than about 10: one short filter cannot stop signals near multiples of the output rate, which then fold onto the channel. Choose the factor with `smooth_decimation` so it splits into small stages. It is not a channel filter: it passes everything up to the output Nyquist (the passband only sets where aliases are kept out), so follow it with an FIR at the output rate that cuts at the channel width.
 
-- **`StreamingPolyphaseResampler`**: Rational resampling (up/down) via polyphase decomposition.
+- **`StreamingPolyphaseResampler`**: Rational resampling (up/down) via polyphase decomposition. `process` takes float32 `(n, channels)`; `process_iq` takes complex64 IQ (one stream per instance). Each branch is stored reversed, because the kernel walks its window oldest first and the branch's first tap belongs to the newest sample.
+
+- **`IQRateConverter`** (`radio/dsp/rate_converter.py`): complex IQ from the capture rate to the exact rate a decoder is written for (ADS-B 2.4 MS/s, DAB 2.048 MS/s): a `MultistageDecimator` by a whole factor to the lowest rate at or above the target, then a `StreamingPolyphaseResampler`. A source within 1e-4 of the target passes through; a slower one is `too_slow` (the tuner warns "Needs ≥ X").
 
 - **`DCBlocker`**: Single-pole IIR high-pass at a configurable cutoff (typ. 16 Hz). Wraps `_dc_blocker_f32`. Used post-envelope in AM and post-real-projection in SSB to remove DC build-up.
 

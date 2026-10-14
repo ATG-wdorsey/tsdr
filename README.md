@@ -227,6 +227,10 @@ When the console is unfocused, the spectrum responds to the keyboard directly.
 
 Tuning:
 
+- `f`: type a frequency on the status line (`Frequency: `), with the console's
+  line editing and its own history (`↑` / `↓`); Enter tunes, Escape leaves it.
+  A bare number is MHz (`146.52`); `k`, `M` and `G` (either case) set the unit
+  (`7074k`).
 - `←` / `→`: tune down / up one step.
 - `Shift+←` / `Shift+→`: tune one coarse step.
 - `Alt+←` / `Ctrl+←`, `Alt+→` / `Ctrl+→`: tune one fine step.
@@ -299,13 +303,18 @@ Reception:
 - `Alt+↑` / `Ctrl+↑`, `Alt+↓` / `Ctrl+↓`: adjust channel bandwidth finely.
 - `g` / `G`: decrease / increase RF gain.
 - `Ctrl+G`: toggle AGC.
-- `u` / `U`: lower / raise the squelch threshold.
+- `u` / `U`: lower / raise the squelch threshold 1 dB.
 - `Ctrl+U`: disable squelch.
 - `Shift+↑` / `Shift+↓`: decrease / increase volume.
 - `n`: toggle RNNoise denoising (`DN` beside the volume).
 - `Space`: start / stop the focused device.
 - `d` then a second key: switch demodulator (`w` WFM, `n` NFM, `a` AM,
   `u` USB, `l` LSB, `c` CW, `o` off).
+- `D` then a second key: switch decoder (`a` ADS-B, `b` DAB, `c` ACARS, `d`
+  DMR, `f` FLEX, `k` FSK, `n` NAVTEX, `p` APRS, `r` RTTY, `s` SSTV, `t` TETRA,
+  `4` FT4, `8` FT8, `o` off). Both prompts show each choice's key in place,
+  bright and in upper case, on a second line when the window is narrow; a key
+  that is not a choice cancels.
 
 Display:
 
@@ -333,6 +342,7 @@ Memories and panels:
 - `M`: edit the nearest memory.
 - `Ctrl+M`: delete the nearest memory (press `y` to confirm).
 - `1` to `9`: toggle the dockable panel mapped to that key.
+- `?`: show / hide the list of keys (a panel, like the numbered ones).
 - `Ctrl+S`: toggle the stats panel; `Ctrl+P`: toggle the performance panel.
 - `Ctrl+1` to `Ctrl+9`: recall a band-stack slot; `Ctrl+0`: swap the A/B band stack.
 

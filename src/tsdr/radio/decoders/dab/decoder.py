@@ -9,6 +9,7 @@ from tsdr.core.events.events import DecodedMessage
 from tsdr.core.sdr.datatypes import AudioBatch, DemodStatus
 from tsdr.core.tracing import span
 from tsdr.radio.demodulators import Demodulator
+from tsdr.radio.dsp.rate_converter import IQRateConverter
 
 from .aac import _AACDecoder
 from .constants import N_FIC_SYMBOLS, T_FRAME, T_S, VITERBI_K
@@ -186,11 +187,14 @@ class DABDecoder(Demodulator):
     MESSAGE_TYPE = "dab"
     HAS_TEXT = True
     FIXED_CHANNEL_BANDWIDTH = 1_536_000
+    # Mode I's symbols are defined at 2.048 MS/s; faster captures are converted to it,
+    # keeping the 1.536 MHz ensemble (+-0.8 MHz).
     FIXED_SAMPLE_RATE = 2_048_000
 
     def __init__(self, sample_rate: float = 2_048_000):
         super().__init__()
         self._sample_rate = sample_rate
+        self._rate = IQRateConverter(sample_rate, self.FIXED_SAMPLE_RATE, passband_hz=0.8e6)
         self._buffer = np.array([], dtype=np.complex64)
         self._fig_state = _FIGParserState()
         self._last_ensemble: DABEnsemble | None = None
@@ -340,7 +344,8 @@ class DABDecoder(Demodulator):
         return points, "DQPSK"
 
     def demodulate(self, iq_samples: np.ndarray, capture_utc_s: float) -> None:
-        self._buffer = np.concatenate([self._buffer, iq_samples.astype(np.complex64)])
+        iq = self._rate.process(iq_samples.astype(np.complex64, copy=False))
+        self._buffer = np.concatenate([self._buffer, iq])
 
         while len(self._buffer) >= 2 * T_FRAME:
             null_positions = detect_null_symbols(self._buffer[: 3 * T_FRAME])
@@ -517,6 +522,7 @@ class DABDecoder(Demodulator):
 
     def reset(self) -> None:
         """Clear all decoder state."""
+        self._rate.reset()
         self._buffer = np.array([], dtype=np.complex64)
         self._fig_state = _FIGParserState()
         self._last_ensemble = None

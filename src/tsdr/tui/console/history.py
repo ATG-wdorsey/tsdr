@@ -26,9 +26,10 @@ class CommandHistory:
     Consecutive duplicates are skipped (bash-style). No line cap (fish-style).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, filename: str = HISTORY_FILE) -> None:
+        self._filename = filename
         self._entries: list[str] = []
-        text = storage.read_text(HISTORY_FILE)
+        text = storage.read_text(filename)
         if text:
             self._entries = [line for line in text.splitlines() if line]
 
@@ -49,7 +50,7 @@ class CommandHistory:
         self._persist()
 
     def _persist(self) -> None:
-        storage.write_text(HISTORY_FILE, "\n".join(self._entries) + "\n")
+        storage.write_text(self._filename, "\n".join(self._entries) + "\n")
 
     def walk_back(self, cursor: int | None, query: str) -> tuple[int, str] | None:
         """Find the next older entry containing query (case-insensitive substring).

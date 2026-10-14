@@ -208,6 +208,11 @@ class TSDRApp(
         if status is not None:
             status.show_output(message)  # type: ignore[attr-defined]
 
+    def show_choices(self, message: str) -> None:
+        status = self._reconciler.get("status-bar")
+        if status is not None:
+            status.show_choices(message)  # type: ignore[attr-defined]
+
     def _show_error(self, message: str) -> None:
         status = self._reconciler.get("status-bar")
         if status is not None:

@@ -44,8 +44,14 @@ class StatusBar(Static):
             self._output_timer.stop()
             self._output_timer = None
 
+    def show_choices(self, message: str) -> None:
+        """Show a chord's choices, on more lines when they don't fit on one."""
+        self.show_output(message)
+        self.add_class("-choices")
+
     def show_output(self, message: str) -> None:
         """Show command output (auto-clears after DISPLAY_DURATION)."""
+        self.remove_class("-choices")
         if self._error_timer is not None:
             self._error_timer.stop()
             self._error_timer = None
@@ -61,6 +67,7 @@ class StatusBar(Static):
             self._output_timer = self.set_timer(self.DISPLAY_DURATION, self._clear_output)
 
     def show_error(self, message: str) -> None:
+        self.remove_class("-choices")
         if self._error_timer is not None:
             self._error_timer.stop()
 
@@ -90,6 +97,7 @@ class StatusBar(Static):
     def _clear_output(self) -> None:
         self._output_timer = None
         self._last_output = ""
+        self.remove_class("-choices")
         if self._display_mode == "output":
             self._refresh()
 
