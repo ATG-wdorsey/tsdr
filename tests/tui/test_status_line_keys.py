@@ -30,13 +30,16 @@ from tsdr.tui.widgets.status_prompt import StatusPrompt
         ("162550000hz", 162_550_000),
         ("929.6125", 929_612_500),
         ("144.", 144_000_000),
+        ("2.01M", 2_010_000),  # 2.01e6 is 2009999.9999999998: rounded, not truncated
     ],
 )
 def test_a_bare_number_is_mhz_and_suffixes_any_case(typed: str, hz: int) -> None:
     assert parse_dial(typed) == hz
 
 
-@pytest.mark.parametrize("typed", ["", "abc", "146.52x", "nan", "inf", "k"])
+@pytest.mark.parametrize(
+    "typed", ["", "abc", "146.52x", "nan", "inf", "k", "1e303", "9" * 303, "1e302k", "2e6G"]
+)
 def test_what_is_not_a_frequency_is_refused(typed: str) -> None:
     with pytest.raises(ValueError):
         parse_dial(typed)

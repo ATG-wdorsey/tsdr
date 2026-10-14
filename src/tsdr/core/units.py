@@ -8,6 +8,8 @@ def find_nearest[NumT: (int, float)](options: Iterable[NumT], target: float) -> 
     return min(options, key=lambda x: abs(x - target))
 
 
+MAX_HZ = 1e12  # far above any radio; a larger entry is a typo, not a frequency
+
 _SUFFIXES: tuple[tuple[str, float], ...] = (
     ("ghz", 1e9),
     ("mhz", 1e6),
@@ -34,8 +36,15 @@ def parse_hz(s: str) -> int:
             num = t[: -len(suffix)]
             if not num:
                 raise ValueError(f"invalid frequency: {s!r}")
-            return int(float(num) * mul)
-    return int(float(t))
+            return _whole_hz(float(num) * mul, s)
+    return _whole_hz(float(t), s)
+
+
+def _whole_hz(hz: float, s: str) -> int:
+    """Rounded, not truncated: 2.01e6 is 2009999.9999999998 in binary."""
+    if not isfinite(hz) or abs(hz) > MAX_HZ:
+        raise ValueError(f"invalid frequency: {s!r}")
+    return round(hz)
 
 
 def parse_dial(s: str) -> int:
@@ -46,14 +55,8 @@ def parse_dial(s: str) -> int:
     """
     t = s.strip().lower().replace(" ", "").replace("_", "").replace(",", "")
     if t and (t[-1].isdigit() or t[-1] == "."):
-        mhz = float(t)
-        if not isfinite(mhz):
-            raise ValueError(f"invalid frequency: {s!r}")
-        return round(mhz * 1e6)
-    try:
-        return parse_hz(t)
-    except OverflowError as e:
-        raise ValueError(f"invalid frequency: {s!r}") from e
+        return _whole_hz(float(t) * 1e6, s)
+    return parse_hz(t)
 
 
 def format_hz(
