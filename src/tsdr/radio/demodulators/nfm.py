@@ -179,6 +179,7 @@ class NarrowbandFMDemodulator(Demodulator):
             audio_final = section.process(audio_final)
 
         audio_samples = audio_final.astype(np.float32)
+        self._tap(audio_samples)
         envelope = self._squelch.process(power_db, len(audio_samples))
         if envelope is not None:
             audio_samples *= envelope

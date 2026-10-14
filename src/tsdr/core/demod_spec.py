@@ -12,13 +12,18 @@ the plumbing through engine/persistence/recall stays the same shape.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class DemodSpec(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     mode: str
+    # An audio decoder riding on `mode` (radio.audio_decoders: "SSTV"): it reads the
+    # mode's audio, and the mode, its bandwidth and squelch stay the user's.
+    decoder: str | None = None
     fm_deviation_hz: float | None = None
     sstv_mode: str | None = None
     # FSK-family (rtty/fsk) overrides; None on any axis = auto-acquire it.
@@ -27,6 +32,15 @@ class DemodSpec(BaseModel):
     fsk_reverse: bool | None = None
     fsk_alphabet: str | None = None
     fsk_framing: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sstv_was_a_mode(cls, data: Any) -> Any:
+        """SSTV used to be a mode of its own, on USB: specs saved then (memories, band
+        registers, prefs) come back as USB with the SSTV decoder."""
+        if isinstance(data, dict) and str(data.get("mode", "")).upper() == "SSTV":
+            return {**data, "mode": "USB", "decoder": "SSTV"}
+        return data
 
 
 class PreviousTuneState(BaseModel):

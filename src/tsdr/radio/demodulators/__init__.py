@@ -84,6 +84,10 @@ class Demodulator(ABC):
 
     def __init__(self) -> None:
         self._audio_batches: list[AudioBatch] = []
+        # Set when an audio decoder rides on this mode (radio.audio_decoders): the
+        # demodulator then keeps its audio from before the squelch for it.
+        self.tap_audio = False
+        self._tapped: list[np.ndarray] = []
 
     def _install_channel_frontend(
         self, sample_rate: float, audio_rate: float, channel_bandwidth: float
@@ -161,6 +165,7 @@ class Demodulator(ABC):
 
     def reset(self) -> None:
         self._audio_batches.clear()
+        self._tapped.clear()
 
     def set_channel_bandwidth(self, bandwidth: float) -> None:  # noqa: B027
         pass
@@ -228,6 +233,15 @@ class Demodulator(ABC):
         batches = self._audio_batches
         self._audio_batches = []
         return batches
+
+    def _tap(self, samples: np.ndarray) -> None:
+        """Keep a copy of the audio before the squelch, at `decimated_rate`, for a decoder."""
+        if self.tap_audio:
+            self._tapped.append(samples.copy())
+
+    def get_tapped_audio(self) -> list[np.ndarray]:
+        tapped, self._tapped = self._tapped, []
+        return tapped
 
     def get_messages(self) -> list[DecodedMessage]:
         return []

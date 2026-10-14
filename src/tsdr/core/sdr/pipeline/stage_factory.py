@@ -73,6 +73,7 @@ def create_stage(
                 mode_name=spec.mode,
                 pipeline_name=pipeline_name,
                 de_emphasis=sdr_config.wfm_de_emphasis_us / 1e6,
+                spec=spec,
             )
         case StageType.DENOISER:
             return DenoiserStage(enabled=sdr_config.denoise)

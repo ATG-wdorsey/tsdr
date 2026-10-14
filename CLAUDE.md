@@ -401,6 +401,14 @@ Available stages: `agc`, `demodulator`, `event_emitter`, `fft`, `frequency_shift
 - **USB/LSB**: Single sideband via shift-LPF-unshift (rejects opposite sideband)
 - **CW**: Morse code with explicit BFO; Morse text decoder runs alongside audio output
 
+Audio decoders (`radio/audio_decoders.py`: SSTV) ride on a mode instead of replacing it (the
+owner's rule: picking a decoder doesn't change the mode; only decoders that define their own
+signal, like ADS-B, DAB and TETRA, are modes). `DemodSpec.decoder` names one; the
+`DemodulatorStage` turns on the demodulator's pre-squelch tap (`Demodulator._tap`, in NFM,
+USB/LSB and AM: `CARRIER_MODES`) and feeds it the audio; `with_decoder` /
+`carried_decoder` keep it across mode changes. A spec saved with mode SSTV loads as USB +
+SSTV.
+
 All demodulators inherit from `radio/demodulators/__init__.py:Demodulator`. The base class owns the `_audio_batches` buffer and provides `_emit_audio(samples, sample_rate, timestamp, *, stereo=False)` and `get_audio()`. Subclass `__init__` must call `super().__init__()`; subclass `reset()` should call `super().reset()` to clear the buffer.
 
 ## Testing

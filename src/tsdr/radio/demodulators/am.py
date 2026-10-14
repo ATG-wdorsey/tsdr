@@ -115,6 +115,7 @@ class AMDemodulator(Demodulator):
         env = self._agc.process(env)
         audio = self._audio_lpf.process(env)
         np.clip(audio, -1.0, 1.0, out=audio)
+        self._tap(audio)
 
         power_db = iq_power_db(iq_ch)
         gate = self._squelch.process(power_db, len(audio))

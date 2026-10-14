@@ -3,7 +3,9 @@ from argparse import Namespace
 from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import ConfigurationError
+from tsdr.core.tuning import active_demod_spec
 from tsdr.core.units import parse_hz
+from tsdr.radio.audio_decoders import AUDIO_DECODERS, carried_decoder, with_decoder
 from tsdr.radio.decoders.fsk.profile import FRAMINGS as _FSK_FRAMINGS
 from tsdr.radio.decoders.fsk.profile import PROFILES as FSK_PRESETS
 from tsdr.radio.decoders.fsk.tables import ALPHABETS as _FSK_ALPHABET_TABLES
@@ -20,11 +22,15 @@ _FSK_ALPHABETS = tuple(_FSK_ALPHABET_TABLES)
 class SDRDemodCommand(Command):
     @property
     def description(self) -> str:
-        return "Enable/disable audio demodulation or protocol decoding"
+        return (
+            "Enable/disable audio demodulation or protocol decoding (sstv decodes the current mode)"
+        )
 
     def configure(self, parser: CommandParser) -> None:
         # Modes are case-insensitive (`demod wfm` and `demod WFM` both work).
-        parser.add_argument("mode", type=str.upper, choices=[*sorted(DEMODULATORS), "OFF"])
+        parser.add_argument(
+            "mode", type=str.upper, choices=[*sorted(DEMODULATORS), *sorted(AUDIO_DECODERS), "OFF"]
+        )
         parser.add_argument("--device", dest="device_id")
         parser.add_argument(
             "--deviation",
@@ -75,14 +81,26 @@ class SDRDemodCommand(Command):
             manager.remove_pipeline(did, "audio")
             return success(f"Disabled demodulation for {device_id(did)}")
 
+        current = active_demod_spec(manager.get_device(did))
+        if mode in AUDIO_DECODERS:
+            # A decoder rides on the current mode (or the band's usual one).
+            spec = with_decoder(
+                current, mode, float(manager.get_device(did).config.tuned_frequency)
+            )
+            spec = spec.model_copy(update={"sstv_mode": sstv_mode})
+            manager.set_audio_demod(did, spec)
+            return success(f"Decoding [bold green]{mode}[/] on {spec.mode} for {device_id(did)}")
+
         if mode not in DEMODULATORS:
             available = ", ".join(sorted(DEMODULATORS))
             raise ConfigurationError(f"Unknown mode '{mode}'. Available: {available}")
 
+        decoder, carried_sstv_mode = carried_decoder(current, mode)
         spec = DemodSpec(
             mode=mode,
+            decoder=decoder,
+            sstv_mode=carried_sstv_mode,
             fm_deviation_hz=deviation,
-            sstv_mode=sstv_mode,
             **fsk,
         )
         manager.set_audio_demod(did, spec)

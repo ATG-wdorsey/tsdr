@@ -3,6 +3,7 @@ import queue
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from enum import Enum
 from queue import Queue
 from typing import TYPE_CHECKING, Unpack
@@ -16,6 +17,7 @@ from tsdr.core.sdr.voice_squelch import VoiceSquelch
 from tsdr.core.sdr.workers.io_worker import IOWorker
 from tsdr.core.sdr.workers.pipeline_worker import PipelineWorker
 from tsdr.core.tracing import traced
+from tsdr.radio.audio_decoders import AUDIO_DECODERS
 from tsdr.radio.registry import demod_profile as build_profile
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,14 @@ def _offer_config(
             q.put(snapshot, block=False)
         except queue.Full:
             logger.warning("config_queue_full type=%s", kind.__name__)
+
+
+def active_decoder_of(pipelines: Mapping[str, PipelineConfig]) -> str | None:
+    """The audio decoder riding on the active mode (`DemodSpec.decoder`), if any."""
+    for pc in pipelines.values():
+        if pc.audio_spec is not None and pc.audio_spec.decoder is not None:
+            return pc.audio_spec.decoder.upper()
+    return None
 
 
 def active_mode_of(pipelines: Mapping[str, PipelineConfig]) -> str:
@@ -188,7 +198,16 @@ class SDRDeviceContext:
         mode = self.active_mode
         if mode == "RAW":
             return None
-        return build_profile(mode, self.config.channel_bandwidth)
+        profile = build_profile(mode, self.config.channel_bandwidth)
+        decoder = active_decoder_of(self.config.pipelines)
+        if decoder is not None:
+            cls = AUDIO_DECODERS[decoder]
+            profile = replace(
+                profile,
+                modulation=f"{profile.modulation} + {cls.LABEL}",
+                message_type=cls.MESSAGE_TYPE,
+            )
+        return profile
 
     @property
     def demod_status(self) -> DemodStatus | None:

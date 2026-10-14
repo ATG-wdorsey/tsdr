@@ -13,8 +13,9 @@ from tsdr.core.memories import Memory, get_memory_store
 from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
-from tsdr.core.tuning import current_spec_or_default
+from tsdr.core.tuning import active_demod_spec, current_spec_or_default
 from tsdr.core.units import parse_dial
+from tsdr.radio.audio_decoders import AUDIO_DECODERS, carried_decoder, with_decoder
 from tsdr.radio.dsp.rnnoise import rnnoise_available
 from tsdr.tui._mixin_base import MixinBase
 from tsdr.tui.commands._format import freq_mhz
@@ -602,20 +603,33 @@ class KeyboardMixin(MixinBase):
             self._show_error("No device focused")
             return
 
-        if mode == "OFF":
+        current = active_demod_spec(device)
+        if mode == "OFF" and title == "Decoder" and current is not None and current.decoder:
+            # A decoder riding on a mode goes; the mode stays.
+            spec = current.model_copy(update={"decoder": None, "sstv_mode": None})
+            status = f"{title}: off ({current.mode} stays)"
+        elif mode == "OFF":
             engine.stop_audio_output(device.device_id)
             engine.remove_pipeline(device.device_id, "audio")
             self.show_status(f"{title}: off")
             return
+        elif mode in AUDIO_DECODERS:
+            spec = with_decoder(current, mode, float(device.config.tuned_frequency))
+            status = f"{title}: {mode} on {spec.mode}"
+        else:
+            decoder, sstv_mode = carried_decoder(current, mode)
+            spec = DemodSpec(mode=mode, decoder=decoder, sstv_mode=sstv_mode)
+            on = f" (+{spec.decoder})" if spec.decoder else ""
+            status = f"{title}: {CHORD_LABELS.get(mode, mode)}{on}"
 
         try:
-            engine.set_audio_demod(device.device_id, DemodSpec(mode=mode))
+            engine.set_audio_demod(device.device_id, spec)
         except SDRException as e:
             self._show_error(str(e))
             return
 
         self.notify_demod_changed()
-        self.show_status(f"{title}: {CHORD_LABELS.get(mode, mode)}")
+        self.show_status(status)
 
     def _cancel_demod_chord(self) -> None:
         self._clear_demod_chord()

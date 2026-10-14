@@ -12,7 +12,6 @@ from tsdr.radio.demodulators.am import AMDemodulator
 from tsdr.radio.demodulators.cw import CWDemodulator
 from tsdr.radio.demodulators.nfm import NarrowbandFMDemodulator
 from tsdr.radio.demodulators.ssb import SSBDemodulator
-from tsdr.radio.demodulators.sstv import SSTVDemodulator
 from tsdr.radio.demodulators.wfm import WidebandFMDemodulator
 
 
@@ -41,7 +40,6 @@ def test_frontend_high_rate_decimates_to_audio():
         pytest.param(lambda sr: SSBDemodulator(mode="LSB", sample_rate=sr), id="ssb"),
         pytest.param(lambda sr: NarrowbandFMDemodulator(sample_rate=sr), id="nfm"),
         pytest.param(lambda sr: CWDemodulator(sample_rate=sr), id="cw"),
-        pytest.param(lambda sr: SSTVDemodulator(sample_rate=sr), id="sstv"),
     ],
 )
 def test_hf_demod_constructs_at_kiwisdr_rate(make):

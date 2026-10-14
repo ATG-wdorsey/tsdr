@@ -48,6 +48,7 @@ from tsdr.core.units import find_nearest
 from tsdr.core.workers import WorkerRunner
 from tsdr.devices import DeviceParams, create_device
 from tsdr.devices.base import DeviceCapabilities
+from tsdr.radio.audio_decoders import CARRIER_MODES
 from tsdr.radio.registry import DEMODULATOR_CLASSES
 from tsdr.radio.registry import demod_profile as build_profile
 
@@ -789,6 +790,10 @@ class SDREngine:
         if device_id not in self.devices:
             raise SDRException(f"Device {device_id} not found")
 
+        if spec.decoder is not None and spec.mode.upper() not in CARRIER_MODES:
+            raise SDRException(
+                f"{spec.decoder} decodes the audio of {', '.join(CARRIER_MODES)}, not {spec.mode}"
+            )
         context = self.devices[device_id]
         old_pipeline = context.config.pipelines.get("audio")
         old_mode = (

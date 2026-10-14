@@ -57,7 +57,6 @@ _FM_LADDER: tuple[float | None, ...] = (
 _MODE_LADDERS: dict[str, tuple[float | None, ...]] = {
     "USB": _SSB_LADDER,
     "LSB": _SSB_LADDER,
-    "SSTV": _SSB_LADDER,
     "FT8": _SSB_LADDER,
     "FT4": _SSB_LADDER,
     "RTTY": _SSB_LADDER,

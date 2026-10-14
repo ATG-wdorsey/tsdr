@@ -165,6 +165,7 @@ class SSBDemodulator(Demodulator):
         audio = self._dc_blocker.process(audio)
         audio = self._agc.process(audio)
         np.clip(audio, -1.0, 1.0, out=audio)
+        self._tap(audio)
 
         gate = self._squelch.process(power_db, len(audio))
         if gate is not None:

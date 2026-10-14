@@ -1,17 +1,26 @@
-"""Tests for the SSTV decoder + demodulator.
+"""Tests for the SSTV decoder, alone and riding on a mode's audio (NFM, USB).
 
 Inputs are the real mp3 recordings under ``tests/samples/sstv/`` (LFS).
 """
 
 from __future__ import annotations
 
+from math import gcd
 from pathlib import Path
+from types import MappingProxyType
 
 import av
 import numpy as np
 import pytest
+from scipy.signal import resample_poly
 
-from tsdr.core.events.events import DecodedMessage
+from tsdr.core.demod_spec import DemodSpec
+from tsdr.core.events.bus import EventBus
+from tsdr.core.sdr.config import DeviceConfig, PipelineConfig, SDRConfig, StageType
+from tsdr.core.sdr.pipeline.pipeline import PipelineContext
+from tsdr.core.sdr.pipeline.stage_factory import create_stage
+from tsdr.core.sdr.samples_batch import SamplesBatch
+from tsdr.radio.audio_decoders import SSTVAudioDecoder, carried_decoder, with_decoder
 from tsdr.radio.decoders.sstv import (
     MODES,
     MODES_BY_NAME,
@@ -22,7 +31,6 @@ from tsdr.radio.decoders.sstv import (
     decode_offline,
     hilbert_fft,
 )
-from tsdr.radio.demodulators.sstv import SSTVDemodulator
 
 SAMPLES_DIR = Path(__file__).resolve().parents[1] / "samples" / "sstv"
 
@@ -277,11 +285,8 @@ def test_modes_by_name_accepts_common_spellings(name: str) -> None:
 
 
 def _audio_to_usb_iq(audio: np.ndarray, fs: int, *, offset_hz: float = 0.0) -> np.ndarray:
-    """Build a complex64 IQ stream that the USB demod can recover ``audio`` from.
-
-    Take the analytic signal (audio + j*hilbert(audio)), then optionally up-shift
-    by ``offset_hz`` so the carrier sits off-DC.
-    """
+    """A complex64 IQ stream that the USB demod can recover ``audio`` from: the
+    analytic signal, optionally up-shifted by ``offset_hz``."""
     analytic = hilbert_fft(audio.astype(np.float64)).astype(np.complex64)
     if offset_hz != 0.0:
         t = np.arange(len(audio), dtype=np.float64) / fs
@@ -289,79 +294,90 @@ def _audio_to_usb_iq(audio: np.ndarray, fs: int, *, offset_hz: float = 0.0) -> n
     return analytic
 
 
-def test_sstvdemodulator_pipeline_robot36(
-    _samples: dict[str, tuple[np.ndarray, int]],
-) -> None:
-    """Feed a synthesized USB IQ stream into ``SSTVDemodulator`` and assert
-    the state machine reaches DONE with the expected image dimensions and a
-    pile of SSTVData messages along the way."""
-    audio, fs = _samples["Robot_36.mp3"]
-    iq = _audio_to_usb_iq(audio, fs)
+def _audio_to_nfm_iq(audio: np.ndarray, fs: int, rate: int, deviation_hz: float) -> np.ndarray:
+    """``audio`` through an FM transmitter's mic path: 750 us pre-emphasis (the
+    receiver's de-emphasis undoes it), peak deviation ``deviation_hz``, at ``rate``."""
+    g = gcd(rate, fs)
+    x = resample_poly(audio.astype(np.float64), rate // g, fs // g)
+    tau = 750e-6
+    x = x + tau * rate * np.diff(x, prepend=x[0])  # 1 + s*tau
+    x *= deviation_hz / np.max(np.abs(x))
+    phase = 2 * np.pi * np.cumsum(x) / rate
+    return np.exp(1j * phase).astype(np.complex64)
 
-    demod = SSTVDemodulator(sample_rate=float(fs), audio_rate=float(fs))
-    # Decimation should be 1:1 since audio_rate == sample_rate.
-    assert demod.channel_decimation == 1
 
-    collected: list[SSTVData] = []
-    chunk = max(1, int(0.050 * fs))
+def _decode(spec: DemodSpec, iq: np.ndarray, rate: float) -> list[SSTVData]:
+    """Run ``iq`` through the audio pipeline's demodulator stage, as the device does."""
+    pc = PipelineConfig(stages=(StageType.DEMODULATOR,), audio_spec=spec)
+    config = DeviceConfig(sample_rate=rate, pipelines=MappingProxyType({"audio": pc}))
+    stage = create_stage(StageType.DEMODULATOR, pc, SDRConfig(), config, "t", "audio")
+    context = PipelineContext(device_context=None, event_bus=EventBus(), config=SDRConfig())  # type: ignore[arg-type]
+    out: list[SSTVData] = []
+    chunk = int(0.05 * rate)
     for i in range(0, len(iq), chunk):
-        block = iq[i : i + chunk]
-        demod.demodulate(block, capture_utc_s=1_700_000_000.0 + i / fs)
-        for msg in demod.get_messages():
-            if isinstance(msg, DecodedMessage) and isinstance(msg.data, SSTVData):
-                collected.append(msg.data)
+        batch = SamplesBatch(iq_samples=iq[i : i + chunk], capture_utc_s=1.7e9 + i / rate)
+        result = stage.process(batch, context)
+        assert result is not None
+        out += [m.data for m in result.decoded_messages if isinstance(m.data, SSTVData)]
+    return out
 
-    assert collected, "no SSTVData messages produced"
-    states = {d.state for d in collected}
-    assert StreamerState.DECODING in states
-    assert StreamerState.DONE in states
+
+def _robot36_done(collected: list[SSTVData]) -> SSTVData:
     done = next(d for d in collected if d.state == StreamerState.DONE)
-    assert done.mode_name == "Robot 36"
-    assert done.vis_code == 8
-    assert done.image is not None
-    assert done.image.shape == (240, 320, 3)
+    assert done.mode_name == "Robot 36" and done.vis_code == 8
+    assert done.image is not None and done.image.shape == (240, 320, 3)
+    return done
 
 
-def test_sstvdemodulator_set_sstv_mode_overrides_and_resets() -> None:
-    """``set_sstv_mode`` swaps the forced mode and clears the streaming state."""
-    demod = SSTVDemodulator(sample_rate=44100.0, audio_rate=11025.0)
-    assert demod.sstv_mode_name is None
-    demod.set_sstv_mode("scottie_1")
-    assert demod.sstv_mode_name == "Scottie 1"
-    assert demod._decoder.state == StreamerState.LOOKING
-    demod.set_sstv_mode(None)
-    assert demod.sstv_mode_name is None
+def test_sstv_decodes_on_nfm_as_on_2_m(_samples: dict[str, tuple[np.ndarray, int]]) -> None:
+    """SSTV on 145.600 is FM: the decoder rides on NFM's audio (it was USB only, and
+    decoded nothing there). Same picture as the clean audio decodes to."""
+    audio, fs = _samples["Robot_36.mp3"]
+    iq = _audio_to_nfm_iq(audio, fs, rate=96_000, deviation_hz=3_000.0)
+    done = _robot36_done(_decode(DemodSpec(mode="NFM", decoder="SSTV"), iq, 96_000.0))
+    reference = decode_offline(audio, fs)
+    assert reference is not None
+    assert np.mean(np.abs(done.image.astype(float) - reference[1].astype(float))) < 20
 
 
-# ---- LOOKING-state ping ----------------------------------------------------
+def test_sstv_decodes_on_usb(_samples: dict[str, tuple[np.ndarray, int]]) -> None:
+    audio, fs = _samples["Robot_36.mp3"]
+    _robot36_done(_decode(DemodSpec(mode="USB", decoder="SSTV"), _audio_to_usb_iq(audio, fs), fs))
 
 
-def test_demodulator_emits_looking_state_messages() -> None:
-    """The demodulator pushes a bare LOOKING-state SSTVData while no
-    transmission is detected so the widget can show the LOOKING badge."""
-    fs = 12000
-    demod = SSTVDemodulator(sample_rate=float(fs), audio_rate=float(fs))
-    rng = np.random.default_rng(0)
-    looking_msgs: list[SSTVData] = []
-    chunk = int(0.050 * fs)
-    iq_noise = (rng.standard_normal(fs * 4) + 1j * rng.standard_normal(fs * 4)).astype(
-        np.complex64
-    ) * 0.01
-    for i in range(0, len(iq_noise), chunk):
-        demod.demodulate(iq_noise[i : i + chunk], capture_utc_s=i / fs)
-        for msg in demod.get_messages():
-            if isinstance(msg.data, SSTVData) and msg.data.state == StreamerState.LOOKING:
-                looking_msgs.append(msg.data)
-    # 4 s with a 1 s emit throttle should produce 3-4 looking pings.
-    assert 2 <= len(looking_msgs) <= 6, len(looking_msgs)
+def test_a_forced_submode_overrides_and_resets() -> None:
+    decoder = SSTVAudioDecoder()
+    decoder.set_sstv_mode("scottie_1")
+    assert decoder.sstv_mode_name == "Scottie 1"
+    decoder.set_sstv_mode(None)
+    assert decoder.sstv_mode_name is None
 
 
-def test_sstvdemodulator_reset_clears_state() -> None:
-    demod = SSTVDemodulator(sample_rate=44100.0, audio_rate=11025.0)
-    # Drive a noise burst through demodulate so internal filters hold state.
-    rng = np.random.default_rng(0)
-    iq = rng.standard_normal((4096, 2)).astype(np.float32).view(np.complex64).reshape(-1)
-    demod.demodulate(iq, capture_utc_s=0.0)
-    demod.reset()
-    assert demod._decoder.state == StreamerState.LOOKING
-    assert demod._pending == []
+def test_the_decoder_reports_listening_while_no_picture_comes() -> None:
+    fs = 12_000
+    decoder = SSTVAudioDecoder()
+    noise = (np.random.default_rng(0).standard_normal(fs * 4) * 0.01).astype(np.float32)
+    looking = []
+    for i in range(0, len(noise), 600):
+        decoder.process(noise[i : i + 600], fs, i / fs)
+        looking += [m for m in decoder.get_messages() if m.data.state == StreamerState.LOOKING]
+    assert 2 <= len(looking) <= 6  # a ping a second
+
+
+def test_a_decoder_keeps_the_users_mode() -> None:
+    """The owner's rule: picking a decoder doesn't change the mode."""
+    nfm = DemodSpec(mode="NFM", fm_deviation_hz=2_500.0)
+    on_nfm = with_decoder(nfm, "sstv", 145.6e6)
+    assert (on_nfm.mode, on_nfm.decoder, on_nfm.fm_deviation_hz) == ("NFM", "SSTV", 2_500.0)
+    assert with_decoder(DemodSpec(mode="USB"), "SSTV", 144.5e6).mode == "USB"  # SSB SSTV on 2 m
+    # With no mode that has audio for it, the band's usual one.
+    assert with_decoder(None, "SSTV", 145.6e6).mode == "NFM"
+    assert with_decoder(DemodSpec(mode="ADSB"), "SSTV", 14.23e6).mode == "USB"
+    # Another audio mode keeps the decoder; a decoder that is its own mode drops it.
+    assert carried_decoder(on_nfm, "USB") == ("SSTV", None)
+    assert carried_decoder(on_nfm, "DMR") == (None, None)
+
+
+def test_sstv_saved_as_a_mode_comes_back_as_usb_with_the_decoder() -> None:
+    old = DemodSpec.model_validate({"mode": "SSTV", "sstv_mode": "martin_m1"})
+    assert (old.mode, old.decoder, old.sstv_mode) == ("USB", "SSTV", "martin_m1")

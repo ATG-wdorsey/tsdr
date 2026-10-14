@@ -33,8 +33,6 @@ def make_demodulator(
         kw["channel_bandwidth"] = channel_bandwidth
     if mode == "NFM" and spec.fm_deviation_hz is not None:
         kw["deviation"] = spec.fm_deviation_hz
-    if mode == "SSTV" and spec.sstv_mode is not None:
-        kw["sstv_mode"] = spec.sstv_mode
     if mode in ("RTTY", "FSK"):
         if spec.fsk_baud is not None:
             kw["baud"] = spec.fsk_baud
@@ -91,14 +89,6 @@ register(
 )
 register(
     "CW", CWDemodulator, lambda sample_rate, **kw: CWDemodulator(sample_rate=sample_rate, **kw)
-)
-
-from tsdr.radio.demodulators.sstv import SSTVDemodulator  # noqa: E402
-
-register(
-    "SSTV",
-    SSTVDemodulator,
-    lambda sample_rate, **kw: SSTVDemodulator(sample_rate=sample_rate, **kw),
 )
 
 # Protocol decoders

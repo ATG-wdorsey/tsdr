@@ -329,7 +329,12 @@ Reception:
   DMR, `f` FLEX, `k` FSK, `n` NAVTEX, `p` APRS, `r` RTTY, `s` SSTV, `t` TETRA,
   `4` FT4, `8` FT8, `o` off). Both prompts show each choice's key in place,
   bright and in upper case, on a second line when the window is narrow; a key
-  that is not a choice cancels.
+  that is not a choice cancels. SSTV decodes the mode you are in instead of
+  switching it: NFM for SSTV on 2 m (145.600), USB on HF or 144 MHz SSB; the
+  bandwidth, squelch and audio stay yours, and the tuner reads `FM + SSTV`.
+  With no audio mode on, it starts in NFM above 30 MHz and USB below. `D o`
+  then turns off only the decoder, and `d` keeps it across NFM, USB, LSB and AM
+  (`demod sstv` in the console does the same).
 
 Display:
 
