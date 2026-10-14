@@ -28,12 +28,12 @@ def test_defaults() -> None:
 
 
 def test_default_layout_has_expected_edges() -> None:
-    """Default layout: left=decoder-output/memories, right=stats/performance,
+    """Default layout: left=decoder-output/memories, right=stats/performance/keys,
     bottom=demod (the demod panel multiplexes RDS/DAB/ADSB/TETRA/DMR based on the
     focused device's active decoder kind)."""
     assert DEFAULT_LAYOUT.left.panels == ("decoder-output", "memories")
     assert DEFAULT_LAYOUT.left.active is None
-    assert DEFAULT_LAYOUT.right.panels == ("stats", "performance")
+    assert DEFAULT_LAYOUT.right.panels == ("stats", "performance", "keys")
     assert DEFAULT_LAYOUT.right.active is None
     assert DEFAULT_LAYOUT.bottom.panels == ("demod", "directory")
     assert DEFAULT_LAYOUT.bottom.active is None
@@ -173,7 +173,8 @@ def test_initial_layout_roundtrips_from_prefs() -> None:
     # 'memories' is absent from the saved layout, so it's augmented onto its
     # default (left) edge.
     assert m.layout.left == EdgePanels(panels=("stats", "memories"), active="stats")
-    assert m.layout.right == EdgePanels(panels=("performance",), active=None)
+    # 'keys' is absent too, so it's augmented onto its default (right) edge.
+    assert m.layout.right == EdgePanels(panels=("performance", "keys"), active=None)
     # 'directory' is absent from the saved layout, so it's augmented onto its
     # default (bottom) edge.
     assert m.layout.bottom == EdgePanels(
@@ -213,7 +214,7 @@ def test_initial_layout_filters_unknown_panel_ids() -> None:
         }
     }
     m = UIModel.initial(prefs)
-    assert m.layout.right.panels == ("stats", "performance")
+    assert m.layout.right.panels == ("stats", "performance", "keys")
     assert m.layout.right.active is None  # 'ghost' got filtered, so active is invalid
 
 
@@ -237,8 +238,8 @@ def test_initial_layout_augments_missing_panels() -> None:
     assert m.layout.bottom.panels == ("demod", "directory")
     # decoder-output + memories absent from saved → appended to default edge (left).
     assert m.layout.left.panels == ("decoder-output", "memories")
-    # performance was missing from saved right → appended.
-    assert m.layout.right.panels == ("stats", "performance")
+    # performance and keys were missing from saved right → appended.
+    assert m.layout.right.panels == ("stats", "performance", "keys")
 
 
 def test_initial_layout_falls_back_on_garbage() -> None:

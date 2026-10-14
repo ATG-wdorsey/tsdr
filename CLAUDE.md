@@ -166,6 +166,10 @@ panels' fixed heights.
   (`tui/inline_edit.py`): calling `start()` registers it as
   `app.active_inline_editor`, so `on_key` dispatches every key to it until commit
   (Enter) / cancel (Esc). Reuse it instead of adding a focusable widget.
+  A prompt on the status line, vi style (`f`: "Frequency: "), is `StatusPrompt`
+  (`tui/widgets/status_prompt.py`, the console's line editing with a history of
+  its own): always mounted over the status bar, shown while `UIModel.status_prompt`
+  holds its label, and `on_key` hands it every key while it is shown.
 - **The four `_force_refresh_all` timers in `TSDRApp.on_mount`** work around
   a terminal-IO drop bug on startup. Not a mount race — keep them.
 - **Kitty images are out-of-band**: `KittyImageWidget` paints via escape

@@ -65,6 +65,7 @@ def test_empty_layout_with_bar_visible_shows_single_panel_bar() -> None:
         "dock:right",
         "panel-bar",
         "status-bar",
+        "status-prompt",
         "console",
     ]
 
@@ -337,7 +338,7 @@ def test_panel_bar_aggregates_all_edges_ordered_by_digit() -> None:
 
 
 def test_panel_bar_default_layout_ordered_by_digit() -> None:
-    """The default bar reads in hotkey-digit order 1..6."""
+    """The default bar reads in hotkey-digit order 1..6, then the key list (`?`)."""
     tree = derive_tree(UIModel(layout=DEFAULT_LAYOUT))
     assert _panel_bar(tree).props["glyphs"] == (
         ("1", "Decoder", False),
@@ -346,6 +347,7 @@ def test_panel_bar_default_layout_ordered_by_digit() -> None:
         ("4", "Performance", False),
         ("5", "Directory", False),
         ("6", "Memories", False),
+        ("?", "Keys", False),
     )
 
 
@@ -391,7 +393,7 @@ def test_console_props_pass_through_state_object() -> None:
         selected_index=2,
     )
     tree = derive_tree(UIModel(console=state))
-    console = tree.children[3]
+    console = next(c for c in tree.children if c.key == "console")
     assert console.props == {"console_state": state}
 
 

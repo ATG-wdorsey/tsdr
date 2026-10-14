@@ -200,6 +200,26 @@ StatusBar {
     margin-bottom: 1;
 }
 
+/* A chord's choices wrap upward over the console when the line is too narrow. */
+StatusBar.-choices {
+    height: auto;
+    max-height: 3;
+}
+
+/* The status-line prompt (`f`): over the status bar, on the same line. */
+StatusPrompt {
+    display: none;
+    dock: bottom;
+    height: 1;
+    padding: 0 1;
+    layer: status;
+    margin-bottom: 1;
+}
+
+StatusPrompt.active {
+    display: block;
+}
+
 /* === Global overrides ===================================================== */
 
 /* tmm-style input — remove default Textual border. */

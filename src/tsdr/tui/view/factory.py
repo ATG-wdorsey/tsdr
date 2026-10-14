@@ -21,6 +21,7 @@ from tsdr.tui.widgets.decoder_output_widget import DecoderOutputWidget
 from tsdr.tui.widgets.directory_widget import DirectoryWidget
 from tsdr.tui.widgets.dmr_widget import DMRWidget
 from tsdr.tui.widgets.edge_strip import EdgeStrip
+from tsdr.tui.widgets.keys_widget import KeysWidget
 from tsdr.tui.widgets.memory_widget import MemoryWidget
 from tsdr.tui.widgets.panel import PanelContent
 from tsdr.tui.widgets.performance_widget import PerformanceWidget
@@ -29,6 +30,7 @@ from tsdr.tui.widgets.spectrum_widget import SpectrumWidget
 from tsdr.tui.widgets.sstv_widget import SSTVWidget
 from tsdr.tui.widgets.stats_widget import StatsWidget
 from tsdr.tui.widgets.status_bar import StatusBar
+from tsdr.tui.widgets.status_prompt import StatusPrompt
 from tsdr.tui.widgets.tetra_widget import TETRAWidget
 from tsdr.tui.widgets.tuner_widget import TunerWidget
 from tsdr.tui.widgets.waterfall_widget import WaterfallWidget
@@ -44,6 +46,7 @@ FACTORY: Final[dict[str, Callable[[], Widget]]] = {
     "edge_strip": EdgeStrip,
     "tuner": TunerWidget,
     "status_bar": StatusBar,
+    "status_prompt": StatusPrompt,
     "console": ConsoleWidget,
     "spectrum": SpectrumWidget,
     "waterfall": WaterfallWidget,
@@ -51,6 +54,7 @@ FACTORY: Final[dict[str, Callable[[], Widget]]] = {
     "performance": PerformanceWidget,
     "directory": DirectoryWidget,
     "memories": MemoryWidget,
+    "keys": KeysWidget,
     "constellation": ConstellationWidget,
     "decoder_rds": RDSWidget,
     "decoder_dab": DABWidget,

@@ -14,26 +14,36 @@ from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
 from tsdr.core.tuning import current_spec_or_default
+from tsdr.core.units import parse_dial
 from tsdr.radio.dsp.rnnoise import rnnoise_available
 from tsdr.tui._mixin_base import MixinBase
+from tsdr.tui.commands._format import freq_mhz
 from tsdr.tui.console import ConsoleWidget, TerminalInput
 from tsdr.tui.inline_edit import InlineEditor
 from tsdr.tui.keybindings import (
+    CHORD_LABELS,
+    DECODER_CHORD_MODES,
     DEMOD_CHORD_MODES,
     Action,
     Context,
     build_lookup,
-    demod_chord_prompt,
+    chord_prompt,
 )
 from tsdr.tui.model import Edge, adjusted_db_max, adjusted_db_min
 from tsdr.tui.model.store import get_ui_store
 from tsdr.tui.widgets import SpectrumWidget
+from tsdr.tui.widgets.status_prompt import StatusPrompt
 
 _LOOKUP = build_lookup()
 
 
 # `u` / `U`: fine enough to set the squelch, and with it SEARCH's trigger, just above the noise.
 SQUELCH_STEP_DB = 1.0
+
+# Time to press a chord's second key; long enough to read the `D` choices.
+CHORD_TIMEOUT_S = 5.0
+
+FREQUENCY_PROMPT = "Frequency: "
 
 
 class KeyboardMixin(MixinBase):
@@ -42,12 +52,19 @@ class KeyboardMixin(MixinBase):
     _pending_delete: Memory | None = None
     _pending_delete_timer: Timer | None = None
     _pending_demod_timer: Timer | None = None
+    _chord: tuple[str, dict[str, str]] = ("Demod", DEMOD_CHORD_MODES)
     active_inline_editor: InlineEditor | None = None
 
     def on_key(self, event: events.Key) -> None:
         editor = self.active_inline_editor
         if editor is not None and editor.active:
             editor.handle_key(event)
+            return
+
+        if get_ui_store().model.status_prompt is not None:
+            self._status_prompt_key(event)
+            event.prevent_default()
+            event.stop()
             return
 
         cmd_input = self.query_one("#command-input", TerminalInput)
@@ -65,12 +82,14 @@ class KeyboardMixin(MixinBase):
                 return
 
             if self._pending_demod_timer is not None:
-                mode = DEMOD_CHORD_MODES.get(event.key)
+                title, modes = self._chord
+                # The prompt shows the keys in upper case, so either case selects.
+                mode = modes.get(event.key) or modes.get(event.key.lower())
                 self._clear_demod_chord()
                 if mode is not None:
-                    self._apply_demod_chord(mode)
+                    self._apply_demod_chord(mode, title)
                 else:
-                    self.show_status("Demod: cancelled")
+                    self.show_status(f"{title}: cancelled")
                 event.prevent_default()
                 event.stop()
                 return
@@ -195,7 +214,13 @@ class KeyboardMixin(MixinBase):
             case Action.DEVICE_TOGGLE:
                 self._toggle_device_running()
             case Action.DEMOD_CHORD:
-                self._start_demod_chord()
+                self._start_demod_chord("Demod", DEMOD_CHORD_MODES)
+            case Action.DECODER_CHORD:
+                self._start_demod_chord("Decoder", DECODER_CHORD_MODES)
+            case Action.FREQUENCY_ENTRY:
+                self._open_frequency_entry()
+            case Action.PANEL_KEYS:
+                get_ui_store().toggle_panel("keys")
             case Action.DISPLAY_IMAGE:
                 self._toggle_image_mode()
             case Action.DISPLAY_SPAN_IN:
@@ -278,9 +303,64 @@ class KeyboardMixin(MixinBase):
         m = store.model
         store.update(db_max=adjusted_db_max(m.db_max, m.db_min, direction))
 
-    def _start_demod_chord(self) -> None:
-        self._pending_demod_timer = self.set_timer(2.0, self._cancel_demod_chord)
-        self.show_status(demod_chord_prompt())
+    def _start_demod_chord(self, title: str, modes: dict[str, str]) -> None:
+        self._clear_demod_chord()
+        self._chord = (title, modes)
+        self._pending_demod_timer = self.set_timer(CHORD_TIMEOUT_S, self._cancel_demod_chord)
+        self.show_choices(chord_prompt(title, modes))
+
+    def _status_prompt(self) -> StatusPrompt | None:
+        prompt = self._reconciler.get("status-prompt")
+        return prompt if isinstance(prompt, StatusPrompt) else None
+
+    def _open_frequency_entry(self) -> None:
+        if get_engine().get_focused_device() is None:
+            self._show_error("No device")
+            return
+        prompt = self._status_prompt()
+        if prompt is None:
+            return
+        get_ui_store().update(status_prompt=FREQUENCY_PROMPT)
+        prompt.open()
+
+    def _status_prompt_key(self, event: events.Key) -> None:
+        """Every key while the status-line prompt is open: edit, Enter tunes, Escape leaves."""
+        prompt = self._status_prompt()
+        if prompt is None:
+            get_ui_store().update(status_prompt=None)
+            return
+        if event.key == "escape":
+            prompt.close()
+            get_ui_store().update(status_prompt=None)
+            self.show_status("Frequency: cancelled")
+        elif event.key == "enter":
+            text = prompt.close().strip()
+            get_ui_store().update(status_prompt=None)
+            if text:
+                prompt.remember(text)
+                self._tune_to_entry(text)
+            else:
+                self.show_status("Frequency: cancelled")
+        else:
+            prompt.edit_key(event)
+
+    def _tune_to_entry(self, text: str) -> None:
+        try:
+            freq_hz = float(parse_dial(text))
+        except ValueError:
+            self._show_error(f"Not a frequency: {text} (MHz, or a k/M/G suffix)")
+            return
+        engine = get_engine()
+        device = engine.get_focused_device()
+        if device is None:
+            self._show_error("No device")
+            return
+        try:
+            engine.update_device_config(device.device_id, tuned_frequency=freq_hz)
+        except SDRException as e:
+            self._show_error(str(e))
+            return
+        self.show_status(f"Frequency: {freq_mhz(freq_hz)}")
 
     def _clear_console(self) -> None:
         self.query_one(ConsoleWidget).clear_history()
@@ -496,7 +576,7 @@ class KeyboardMixin(MixinBase):
             self._pending_delete_timer.stop()
             self._pending_delete_timer = None
 
-    def _apply_demod_chord(self, mode: str) -> None:
+    def _apply_demod_chord(self, mode: str, title: str = "Demod") -> None:
         engine = get_engine()
         device = engine.get_focused_device()
         if device is None:
@@ -506,7 +586,7 @@ class KeyboardMixin(MixinBase):
         if mode == "OFF":
             engine.stop_audio_output(device.device_id)
             engine.remove_pipeline(device.device_id, "audio")
-            self.show_status("Demod: off")
+            self.show_status(f"{title}: off")
             return
 
         try:
@@ -516,11 +596,11 @@ class KeyboardMixin(MixinBase):
             return
 
         self.notify_demod_changed()
-        self.show_status(f"Demod: {mode}")
+        self.show_status(f"{title}: {CHORD_LABELS.get(mode, mode)}")
 
     def _cancel_demod_chord(self) -> None:
         self._clear_demod_chord()
-        self.show_status("Demod: cancelled")
+        self.show_status(f"{self._chord[0]}: cancelled")
 
     def _clear_demod_chord(self) -> None:
         if self._pending_demod_timer is not None:

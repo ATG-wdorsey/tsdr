@@ -52,7 +52,7 @@ class UILayout:
 
 DEFAULT_LAYOUT = UILayout(
     left=EdgePanels(panels=("decoder-output", "memories")),
-    right=EdgePanels(panels=("stats", "performance")),
+    right=EdgePanels(panels=("stats", "performance", "keys")),
     bottom=EdgePanels(panels=("demod", "directory")),
     hotkeys=(
         (1, "decoder-output"),
@@ -81,6 +81,9 @@ class UIModel:
     focused_device_id: str | None = None
 
     console: ConsoleUIState = field(default_factory=ConsoleUIState)
+
+    # The label of the status-line prompt being typed into (`f`: "Frequency: "), or None.
+    status_prompt: str | None = None
 
     @classmethod
     def initial(cls, prefs: dict[str, Any]) -> UIModel:

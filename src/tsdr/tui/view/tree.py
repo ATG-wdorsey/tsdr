@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from tsdr.tui.model import Edge, UILayout, UIModel, focused_device
-from tsdr.tui.view.panels import PANELS, PanelDef
+from tsdr.tui.view.panels import PANEL_KEY_GLYPHS, PANELS, PanelDef
 from tsdr.tui.view.spec import WidgetSpec
 
 
@@ -26,9 +26,17 @@ def derive_tree(model: UIModel) -> WidgetSpec:
             WidgetSpec("tuner", "tuner", {}),
             WidgetSpec("main_container", "main-container", {}, _main_children(model)),
             WidgetSpec("status_bar", "status-bar", {}),
+            WidgetSpec("status_prompt", "status-prompt", _status_prompt_props(model)),
             WidgetSpec("console", "console", _console_props(model)),
         ),
     )
+
+
+def _status_prompt_props(m: UIModel) -> dict[str, str]:
+    """Shown over the status bar while a prompt is open; its label stays until the next."""
+    if m.status_prompt is None:
+        return {"classes": ""}
+    return {"classes": "active", "label": m.status_prompt}
 
 
 def _main_children(m: UIModel) -> tuple[WidgetSpec, ...]:
@@ -210,7 +218,7 @@ def _panel_bar_glyphs(m: UIModel) -> tuple[tuple[str, str, bool], ...]:
                 (
                     digit if digit is not None else 1_000_000,
                     (
-                        str(digit) if digit is not None else "",
+                        str(digit) if digit is not None else PANEL_KEY_GLYPHS.get(panel_id, ""),
                         _panel_label(panel_id, m),
                         panel_id == edge_panels.active,
                     ),

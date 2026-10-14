@@ -67,6 +67,8 @@ class Action(StrEnum):
     AUDIO_DENOISE = "audio.denoise"
     DEVICE_TOGGLE = "device.toggle"
     DEMOD_CHORD = "demod.chord"
+    DECODER_CHORD = "decoder.chord"
+    FREQUENCY_ENTRY = "frequency.entry"
     DISPLAY_IMAGE = "display.image"
     DISPLAY_SPAN_IN = "display.span-in"
     DISPLAY_SPAN_OUT = "display.span-out"
@@ -78,6 +80,7 @@ class Action(StrEnum):
     MEMORY_ADD = "memory.add"
     MEMORY_EDIT = "memory.edit"
     MEMORY_REMOVE = "memory.remove"
+    PANEL_KEYS = "panel.keys"
     CONSOLE_FOCUS = "console.focus"
     CONSOLE_LEAVE = "console.leave"
     CONSOLE_TAB = "console.tab"
@@ -118,15 +121,51 @@ DEMOD_CHORD_MODES = {
 }
 
 
-def demod_chord_prompt() -> str:
-    """Rich markup prompting for the chord's second key."""
-    keys = " ".join(f"[b]{k}[/]{m[1:].lower()}" for k, m in DEMOD_CHORD_MODES.items())
-    return f"Demod: {keys}"
+# Second keystroke of the `D` chord: protocol decoders. Each key is a letter (or digit) of the
+# decoder's name, so the prompt can show it in place.
+DECODER_CHORD_MODES = {
+    "a": "ADSB",
+    "b": "DAB",
+    "c": "ACARS",
+    "d": "DMR",
+    "f": "FLEX",
+    "k": "FSK",
+    "n": "NAVTEX",
+    "p": "APRS",
+    "r": "RTTY",
+    "s": "SSTV",
+    "t": "TETRA",
+    "4": "FT4",
+    "8": "FT8",
+    "o": "OFF",
+}
+
+# Names shown in the chord prompts where they differ from the mode name.
+CHORD_LABELS = {"ADSB": "ADS-B"}
+
+_CHORD_KEY_STYLE = "bold yellow"
 
 
-def _chord_description() -> str:
-    modes = ", ".join(f"{k} {m}" for k, m in DEMOD_CHORD_MODES.items())
-    return f"Switch demodulator: then {modes}"
+def chord_choice(key: str, mode: str) -> str:
+    """One prompt entry: the name in lower case with its key letter upper case and bright.
+
+    A key that is not in the name is shown before it.
+    """
+    label = CHORD_LABELS.get(mode, mode).lower()
+    at = label.find(key.lower())
+    if at < 0:
+        return f"[{_CHORD_KEY_STYLE}]{key.upper()}[/] {label}"
+    return f"{label[:at]}[{_CHORD_KEY_STYLE}]{label[at].upper()}[/]{label[at + 1 :]}"
+
+
+def chord_prompt(title: str, modes: dict[str, str]) -> str:
+    """Markup prompting for a chord's second key."""
+    return f"{title}: " + "  ".join(chord_choice(k, m) for k, m in modes.items())
+
+
+def _chord_description(what: str, modes: dict[str, str]) -> str:
+    choices = ", ".join(f"{k} {CHORD_LABELS.get(m, m)}" for k, m in modes.items())
+    return f"Switch {what}: then {choices}"
 
 
 def _section(
@@ -142,6 +181,7 @@ BINDINGS: tuple[Binding, ...] = (
     *_section(
         Context.GLOBAL,
         TUNING,
+        (Action.FREQUENCY_ENTRY, ("f",), "Type a frequency on the status line (MHz, or k/M/G)"),
         (Action.TUNE_DOWN, ("left",), "Tune down one step"),
         (Action.TUNE_UP, ("right",), "Tune up one step"),
         (Action.TUNE_DOWN_COARSE, ("shift+left",), "Tune down one coarse step"),
@@ -208,7 +248,8 @@ BINDINGS: tuple[Binding, ...] = (
         (Action.VOLUME_DOWN, ("shift+down",), "Decrease volume"),
         (Action.AUDIO_DENOISE, ("n",), "Toggle RNNoise denoising"),
         (Action.DEVICE_TOGGLE, ("space",), "Start / stop the focused device"),
-        (Action.DEMOD_CHORD, ("d",), _chord_description()),
+        (Action.DEMOD_CHORD, ("d",), _chord_description("demodulator", DEMOD_CHORD_MODES)),
+        (Action.DECODER_CHORD, ("D",), _chord_description("decoder", DECODER_CHORD_MODES)),
     ),
     *_section(
         Context.GLOBAL,
@@ -229,6 +270,7 @@ BINDINGS: tuple[Binding, ...] = (
         (Action.MEMORY_EDIT, ("M",), "Edit the nearest memory"),
         (Action.MEMORY_REMOVE, ("ctrl+m",), "Delete the nearest memory (press y to confirm)"),
         (None, ("1-9",), "Toggle the dockable panel mapped to that key"),
+        (Action.PANEL_KEYS, ("question_mark",), "Show / hide this list of keys"),
         (None, ("Alt+1-9",), "Move the mapped panel to the next edge (left, bottom, right)"),
     ),
     *_section(
@@ -256,7 +298,7 @@ BINDINGS: tuple[Binding, ...] = (
 
 # Hand-curated typography, not derivable from BINDINGS. Re-check when those keys change.
 PLACEHOLDER = (
-    " ` console  space run  ←→ tune  ↑↓ bw  d demod  gG gain"
+    " ` console  space run  f freq  ←→ tune  ↑↓ bw  dD demod  gG gain"
     "  ⇧↕ vol  1-9 panel  mM^m mem  kj span  hl/HL db  i image"
 )
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from math import ceil, log10
+from math import ceil, isfinite, log10
 
 
 def find_nearest[NumT: (int, float)](options: Iterable[NumT], target: float) -> NumT:
@@ -36,6 +36,24 @@ def parse_hz(s: str) -> int:
                 raise ValueError(f"invalid frequency: {s!r}")
             return int(float(num) * mul)
     return int(float(t))
+
+
+def parse_dial(s: str) -> int:
+    """Parse a frequency typed at the dial: a bare number is MHz, as on a radio's keypad.
+
+    Suffixes (k/M/G/Hz, any case) work as in `parse_hz`; spaces are ignored.
+    Raises ValueError on invalid input.
+    """
+    t = s.strip().lower().replace(" ", "").replace("_", "").replace(",", "")
+    if t and (t[-1].isdigit() or t[-1] == "."):
+        mhz = float(t)
+        if not isfinite(mhz):
+            raise ValueError(f"invalid frequency: {s!r}")
+        return round(mhz * 1e6)
+    try:
+        return parse_hz(t)
+    except OverflowError as e:
+        raise ValueError(f"invalid frequency: {s!r}") from e
 
 
 def format_hz(
