@@ -1,9 +1,11 @@
 """A repeater carrying voice on both timeslots: every voice burst of each slot is decoded.
 
 A slot's voice superframe is 6 bursts: A has the voice sync, B-F embedded signalling.
-With both slots in voice, 10 bursts in a row have no sync; the decoder counted them
-across both slots, dropped lock after 5 and lost the rest of each superframe until the
-next sync: about a third of one slot's speech and half of the other's (choppy audio).
+With both slots in voice, up to 10 bursts in a row have no sync. The decoder used to drop
+its lock whenever the next burst was a sync-less burst of a slot it had not yet seen in a
+call, and a lock drop cleared both slots' calls: joined mid-call, or after one missed
+sync, both slots stayed silent in 5 of the 6 ways their superframes can align. A missed
+A sync on one slot also needs 11 bursts in a row by timing on that slot.
 The signal here is synthesized: valid CACH and syncs, 4FSK at 4800 baud, from IQ.
 """
 
@@ -12,6 +14,7 @@ from __future__ import annotations
 import itertools
 
 import numpy as np
+import pytest
 
 from tsdr.radio.decoders.dmr import decoder as dmr
 from tsdr.radio.decoders.dmr.constants import (
@@ -48,11 +51,17 @@ def _cach(slot: int) -> list[int]:
     return [(bits[2 * k] << 1) | bits[2 * k + 1] for k in range(12)]
 
 
-def _voice_burst(slot: int, letter: int, rng: np.random.Generator) -> list[int]:
+def _voice_burst(
+    slot: int, letter: int, rng: np.random.Generator, *, bad_sync: bool = False
+) -> list[int]:
     burst = list(rng.integers(0, 4, BURST_DIBITS))
     burst[0:12] = _cach(slot)
     if letter == 0:
-        burst[SYNC_START : SYNC_START + 24] = list(SYNC_BS_VOICE)
+        sync = list(SYNC_BS_VOICE)
+        if bad_sync:  # 3 of 24 sync symbols wrong: one more than the sync search allows
+            for i in (3, 10, 17):
+                sync[i] = 1 if sync[i] == 3 else 3
+        burst[SYNC_START : SYNC_START + 24] = sync
     else:  # embedded signalling: anything but a sync
         burst[SYNC_START : SYNC_START + 24] = [0, 2] * 12
     return burst
@@ -66,31 +75,36 @@ def _iq(dibits: list[int]) -> np.ndarray:
     return (0.5 * np.exp(1j * phase)).astype(np.complex64)
 
 
-def test_voice_on_both_slots_is_decoded_in_full() -> None:
-    rng = np.random.default_rng(1)
-    superframes = 4
-    lead = [d for _ in range(2) for d in _voice_burst(0, 0, rng)]  # sync to lock on first
-    stream = list(lead)
-    for _ in range(superframes):
-        for letter in range(6):
-            for slot in (0, 1):
-                stream += _voice_burst(slot, letter, rng)
+@pytest.mark.parametrize("phase", range(6))
+def test_both_slots_decoded_after_a_late_entry_and_a_missed_sync(phase: int) -> None:
+    """`phase`: slot 1's place in its superframe when slot 0 starts one (its A follows
+    slot 0's by 1, 11, 9, 7, 5 or 3 bursts). The decoder joins both calls mid-superframe;
+    slot 0's A sync in superframe 8 is missed."""
+    rng = np.random.default_rng(10 + phase)
+    superframes, missed, counted_from = 14, 8 * 6, 4 * 6
+    stream: list[int] = []
+    for k in range(3, 3 + superframes * 6):  # join at slot 0's burst D
+        stream += _voice_burst(0, k % 6, rng, bad_sync=k == missed)
+        stream += _voice_burst(1, (k + phase) % 6, rng)
     iq = _iq(stream)
 
     decoder = DMRDecoder(sample_rate=RATE)
-    voice: dict[int, int] = {0: 0, 1: 0}
+    burst_s = BURST_DIBITS / SYMBOL_RATE
+    window = (1000.0 + 2 * counted_from * burst_s, 1000.0 + 2 * (superframes - 1) * 6 * burst_s)
+    decoded: dict[int, int] = {0: 0, 1: 0}
     process = decoder._process_voice_burst
 
     def count(burst, sync_type, timeslot, timestamp):
-        voice[timeslot] += 1
-        return process(burst, sync_type, timeslot, timestamp)
+        ok = process(burst, sync_type, timeslot, timestamp)
+        if decoder._ts_state[timeslot].confirmed and window[0] <= timestamp < window[1]:
+            decoded[timeslot] += 1
+        return ok
 
     decoder._process_voice_burst = count  # type: ignore[method-assign]
     chunk = int(RATE * 0.02)
     for i in range(0, len(iq), chunk):
         decoder.demodulate(iq[i : i + chunk], 1000.0 + i / RATE)
 
-    # Every voice burst after the lead-in, on both slots (the first may be missed while locking).
-    sent = 6 * superframes
-    assert voice[0] >= sent
-    assert voice[1] >= sent - 1
+    # Every burst of superframes 4-12 of each slot reaches the vocoder, the missed A's too.
+    sent = (superframes - 1 - 4) * 6
+    assert decoded == {0: sent, 1: sent}

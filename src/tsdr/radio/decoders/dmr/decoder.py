@@ -47,10 +47,13 @@ _VOICE_CONFIDENCE_BURSTS = 3
 _SLOT_ACTIVE_WINDOW_SEC = 2.0
 _SLOT_SWITCH_HOLD_SEC = 0.5
 # A timeslot's voice superframe is 6 bursts: A carries the voice sync, B-F
-# embedded signalling instead. Allow a timeslot up to 5 continuation bursts
-# since its own last sync before forcing a re-sync. The count is per slot: with
-# voice on both slots, up to 10 bursts in a row carry no sync.
-_MAX_CONTINUATION_BURSTS = 5
+# embedded signalling instead. In lock, a slot in a voice call is decoded by
+# timing for up to 11 bursts since its own last sync: B-F, one missed A, B-F.
+_MAX_CONTINUATION_BURSTS = 11
+# Bursts in a row without a sync, both slots, before the lock is dropped. With
+# voice on both slots up to 10 carry none (11 with one missed A). Bounds what is
+# decoded after the signal is lost mid-call.
+_MAX_SYNCLESS_RUN = 12
 # The reference harness's speech gain (DSD, mbelib's decode_ambe): starts at x25, at most x50.
 _AGC_MAX_GAIN = 50.0
 _AGC_START_GAIN = 25.0
@@ -195,6 +198,10 @@ class DMRDecoder(Demodulator):
         self._lock_remaining = 0
         # Continuation bursts per timeslot since that slot's last real sync match.
         self._continuation = {0: 0, 1: 0}
+        self._syncless_run = 0
+        # The burst being collected: came with a sync; was framed by the lock.
+        self._burst_synced = True
+        self._burst_in_lock = False
 
         # Voice call state per timeslot (DMR has 2: TS0, TS1)
         self._ts_state: dict[int, TimeslotState] = {0: TimeslotState(), 1: TimeslotState()}
@@ -302,7 +309,7 @@ class DMRDecoder(Demodulator):
             return
 
         self._extract_first_half()
-        self._begin_collecting()
+        self._begin_collecting(synced=True, in_lock=False)
 
     def _do_collect(self, timestamp: float) -> None:
         prev_pos = (self._sync_pos - 1) % BURST_DIBITS
@@ -310,11 +317,12 @@ class DMRDecoder(Demodulator):
         self._burst_collect_pos += 1
 
         if self._burst_collect_pos >= SECOND_HALF_DIBITS:
-            self._burst_buf[FIRST_HALF_DIBITS : FIRST_HALF_DIBITS + SYNC_DIBITS] = 0
             self._burst_buf[FIRST_HALF_DIBITS + SYNC_DIBITS :] = self._burst_second_half
 
             valid = self._process_burst(self._burst_buf, self._burst_sync_type, timestamp)
-            if valid:
+            # A sync where the lock expected one holds the framing, whatever the
+            # burst's own content (e.g. an idle burst's slot type lost to noise).
+            if valid or (self._burst_synced and self._burst_in_lock):
                 self._state = DecoderState.LOCKED
                 self._lock_remaining = FIRST_HALF_DIBITS + SYNC_DIBITS
             else:
@@ -323,10 +331,13 @@ class DMRDecoder(Demodulator):
     def _do_locked(self, timestamp: float) -> None:
         """Frame-locked tracking with voice continuation support.
 
-        Voice continuation bursts (B-E in a superframe) have EMB instead of
-        sync. Trust frame timing only within a superframe window
-        (_MAX_CONTINUATION_BURSTS). After that, force a re-sync to
-        prevent locking on noise indefinitely.
+        Voice continuation bursts (B-F in a superframe) have EMB instead of a
+        sync: a slot in a voice call is decoded by frame timing, up to
+        _MAX_CONTINUATION_BURSTS since its own last sync. The other slot's
+        sync-less bursts (its call not yet found, after a late entry or a lost
+        lock) are passed by on the same timing, so its next A sync is met in
+        lock. A run of more than _MAX_SYNCLESS_RUN bursts without a sync, or one
+        with no call to follow, drops the lock.
         """
         self._lock_remaining -= 1
         if self._lock_remaining > 0:
@@ -339,32 +350,33 @@ class DMRDecoder(Demodulator):
             sync_type, _errors = result
             self._lock_hits += 1
             self._syncs_found += 1
-            self._reset_continuation()
+            self._syncless_run = 0
             self._burst_sync_type = sync_type
             self._extract_first_half()
-            self._begin_collecting()
-        elif self._voice_continuation_expected(timestamp):
-            self._lock_hits += 1
-            expected_slot = 1 - self._last_slot
-            self._continuation[expected_slot] += 1
-            self._burst_sync_type = self._ts_state[expected_slot].voice_sync_type
-            self._extract_first_half()
-            self._begin_collecting()
-        else:
+            self._begin_collecting(synced=True, in_lock=True)
+            return
+
+        self._syncless_run += 1
+        slot = 1 - self._last_slot
+        if self._syncless_run > _MAX_SYNCLESS_RUN or not self._any_voice_call(timestamp):
             self._lock_misses += 1
             self._drop_lock()
-
-    def _reset_continuation(self) -> None:
-        """A sync match: the burst is the slot after the last one (TDMA alternation)."""
-        if self._last_slot < 0:
-            self._continuation = {0: 0, 1: 0}
+        elif self._voice_continuation_expected(slot, timestamp):
+            self._lock_hits += 1
+            self._continuation[slot] += 1
+            self._burst_sync_type = self._ts_state[slot].voice_sync_type
+            self._extract_first_half()
+            self._begin_collecting(synced=False, in_lock=True)
         else:
-            self._continuation[1 - self._last_slot] = 0
+            self._last_slot = slot
+            self._lock_remaining = BURST_DIBITS
 
     def _drop_lock(self) -> None:
         """Return to SEARCHING and reset all transient state so the UI
         doesn't show stale info (quality percentages, voice call status)."""
         self._state = DecoderState.SEARCHING
+        self._continuation = {0: 0, 1: 0}
+        self._syncless_run = 0
         self._lock_hits = 0
         self._lock_misses = 0
         self._cach_ok = 0
@@ -377,25 +389,28 @@ class DMRDecoder(Demodulator):
             ts.voice_burst_count = 0
         self._dirty = True
 
-    def _voice_continuation_expected(self, timestamp: float) -> bool:
-        if self._last_slot < 0:
+    def _in_voice_call(self, slot: int, timestamp: float) -> bool:
+        ts = self._ts_state[slot]
+        return ts.in_voice_call and (timestamp - ts.last_voice_ts) < _VOICE_TIMEOUT_SEC
+
+    def _any_voice_call(self, timestamp: float) -> bool:
+        return self._in_voice_call(0, timestamp) or self._in_voice_call(1, timestamp)
+
+    def _voice_continuation_expected(self, slot: int, timestamp: float) -> bool:
+        if self._continuation[slot] >= _MAX_CONTINUATION_BURSTS:
             return False
-        expected_slot = 1 - self._last_slot
-        if self._continuation[expected_slot] >= _MAX_CONTINUATION_BURSTS:
-            return False
-        ts = self._ts_state.get(expected_slot)
-        if ts is None or not ts.in_voice_call:
-            return False
-        return (timestamp - ts.last_voice_ts) < _VOICE_TIMEOUT_SEC
+        return self._in_voice_call(slot, timestamp)
 
     def _extract_first_half(self) -> None:
+        """The burst up to the end of its sync or EMB field (a B-F burst's EMB is read)."""
         full_history = FIRST_HALF_DIBITS + SYNC_DIBITS
-        history = self._get_ring_history(self._data_buf, full_history)
-        self._burst_buf[:FIRST_HALF_DIBITS] = history[:FIRST_HALF_DIBITS]
+        self._burst_buf[:full_history] = self._get_ring_history(self._data_buf, full_history)
 
-    def _begin_collecting(self) -> None:
+    def _begin_collecting(self, *, synced: bool, in_lock: bool) -> None:
         self._state = DecoderState.COLLECTING
         self._burst_collect_pos = 0
+        self._burst_synced = synced
+        self._burst_in_lock = in_lock
 
     def _get_ring_history(self, buf: np.ndarray, n: int) -> np.ndarray:
         start = (self._sync_pos - n) % BURST_DIBITS
@@ -411,22 +426,32 @@ class DMRDecoder(Demodulator):
         self._sync_type_counts[sync_type] = self._sync_type_counts.get(sync_type, 0) + 1
 
         cach = decode_cach(burst[CACH_START : CACH_START + 12])
-        if cach is not None:
+        if cach.clean:
             self._cach_ok += 1
         else:
             self._cach_fail += 1
 
-        # CACH must decode for any burst to be valid -- this is the primary
-        # guard against locking on noise.
-        if cach is None:
+        # The slot: in lock, the TDMA alternation, with a clean TACT as a check (a
+        # synced burst's corrects it; a sync-less burst's contradicting it means the
+        # framing is lost). Acquiring, a clean TACT: two bit errors "correct" to the
+        # wrong slot, and noise passes a clean TACT only 1 time in 8.
+        if self._burst_in_lock:
+            timeslot = 1 - self._last_slot
+            if cach.clean and cach.timeslot != timeslot:
+                if not self._burst_synced:
+                    return False
+                timeslot = cach.timeslot
+        elif cach.clean:
+            timeslot = cach.timeslot
+        else:
             return False
-
-        timeslot = cach.timeslot
         self._last_slot = timeslot
+        if self._burst_synced:
+            self._continuation[timeslot] = 0
 
         if sync_type in VOICE_SYNC_TYPES:
             return self._process_voice_burst(burst, sync_type, timeslot, timestamp)
-        return self._process_data_burst(burst, sync_type, timeslot, True, timestamp)
+        return self._process_data_burst(burst, sync_type, timeslot, cach.clean, timestamp)
 
     def _process_voice_burst(
         self, burst: np.ndarray, sync_type: SyncType, timeslot: int, timestamp: float
@@ -691,6 +716,7 @@ class DMRDecoder(Demodulator):
         self._burst_collect_pos = 0
         self._lock_remaining = 0
         self._continuation = {0: 0, 1: 0}
+        self._syncless_run = 0
         self._last_slot = -1
         for ts in self._ts_state.values():
             ts.in_voice_call = False

@@ -31,6 +31,9 @@ class CACHInfo:
     at_flag: int
     timeslot: int
     lcss: int
+    # The TACT arrived without a bit error. Hamming(7,4) is a perfect code: every word
+    # "corrects" to some codeword, so only a zero syndrome says the slot bit is sound.
+    clean: bool
 
 
 @dataclass(frozen=True)
@@ -72,14 +75,20 @@ _HAMMING_7_4_CORR[0b010] = 5
 _HAMMING_7_4_CORR[0b001] = 6
 
 
-def hamming_7_4_decode(bits: np.ndarray) -> bool:
-    """Decode Hamming(7,4) codeword in-place. Returns True if valid/corrected."""
+def hamming_7_4_syndrome(bits: np.ndarray) -> int:
+    """Syndrome of a Hamming(7,4) word: 0 when it is a codeword."""
     syndrome = 0
     for row in range(3):
         s = 0
         for col in range(7):
             s += int(bits[col]) * int(_HAMMING_7_4_H[row, col])
         syndrome |= (s % 2) << (2 - row)
+    return syndrome
+
+
+def hamming_7_4_decode(bits: np.ndarray) -> bool:
+    """Decode Hamming(7,4) codeword in-place. Returns True if valid/corrected."""
+    syndrome = hamming_7_4_syndrome(bits)
 
     if syndrome == 0:
         return True
@@ -201,8 +210,11 @@ def golay_20_8_decode(bits: np.ndarray) -> bool:
 # CACH decoding
 
 
-def decode_cach(dibits: np.ndarray) -> CACHInfo | None:
-    """Decode 12-dibit CACH field. Returns None on uncorrectable error."""
+def decode_cach(dibits: np.ndarray) -> CACHInfo:
+    """Decode the 12-dibit CACH's TACT (AT, TC, LCSS), a Hamming(7,4) word.
+
+    The other 17 bits carry Short LC fragments, not Hamming(7,4) words.
+    """
     bits = dibits_to_bits(dibits)
 
     # De-interleave
@@ -210,16 +222,14 @@ def decode_cach(dibits: np.ndarray) -> CACHInfo | None:
     for i in range(24):
         deinterleaved[CACH_INTERLEAVE[i]] = bits[i]
 
-    # Hamming(7,4) decode three codewords: bits 0-6, 7-13, 14-20
-    # (bits 21-23 are the TACT parity - not Hamming-protected)
-    for block in range(3):
-        if not hamming_7_4_decode(deinterleaved[block * 7 : block * 7 + 7]):
-            return None
+    tact = deinterleaved[0:7]
+    clean = hamming_7_4_syndrome(tact) == 0
+    hamming_7_4_decode(tact)
 
-    at_flag = int(deinterleaved[0])
-    timeslot = int(deinterleaved[1])
-    lcss = (int(deinterleaved[2]) << 1) | int(deinterleaved[3])
-    return CACHInfo(at_flag=at_flag, timeslot=timeslot, lcss=lcss)
+    at_flag = int(tact[0])
+    timeslot = int(tact[1])
+    lcss = (int(tact[2]) << 1) | int(tact[3])
+    return CACHInfo(at_flag=at_flag, timeslot=timeslot, lcss=lcss, clean=clean)
 
 
 # Slot Type PDU decoding
