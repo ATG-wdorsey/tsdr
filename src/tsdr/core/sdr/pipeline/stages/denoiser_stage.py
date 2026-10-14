@@ -1,5 +1,8 @@
 import logging
 import queue
+from dataclasses import replace
+
+import numpy as np
 
 from tsdr.core.sdr.config import DeviceConfig, SDRConfig
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
@@ -17,32 +20,55 @@ class DenoiserStage:
     Always present in the audio pipeline (after DEMODULATOR); the global flag
     only flips it between denoise and passthrough, so toggling never changes the
     pipeline shape.
+
+    While SEARCH runs with VSQ on, it also feeds the audio, before RNNoise, to
+    the device's VSQ (core/sdr/voice_squelch.py), and mutes the output while
+    VSQ calls the transmission not voice.
     """
 
     def __init__(self, enabled: bool = False):
         self._denoiser: AudioDenoiser | None = None
         self._denoise_warned = False
+        self._vsq_key: tuple[int, float] | None = None
         self._last_sample_rate: float | None = None
         self._last_freq: float | None = None
         self._set_denoise(enabled)
 
     def process(self, data: SamplesBatch, context: PipelineContext) -> SamplesBatch | None:
-        if context.audio_queue is not None:
-            for batch in data.audio_batches:
-                if self._denoiser is not None:
-                    batch = self._denoiser.process(batch)
-                    if len(batch.samples) == 0:
-                        continue
-                try:
-                    context.audio_queue.put(batch, block=False)
-                except queue.Full:
-                    pass
+        vsq = context.device_context.voice_squelch if context.device_context is not None else None
+        if vsq is not None:
+            vsq.set_target(self._vsq_key)
+        squelch_open = data.demod_status.squelch_open if data.demod_status is not None else None
+        for batch in data.audio_batches:
+            if vsq is not None and batch.samples.ndim == 1:  # not WFM's two channels
+                vsq.feed(batch.samples, batch.sample_rate, squelch_open)
+            if context.audio_queue is None:
+                continue
+            if self._denoiser is not None:
+                batch = self._denoiser.process(batch)
+                if len(batch.samples) == 0:
+                    continue
+            if vsq is not None and vsq.muted:
+                batch = replace(batch, samples=np.zeros_like(batch.samples))
+            try:
+                context.audio_queue.put(batch, block=False)
+            except queue.Full:
+                pass
         return data.with_changes(audio_batches=())
 
     def on_config_change(self, config) -> None:
         if isinstance(config, SDRConfig):
             self._set_denoise(config.denoise)
-        elif isinstance(config, DeviceConfig) and (
+            return
+        if not isinstance(config, DeviceConfig):
+            return
+        search = config.search
+        self._vsq_key = (
+            (search.run, config.tuned_frequency)
+            if search is not None and search.voice_squelch
+            else None
+        )
+        if (
             config.sample_rate != self._last_sample_rate
             or config.tuned_frequency != self._last_freq
         ):

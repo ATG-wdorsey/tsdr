@@ -12,7 +12,7 @@ from tsdr.radio.dsp.rnnoise import rnnoise_available
 
 
 def _ctx() -> SimpleNamespace:
-    return SimpleNamespace(audio_queue=queue.Queue())
+    return SimpleNamespace(audio_queue=queue.Queue(), device_context=None)
 
 
 def _audio(n: int, rate: float = 48000.0) -> AudioBatch:
@@ -31,7 +31,8 @@ def test_passthrough_drains_unchanged_when_disabled():
 def test_no_audio_queue_is_safe():
     stage = DenoiserStage(enabled=False)
     out = stage.process(
-        SamplesBatch(audio_batches=(_audio(1000),)), SimpleNamespace(audio_queue=None)
+        SamplesBatch(audio_batches=(_audio(1000),)),
+        SimpleNamespace(audio_queue=None, device_context=None),
     )
     assert out.audio_batches == ()
 

@@ -274,6 +274,15 @@ Search (find activity within the captured band):
 - `Ctrl+X`: unlock the current channel when it is locked out (deleting its
   lockout memory; `X` there makes it again), or else drop all session lockouts.
   While SEARCH runs, the tuner shows how many lockouts are in force (`2 L/O`).
+- `v`: VSQ, the voice squelch, on / off while SEARCH runs (later runs keep
+  it; `search --vsq` / `--no-vsq`). A detector listens for speech in each
+  transmission SEARCH stops on, whether or not the denoiser is on; one without
+  speech in its first 3 s (data, digital voice, tones, SSTV, a CW ID; a quiet
+  carrier gets 5 s, for a late talker) is muted and the
+  hold counts down (`VSQ` in place of `HOLD`), time to lock it out with `x`;
+  then SEARCH moves on and leaves that channel until its signal drops. Speech
+  reopens it. The meter's squelch reads `VSQ` while it runs; the Stats panel
+  shows its verdict and the detector's last label.
 
 `search on --low 144M --high 148M --threshold -60 --hold 2 --dwell 30` sets the
 edges, the trigger (dBFS within the channel, as the squelch measures it;
@@ -293,7 +302,7 @@ Reception:
 - `u` / `U`: lower / raise the squelch threshold.
 - `Ctrl+U`: disable squelch.
 - `Shift+↑` / `Shift+↓`: decrease / increase volume.
-- `n`: toggle RNNoise denoising.
+- `n`: toggle RNNoise denoising (`DN` beside the volume).
 - `Space`: start / stop the focused device.
 - `d` then a second key: switch demodulator (`w` WFM, `n` NFM, `a` AM,
   `u` USB, `l` LSB, `c` CW, `o` off).

@@ -1,4 +1,4 @@
-from argparse import Namespace
+from argparse import BooleanOptionalAction, Namespace
 
 from tsdr.core.memories import get_memory_store
 from tsdr.core.sdr.engine import get_engine
@@ -43,6 +43,7 @@ def describe(search: SearchConfig, squelch_db: float) -> str:
             ),
             "hold": f"{_dbfs(squelch_db)} for {search.hold_s:g} s",
             "dwell": dwell,
+            "vsq": state("on" if search.voice_squelch else "off"),
             "lockouts": lockout_list(search.lockouts, search.memory_lockouts),
         }
     )
@@ -92,6 +93,12 @@ class SDRSearchCommand(Command):
             help="Most seconds on one active channel; 0 = unlimited (the default)",
         )
         parser.add_argument(
+            "--vsq",
+            action=BooleanOptionalAction,
+            default=None,
+            help="VSQ: let transmissions without speech go (on with --vsq, off with --no-vsq)",
+        )
+        parser.add_argument(
             "--permanent",
             action="store_true",
             help=f"With lockout: save a memory tagged '{LOCKOUT_TAG}' instead of this session only",
@@ -101,7 +108,8 @@ class SDRSearchCommand(Command):
     def run(self, args: Namespace) -> str:
         did = args.device_id or get_focused_device_id()
         settings_given = args.full or any(
-            v is not None for v in (args.low, args.high, args.threshold, args.hold, args.dwell)
+            v is not None
+            for v in (args.low, args.high, args.threshold, args.hold, args.dwell, args.vsq)
         )
         if args.action == "off":
             return success("SEARCH stopped") if stop_search(did) else "SEARCH is not running"
@@ -120,6 +128,7 @@ class SDRSearchCommand(Command):
                 trigger_db=args.threshold,
                 hold_s=args.hold,
                 max_dwell_s=args.dwell,
+                voice_squelch=args.vsq,
                 full_band=args.full,
             )
             squelch_db = get_engine().get_device(did).config.pipelines["audio"].squelch_threshold_db

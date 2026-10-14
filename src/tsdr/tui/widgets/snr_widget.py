@@ -27,6 +27,8 @@ _SNR_MAX = 50.0
 
 _STYLE_DIM = Style(dim=True)
 _TRACK_STYLE = Style(dim=True)
+# VSQ, the voice squelch for SEARCH; the tuner's VSQ badge has the same color.
+VSQ_COLOR = "magenta"
 
 
 def _snr_color(snr: float) -> str:
@@ -75,6 +77,8 @@ class SNRWidget(Widget):
         self._quality: float | None = None
         self._squelch_threshold_db: float | None = None
         self._squelch_open: bool | None = None
+        self._vsq = False
+        self._vsq_muted = False
 
     def update_snr(self, snr: float | None) -> None:
         if snr is not None:
@@ -91,6 +95,13 @@ class SNRWidget(Widget):
         self._squelch_threshold_db = threshold_db
         self._squelch_open = is_open
         self.refresh()
+
+    def update_vsq(self, active: bool, muted: bool) -> None:
+        """VSQ on (the squelch reads VSQ), and whether it mutes the channel."""
+        if (active, muted) != (self._vsq, self._vsq_muted):
+            self._vsq = active
+            self._vsq_muted = muted
+            self.refresh()
 
     def render_line(self, y: int) -> Strip:
         width = self.size.width
@@ -113,8 +124,8 @@ class SNRWidget(Widget):
             quality_suffix = f"  {self._quality_label}"
             quality_suffix_len = len(quality_suffix)
 
-        squelch_suffix, squelch_style = self._squelch_suffix(base)
-        squelch_suffix_len = len(squelch_suffix)
+        squelch_segments = self._squelch_segments(base)
+        squelch_suffix_len = sum(len(segment.text) for segment in squelch_segments)
 
         suffix_len = quality_suffix_len + squelch_suffix_len
         available = min(15, width - suffix_len)
@@ -147,22 +158,28 @@ class SNRWidget(Widget):
         pad = width - available - suffix_len
         if pad > 0:
             segments.append(Segment(" " * pad, base))
-        if squelch_suffix:
-            segments.append(Segment(squelch_suffix, squelch_style))
+        segments.extend(squelch_segments)
         if quality_suffix:
             segments.append(Segment(quality_suffix, base + _quality_style(self._quality)))
 
         return Strip(segments, width)
 
-    def _squelch_suffix(self, base: Style) -> tuple[str, Style]:
+    def _squelch_segments(self, base: Style) -> list[Segment]:
         if self._squelch_threshold_db is None:
-            return "", base
+            return []
         threshold = int(round(self._squelch_threshold_db))
         if self._squelch_open is None:
-            return f"  SQ {threshold:+d}", base + _STYLE_DIM
-        glyph = "●" if self._squelch_open else "○"
-        color = "green" if self._squelch_open else "red"
-        return f"  SQ {threshold:+d} {glyph}", base + Style(color=color, bold=True)
+            return [Segment(f"  SQ {threshold:+d}", base + _STYLE_DIM)]
+        is_open = self._squelch_open and not (self._vsq and self._vsq_muted)
+        glyph = "●" if is_open else "○"
+        style = base + Style(color="green" if is_open else "red", bold=True)
+        if not self._vsq:
+            return [Segment(f"  SQ {threshold:+d} {glyph}", style)]
+        return [
+            Segment("  ", base),
+            Segment("VSQ", base + Style(color=VSQ_COLOR, bold=True)),
+            Segment(f" {threshold:+d} {glyph}", style),
+        ]
 
     def _render_sparkline_row(self, width: int, row: int) -> Strip:
         """Render one row of the 2-high braille sparkline.

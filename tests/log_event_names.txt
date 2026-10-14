@@ -282,6 +282,9 @@ tune_recentered
 ui_pipeline_error
 ui_store_mutation
 ui_store_subscriber_error
+vsq_off
+vsq_on
+vsq_verdict
 win_console_open_failed
 win_console_query
 worker_run_crashed

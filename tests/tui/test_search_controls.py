@@ -75,6 +75,7 @@ def test_search_keys_are_bound() -> None:
     assert lookup[(Context.GLOBAL, "ctrl+x")] is Action.SEARCH_UNLOCK
     assert lookup[(Context.GLOBAL, "left_curly_bracket")] is Action.SEARCH_EDGE_LOW
     assert lookup[(Context.GLOBAL, "right_curly_bracket")] is Action.SEARCH_EDGE_HIGH
+    assert lookup[(Context.GLOBAL, "v")] is Action.SEARCH_VSQ
 
 
 def test_braces_set_the_edges_at_the_dial(engine: SDREngine) -> None:
@@ -173,6 +174,31 @@ def test_ctrl_x_unlocks_the_channel_or_all(engine: SDREngine) -> None:
     assert _search(engine).lockouts == frozenset()
     TuningMixin._unlock(keys)  # type: ignore[arg-type]
     assert keys.statuses[-1] == "No session lockouts to drop"
+
+
+def test_v_turns_vsq_on_and_off_while_search_runs_and_later_runs_keep_it(
+    engine: SDREngine,
+) -> None:
+    keys = _keys(engine)
+    TuningMixin._toggle_vsq(keys)  # type: ignore[arg-type]
+    assert keys.errors[-1].startswith("VSQ works while SEARCH runs")
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    assert not _search(engine).voice_squelch
+    TuningMixin._toggle_vsq(keys)  # type: ignore[arg-type]
+    assert _search(engine).voice_squelch and keys.statuses[-1].startswith("VSQ on")
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    TuningMixin._toggle_search(keys)  # type: ignore[arg-type]
+    assert _search(engine).voice_squelch  # a new run keeps it
+    TuningMixin._toggle_vsq(keys)  # type: ignore[arg-type]
+    assert not _search(engine).voice_squelch and keys.statuses[-1] == "VSQ off"
+
+
+def test_command_sets_vsq(engine: SDREngine) -> None:
+    cmd = SDRSearchCommand()
+    assert "vsq=" in cmd.execute(["on", "--vsq", "--device", "pluto"])
+    assert _search(engine).voice_squelch
+    cmd.execute(["--no-vsq", "--device", "pluto"])
+    assert not _search(engine).voice_squelch
 
 
 def test_brackets_never_move_the_lo_in_free_tuning(engine: SDREngine) -> None:

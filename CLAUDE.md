@@ -302,6 +302,24 @@ turning the squelch off or stopping the device stops it. The spectrum shades the
 lasting lockouts are memories tagged `lockout` (the engine follows
 `MemoriesChangedEvent`).
 
+VSQ, the voice squelch (`core/sdr/voice_squelch.py`; `SearchConfig.voice_squelch`,
+`v`, `search --vsq`), lets SEARCH leave transmissions without speech.
+`DenoiserStage` feeds it the audio before RNNoise, resampled to 8 kHz, and
+mutes the output on a "not voice" verdict. `radio/voice` scores the last 2 s
+of the transmission every 0.5 s from 1 s in the pipeline thread (`VoiceStream`:
+log-mel frames into a small CNN, numpy only, weights in `voice.npz`, about
+1.3 ms a window; `search_control` loads the model when VSQ is turned on). A
+verdict belongs to one transmission (squelch open) on one dial channel of one
+run: a speech window makes it "voice"; none by `DECIDE_S` (3 s) makes it
+"not_voice", or by `LATE_S` (5 s) if the last second at `DECIDE_S` was a quiet
+carrier (below `QUIET_DB`: a late talker). `SearchController.update(voice=...)`
+treats "not_voice" as a closed squelch, leaving the channel disarmed until its
+signal drops. The model comes from the vdetect project (real over-the-air
+audio demodulated by tsdr); a model for another front end is refused, and
+`voice.npz` carries reference logits its test checks the numpy port against.
+`SDRDeviceContext.voice_squelch` carries it between the two pipelines and to
+the UI (meter label `VSQ`, the `VSQ` badge, a Stats row).
+
 ## Analog filter
 
 `DeviceConfig.analog_filter` (auto/track/fixed/off), `analog_filter_hz` and

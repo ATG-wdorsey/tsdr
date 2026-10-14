@@ -149,6 +149,7 @@ class SearchStage:
             lo_exclusion_hz=abs(lo_offset),
             locate_db=locate,
             outer_locate_db=outer,
+            voice=context.device_context.voice_squelch.verdict_for(search.run, tuned),
         )
         device_id = context.device_context.device_id
         if target is not None:
@@ -165,7 +166,8 @@ class SearchStage:
         last = self._last_status
         if (
             last is None
-            or (status.state, status.channel_hz) != (last.state, last.channel_hz)
+            or (status.state, status.channel_hz, status.voice)
+            != (last.state, last.channel_hz, last.voice)
             or now - self._status_at >= _STATUS_INTERVAL_S
         ):
             self._last_status = status
