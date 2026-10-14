@@ -136,6 +136,9 @@ class SDRDeviceContext:
         self.get_sdr_config = get_sdr_config
 
         self.pipelines: dict[str, ProcessingPipeline] = {}
+        # The audio pipeline last removed (demodulation off): its squelch is the receiver's,
+        # and the next demodulator starts with it (SDREngine.set_audio_demod).
+        self.kept_squelch: PipelineConfig | None = None
 
         self.io_worker: WorkerHandle | None = None
         self.pipeline_worker: WorkerHandle | None = None

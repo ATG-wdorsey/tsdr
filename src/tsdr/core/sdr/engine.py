@@ -667,6 +667,10 @@ class SDREngine:
         if pipeline_name not in context.config.pipelines:
             return
 
+        removed = context.config.pipelines[pipeline_name]
+        if removed.audio_spec is not None:
+            # The squelch belongs to the receiver: the next demodulator gets it back.
+            context.kept_squelch = removed
         new_pipelines = {k: v for k, v in context.config.pipelines.items() if k != pipeline_name}
         self.update_device_config(device_id, pipelines=MappingProxyType(new_pipelines))
 
@@ -825,14 +829,16 @@ class SDREngine:
         else:
             new_bw = new_cls.bandwidth_override_on_mode_switch(context.config.channel_bandwidth)
 
-        # The squelch belongs to the receiver, not the mode: keep it.
+        # The squelch belongs to the receiver, not the mode: keep it, also across
+        # turning demodulation off and on again (`d o`, `D o`).
         new_pc = PipelineConfig(stages=new_stages_tuple, audio_spec=spec)
-        if old_pipeline is not None:
+        squelch_from = old_pipeline if old_pipeline is not None else context.kept_squelch
+        if squelch_from is not None:
             new_pc = replace(
                 new_pc,
-                squelch_enabled=old_pipeline.squelch_enabled,
-                squelch_threshold_db=old_pipeline.squelch_threshold_db,
-                squelch_hang_ms=old_pipeline.squelch_hang_ms,
+                squelch_enabled=squelch_from.squelch_enabled,
+                squelch_threshold_db=squelch_from.squelch_threshold_db,
+                squelch_hang_ms=squelch_from.squelch_hang_ms,
             )
 
         can_swap_in_place = (

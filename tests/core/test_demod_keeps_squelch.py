@@ -39,3 +39,12 @@ def test_squelch_survives_demod_changes(engine: SDREngine, running: bool) -> Non
 def test_first_demodulator_gets_the_default_squelch(engine: SDREngine) -> None:
     engine.set_audio_demod("radio", DemodSpec(mode="NFM"))
     assert _squelch(engine) == (False, -50.0, 100.0)
+
+
+def test_squelch_survives_turning_demodulation_off_and_on(engine: SDREngine) -> None:
+    # Live 2026-10-14: `D o` then `d n` brought the squelch back off at -50; -78 was lost.
+    engine.set_audio_demod("radio", DemodSpec(mode="NFM"))
+    engine.update_squelch("radio", "audio", enabled=True, threshold_db=-78.0, hang_ms=100.0)
+    engine.remove_pipeline("radio", "audio")
+    engine.set_audio_demod("radio", DemodSpec(mode="NFM"))
+    assert _squelch(engine) == (True, -78.0, 100.0)
