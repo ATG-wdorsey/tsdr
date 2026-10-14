@@ -32,7 +32,7 @@ from tsdr.radio.decoders.dmr.constants import (
 )
 from tsdr.radio.decoders.dmr.fec import decode_cach, decode_slot_type, extract_voice_frames
 from tsdr.radio.demodulators import Demodulator
-from tsdr.radio.dsp import FMChannelizer, MuellerMuller
+from tsdr.radio.dsp import DCBlocker, FMChannelizer, MuellerMuller
 from tsdr.radio.vocoder.agc import VoiceAGC
 from tsdr.radio.vocoder.ambe import AmbePlus2Decoder
 
@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 
 _TARGET_RATE = SYMBOL_RATE * 10
 _DMR_PCM_RATE = 8000
+# A signal off frequency adds its offset to every symbol, and the timing loop and the
+# sync search decide by sign: 500 Hz off, 14 % of the outer symbols came out with the
+# wrong sign and no sync was found. The 4FSK data averages to zero over a few hundred
+# symbols, so a slow high-pass (80 ms) takes the offset off first.
+_DC_CUTOFF_HZ = 2.0
 _VOICE_TIMEOUT_SEC = 0.5
 # Require this many consecutive voice bursts before decoding audio.
 # Filters out false VOICE sync matches on noise.
@@ -104,23 +109,20 @@ def _slice_dibit(symbol: float) -> int:
     return 1 if symbol > 0 else 3
 
 
-def _slice_dibit_4level(symbol: float) -> int:
-    """Map FM symbol to 4-level dibit for data extraction.
+def _slice_4level(symbols: np.ndarray) -> np.ndarray:
+    """Map normalized FM symbols to 4-level dibits for data extraction.
 
-    4FSK levels (ETSI TS 102 361-1 S4.2.2):
-        +3 (+1944 Hz, sym > +0.5) -> dibit 1
-        +1  (+648 Hz, sym > 0)    -> dibit 0
-        -1  (-648 Hz, sym > -0.5) -> dibit 2
-        -3 (-1944 Hz, sym <= -0.5) -> dibit 3
+    4FSK levels (ETSI TS 102 361-1 S4.2.2), thresholds at the midpoints (0, +-2/3):
+        +3 (+1944 Hz, +1)   -> dibit 1
+        +1  (+648 Hz, +1/3) -> dibit 0
+        -1  (-648 Hz, -1/3) -> dibit 2
+        -3 (-1944 Hz, -1)   -> dibit 3
     """
-    if symbol > 0.5:
-        return 1
-    elif symbol > 0:
-        return 0
-    elif symbol > -0.5:
-        return 2
-    else:
-        return 3
+    dibits = np.full(len(symbols), 3, dtype=np.uint8)
+    dibits[symbols > -2 / 3] = 2
+    dibits[symbols > 0] = 0
+    dibits[symbols > 2 / 3] = 1
+    return dibits
 
 
 def _match_sync(dibits: np.ndarray) -> tuple[SyncType, int] | None:
@@ -175,6 +177,7 @@ class DMRDecoder(Demodulator):
         )
         self._decimated_rate = self._channelizer.audio_rate
         self._sps = self._decimated_rate / SYMBOL_RATE
+        self._dc = DCBlocker(self._decimated_rate, cutoff_hz=_DC_CUTOFF_HZ)
 
         # Mueller-Muller symbol timing recovery
         self._mm = MuellerMuller(self._sps, gain=0.01)
@@ -183,16 +186,16 @@ class DMRDecoder(Demodulator):
         self._constellation_delay = round(self._sps)
         self._fm_tail = np.array([], dtype=np.float64)
 
-        # Ring buffers for sync search and data extraction
+        # Ring buffers: sign dibits for the sync search, and the symbols themselves (sliced
+        # when a burst is complete: the ring then holds exactly that burst).
         self._sync_buf = np.zeros(BURST_DIBITS, dtype=np.uint8)
-        self._data_buf = np.zeros(BURST_DIBITS, dtype=np.uint8)
+        self._sym_buf = np.zeros(BURST_DIBITS, dtype=np.float32)
         self._sync_pos = 0
         self._dibit_count = 0
 
         # Burst collection state machine
         self._state = DecoderState.SEARCHING
         self._burst_buf = np.zeros(BURST_DIBITS, dtype=np.uint8)
-        self._burst_second_half = np.zeros(SECOND_HALF_DIBITS, dtype=np.uint8)
         self._burst_collect_pos = 0
         self._burst_sync_type = SyncType.BS_DATA
         self._lock_remaining = 0
@@ -248,7 +251,7 @@ class DMRDecoder(Demodulator):
         self._last_snapshot_ts: float = 0.0
 
     def demodulate(self, iq_samples: np.ndarray, capture_utc_s: float) -> None:
-        fm = self._channelizer.process(iq_samples)
+        fm = self._dc.process(self._channelizer.process(iq_samples))
 
         # Transition constellation: plot each FM sample
         # against the sample one symbol period earlier. Shows a 4x4 grid
@@ -270,12 +273,9 @@ class DMRDecoder(Demodulator):
 
         for sym in symbols:
             sym_f = float(sym)
-            sync_dibit = _slice_dibit(sym_f)
-            data_dibit = _slice_dibit_4level(sym_f)
-
             pos = self._sync_pos % BURST_DIBITS
-            self._sync_buf[pos] = sync_dibit
-            self._data_buf[pos] = data_dibit
+            self._sync_buf[pos] = _slice_dibit(sym_f)
+            self._sym_buf[pos] = sym_f
             self._sync_pos = (self._sync_pos + 1) % BURST_DIBITS
             self._dibit_count += 1
 
@@ -308,16 +308,14 @@ class DMRDecoder(Demodulator):
         if self._dibit_count < FIRST_HALF_DIBITS + SYNC_DIBITS:
             return
 
-        self._extract_first_half()
         self._begin_collecting(synced=True, in_lock=False)
 
     def _do_collect(self, timestamp: float) -> None:
-        prev_pos = (self._sync_pos - 1) % BURST_DIBITS
-        self._burst_second_half[self._burst_collect_pos] = self._data_buf[prev_pos]
         self._burst_collect_pos += 1
 
         if self._burst_collect_pos >= SECOND_HALF_DIBITS:
-            self._burst_buf[FIRST_HALF_DIBITS + SYNC_DIBITS :] = self._burst_second_half
+            # The ring now holds exactly this burst, CACH first.
+            self._burst_buf[:] = _slice_4level(self._get_ring_history(self._sym_buf, BURST_DIBITS))
 
             valid = self._process_burst(self._burst_buf, self._burst_sync_type, timestamp)
             # A sync where the lock expected one holds the framing, whatever the
@@ -352,7 +350,6 @@ class DMRDecoder(Demodulator):
             self._syncs_found += 1
             self._syncless_run = 0
             self._burst_sync_type = sync_type
-            self._extract_first_half()
             self._begin_collecting(synced=True, in_lock=True)
             return
 
@@ -365,7 +362,6 @@ class DMRDecoder(Demodulator):
             self._lock_hits += 1
             self._continuation[slot] += 1
             self._burst_sync_type = self._ts_state[slot].voice_sync_type
-            self._extract_first_half()
             self._begin_collecting(synced=False, in_lock=True)
         else:
             self._last_slot = slot
@@ -400,11 +396,6 @@ class DMRDecoder(Demodulator):
         if self._continuation[slot] >= _MAX_CONTINUATION_BURSTS:
             return False
         return self._in_voice_call(slot, timestamp)
-
-    def _extract_first_half(self) -> None:
-        """The burst up to the end of its sync or EMB field (a B-F burst's EMB is read)."""
-        full_history = FIRST_HALF_DIBITS + SYNC_DIBITS
-        self._burst_buf[:full_history] = self._get_ring_history(self._data_buf, full_history)
 
     def _begin_collecting(self, *, synced: bool, in_lock: bool) -> None:
         self._state = DecoderState.COLLECTING
@@ -705,10 +696,11 @@ class DMRDecoder(Demodulator):
 
     def reset(self) -> None:
         self._channelizer.reset()
+        self._dc.reset()
         self._mm.reset()
         self._fm_tail = np.array([], dtype=np.float64)
         self._sync_buf[:] = 0
-        self._data_buf[:] = 0
+        self._sym_buf[:] = 0
         self._sync_pos = 0
         self._dibit_count = 0
         self._state = DecoderState.SEARCHING

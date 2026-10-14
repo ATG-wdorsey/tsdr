@@ -67,11 +67,11 @@ def _voice_burst(
     return burst
 
 
-def _iq(dibits: list[int]) -> np.ndarray:
+def _iq(dibits: list[int], offset_hz: float = 0.0) -> np.ndarray:
     sps = int(RATE / SYMBOL_RATE)
     freq = np.repeat([_LEVEL[d] * dmr.DEVIATION / 3.0 for d in dibits], sps)
     freq = np.convolve(freq, np.hanning(sps) / np.hanning(sps).sum(), mode="same")
-    phase = 2 * np.pi * np.cumsum(freq) / RATE
+    phase = 2 * np.pi * np.cumsum(freq + offset_hz) / RATE
     return (0.5 * np.exp(1j * phase)).astype(np.complex64)
 
 
@@ -108,3 +108,37 @@ def test_both_slots_decoded_after_a_late_entry_and_a_missed_sync(phase: int) -> 
     # Every burst of superframes 4-12 of each slot reaches the vocoder, the missed A's too.
     sent = (superframes - 1 - 4) * 6
     assert decoded == {0: sent, 1: sent}
+
+
+@pytest.mark.parametrize("offset_hz", [-500.0, 500.0])
+def test_a_repeater_off_frequency_is_read_without_errors(offset_hz: float) -> None:
+    """Repeaters are often a few hundred Hz off (1 ppm at 440 MHz), which moves every
+    level. The timing loop and the sync search decided by sign around zero, and the
+    slicer's thresholds sat off the midpoints: 250 Hz off, this signal was not received
+    at all, and the 443.7 MHz recording (450 Hz off) had bit errors in most AMBE frames,
+    7 % of them replaced."""
+    rng = np.random.default_rng(7)
+    sent = [_voice_burst(slot, letter, rng) for letter in [*range(6)] * 6 for slot in (0, 1)]
+    iq = _iq([d for burst in sent for d in burst], offset_hz)
+
+    decoder = DMRDecoder(sample_rate=RATE)
+    received: list[np.ndarray] = []
+    process = decoder._process_voice_burst
+
+    def keep(burst, sync_type, timeslot, timestamp):
+        if timestamp >= 1000.5:  # past the offset tracker's start (80 ms time constant)
+            received.append(burst.copy())
+        return process(burst, sync_type, timeslot, timestamp)
+
+    decoder._process_voice_burst = keep  # type: ignore[method-assign]
+    chunk = int(RATE * 0.02)
+    for i in range(0, len(iq), chunk):
+        decoder.demodulate(iq[i : i + chunk], 1000.0 + i / RATE)
+
+    # CACH and voice payload (around the sync/EMB field), dibit for dibit.
+    def payload(burst) -> tuple[int, ...]:
+        return tuple(int(d) for d in [*burst[:SYNC_START], *burst[SYNC_START + 24 :]])
+
+    burst_s = BURST_DIBITS / SYMBOL_RATE
+    assert len(received) >= len(sent) - int(0.5 / burst_s) - 2
+    assert {payload(b) for b in received} <= {payload(b) for b in sent}
