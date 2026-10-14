@@ -24,12 +24,15 @@ from tsdr.radio.audio_decoders import SSTVAudioDecoder, carried_decoder, with_de
 from tsdr.radio.decoders.sstv import (
     MODES,
     MODES_BY_NAME,
+    Mode,
     SSTVData,
     StreamerState,
     StreamingEvents,
     StreamingSSTV,
     decode_offline,
+    find_vis,
     hilbert_fft,
+    instantaneous_freq,
 )
 
 SAMPLES_DIR = Path(__file__).resolve().parents[1] / "samples" / "sstv"
@@ -77,6 +80,23 @@ def _samples() -> dict[str, tuple[np.ndarray, int]]:
     return out
 
 
+Decoded = dict[str, tuple[Mode, np.ndarray]]
+
+
+@pytest.fixture(scope="module")
+def _decoded(_samples: dict[str, tuple[np.ndarray, int]]) -> Decoded:
+    """Each recording decoded offline, once per module (on first use)."""
+
+    class _Lazy(dict):
+        def __missing__(self, name: str) -> tuple[Mode, np.ndarray]:
+            result = decode_offline(*_samples[name])
+            assert result is not None, f"offline decode failed for {name}"
+            self[name] = result
+            return result
+
+    return _Lazy()
+
+
 # ---- VIS detection --------------------------------------------------------
 
 
@@ -85,33 +105,25 @@ def _samples() -> dict[str, tuple[np.ndarray, int]]:
 
 @pytest.mark.parametrize(("filename", "expected_vis", "shape"), SAMPLE_FIXTURES)
 def test_decode_offline_finds_the_mode_and_the_image(
-    _samples: dict[str, tuple[np.ndarray, int]],
+    _decoded: Decoded,
     filename: str,
     expected_vis: int,
     shape: tuple[int, int],
 ) -> None:
-    audio, fs = _samples[filename]
-    result = decode_offline(audio, fs)
-    assert result is not None, f"offline decode failed for {filename}"
-    mode, img = result
+    mode, img = _decoded[filename]
     assert mode is MODES[expected_vis]  # the VIS code was read
     assert img.shape == (*shape, 3)
     # Not a blank frame.
     assert img.std() > 5.0
 
 
-def test_decode_offline_martin1_content_signature(
-    _samples: dict[str, tuple[np.ndarray, int]],
-) -> None:
+def test_decode_offline_martin1_content_signature(_decoded: Decoded) -> None:
     """Regression on the Martin M1 path (BT.601 conversion + segment layout).
 
     Asserts the decoded image stays close to a captured reference signature
     (means of two rows + global mean) within tolerance.
     """
-    audio, fs = _samples["Martin_1.mp3"]
-    result = decode_offline(audio, fs)
-    assert result is not None
-    _, img = result
+    _, img = _decoded["Martin_1.mp3"]
     # Sample a few rows to detect any single-channel regression.
     row50_mean = img[50].mean(axis=0)
     row200_mean = img[200].mean(axis=0)
@@ -131,14 +143,12 @@ def test_decode_offline_martin1_content_signature(
 
 
 def test_streaming_matches_offline_robot36(
-    _samples: dict[str, tuple[np.ndarray, int]],
+    _samples: dict[str, tuple[np.ndarray, int]], _decoded: Decoded
 ) -> None:
     """Streaming chunks should produce essentially the same image as offline."""
     audio, fs = _samples["Robot_36.mp3"]
 
-    offline_result = decode_offline(audio, fs)
-    assert offline_result is not None
-    _, offline_img = offline_result
+    _, offline_img = _decoded["Robot_36.mp3"]
 
     captured: list[np.ndarray] = []
 
@@ -228,6 +238,69 @@ def test_streaming_forced_mode_skips_vis_lookup(
     decoder.flush()
     assert captured, "no mode lock"
     assert captured[0][0] == "Martin M1"
+
+
+# ---- A picture under way, and mistune --------------------------------------
+
+
+def _mistuned(audio: np.ndarray, hz: float, fs: int) -> np.ndarray:
+    """Every tone moved by ``hz``, as an SSB receiver tuned off the signal hears it."""
+    z = hilbert_fft(audio.astype(np.float64))
+    return np.real(z * np.exp(2j * np.pi * hz * np.arange(len(z)) / fs)).astype(np.float32)
+
+
+def _picture_start(audio: np.ndarray, fs: int) -> int:
+    """Where the picture begins: just past the VIS, which these recordings open with."""
+    vis = find_vis(instantaneous_freq(audio[: 3 * fs], fs), fs)
+    assert vis is not None
+    return vis[1]
+
+
+@pytest.mark.parametrize("filename", ["Robot_36.mp3", "Scottie_1.mp3"])
+def test_a_picture_under_way_is_joined_from_its_line_syncs(
+    _samples: dict[str, tuple[np.ndarray, int]], _decoded: Decoded, filename: str
+) -> None:
+    """Tuned in after the VIS (or with it lost), the decoder waited for the next
+    picture. Its line syncs name the mode (Robot 36's period is half Robot 72's;
+    Scottie's sync sits mid-line) and give the mistune (here 120 Hz)."""
+    audio, fs = _samples[filename]
+    mode, reference = _decoded[filename]
+    joined_at, lines = int(mode.scan_lines * 0.4), 30
+    line_n = mode.line_ms * fs / 1000.0
+    cut = _picture_start(audio, fs) + int((joined_at + 0.1) * line_n)
+    heard = _mistuned(audio[cut - fs : cut + int(lines * line_n)], 120.0, fs)[fs:]
+
+    got: dict[str, object] = {}
+    events = StreamingEvents(
+        on_mode=lambda m, _vis: got.setdefault("mode", m),
+        on_image=lambda _m, img: got.setdefault("image", img),
+    )
+    decoder = StreamingSSTV(fs, events=events)
+    for i in range(0, len(heard), 2048):
+        decoder.process(heard[i : i + 2048])
+    decoder.flush()
+
+    assert got.get("mode") is mode
+    image = got["image"]
+    assert isinstance(image, np.ndarray)
+    rows = lines - 6  # the picture's own rows, from the top (the train's lines included)
+    later = reference[joined_at + 1 : joined_at + 1 + rows].astype(int)
+    assert np.abs(image[:rows].astype(int) - later).mean() < 3.0
+
+
+def test_a_mistuned_picture_keeps_its_brightness(
+    _samples: dict[str, tuple[np.ndarray, int]], _decoded: Decoded
+) -> None:
+    """An SSB mistune moves every tone; the leader's measured tone gives the offset
+    (120 Hz shifted every pixel by about 38 of 255 before)."""
+    audio, fs = _samples["Martin_1.mp3"]
+    mode, reference = _decoded["Martin_1.mp3"]
+    lines = 40
+    end = _picture_start(audio, fs) + int(lines * mode.line_ms * fs / 1000.0)
+    result = decode_offline(_mistuned(audio[:end], -120.0, fs), fs)
+    assert result is not None
+    rows = lines - 2
+    assert np.abs(result[1][:rows].astype(int) - reference[:rows].astype(int)).mean() < 2.0
 
 
 # ---- Slant tracker --------------------------------------------------------
@@ -329,14 +402,15 @@ def _robot36_done(collected: list[SSTVData]) -> SSTVData:
     return done
 
 
-def test_sstv_decodes_on_nfm_as_on_2_m(_samples: dict[str, tuple[np.ndarray, int]]) -> None:
+def test_sstv_decodes_on_nfm_as_on_2_m(
+    _samples: dict[str, tuple[np.ndarray, int]], _decoded: Decoded
+) -> None:
     """SSTV on 145.600 is FM: the decoder rides on NFM's audio (it was USB only, and
     decoded nothing there). Same picture as the clean audio decodes to."""
     audio, fs = _samples["Robot_36.mp3"]
     iq = _audio_to_nfm_iq(audio, fs, rate=96_000, deviation_hz=3_000.0)
     done = _robot36_done(_decode(DemodSpec(mode="NFM", decoder="SSTV"), iq, 96_000.0))
-    reference = decode_offline(audio, fs)
-    assert reference is not None
+    reference = _decoded["Robot_36.mp3"]
     assert np.mean(np.abs(done.image.astype(float) - reference[1].astype(float))) < 20
 
 

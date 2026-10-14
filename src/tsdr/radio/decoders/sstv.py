@@ -1,7 +1,8 @@
 """SSTV (Slow-Scan Television) decoder.
 
 Streaming decoder that turns demodulated SSB audio (mono float32) into images.
-Supported modes (auto-detected from VIS or force-selected by name):
+Supported modes (auto-detected from VIS or force-selected by name; a picture already
+under way, its VIS missed, is joined from its line syncs, whose period names the mode):
 
     Martin M1/M2, Scottie 1/2/DX,
     Robot 8/12/24 BW, Robot 24 color, Robot 36, Robot 72,
@@ -401,8 +402,9 @@ def _close_gaps(mask: np.ndarray, gap_n: int) -> np.ndarray:
     return out
 
 
-def find_vis(freq: np.ndarray, fs: int) -> tuple[int, int] | None:
-    """Locate a VIS header. Returns (vis_code, sample_index_after_stop_bit).
+def find_vis(freq: np.ndarray, fs: int) -> tuple[int, int, float] | None:
+    """Locate a VIS header. Returns (vis_code, sample_index_after_stop_bit, leader_hz):
+    the leader's measured frequency gives the picture's mistune (SSB).
 
     Anchors on the leader tone, not the sync band, so the detector tolerates
     operator mistuning up to ±200 Hz. For each ≥200 ms run of smoothed freq
@@ -436,7 +438,7 @@ def find_vis(freq: np.ndarray, fs: int) -> tuple[int, int] | None:
     leader_mask = (smooth_freq >= leader_lo) & (smooth_freq <= leader_hi)
     leader_mask = _close_gaps(leader_mask, leader_close_n)
 
-    candidates: list[tuple[float, int, int]] = []  # (score, vis, stop_end)
+    candidates: list[tuple[float, int, int, float]] = []  # (score, vis, stop_end, leader)
     for leader_start, leader_end in _runs(leader_mask):
         if leader_end - leader_start < min_leader_n:
             continue
@@ -515,19 +517,20 @@ def find_vis(freq: np.ndarray, fs: int) -> tuple[int, int] | None:
             global_start,
             global_start / fs,
         )
-        candidates.append((score, vis, stop_end))
+        candidates.append((score, vis, stop_end, leader_freq))
 
     if not candidates:
         return None
     candidates.sort(reverse=True)
-    score, vis, stop_end = candidates[0]
+    score, vis, stop_end, leader_freq = candidates[0]
     logger.info(
-        "sstv_vis_detected vis=%d score=%.0f candidates=%d",
+        "sstv_vis_detected vis=%d score=%.0f candidates=%d leader_hz=%.0f",
         vis,
         score,
         len(candidates),
+        leader_freq,
     )
-    return vis, stop_end
+    return vis, stop_end, leader_freq
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
@@ -544,12 +547,13 @@ def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(starts, ends, strict=False))
 
 
-def freq_to_pixel(f: np.ndarray) -> np.ndarray:
-    v = (f - FREQ_BLACK) / (FREQ_WHITE - FREQ_BLACK) * 255.0
+def freq_to_pixel(f: np.ndarray, offset_hz: float = 0.0) -> np.ndarray:
+    """Tone to brightness; ``offset_hz`` is the picture's mistune (all its tones moved)."""
+    v = (f - offset_hz - FREQ_BLACK) / (FREQ_WHITE - FREQ_BLACK) * 255.0
     return np.clip(v, 0, 255).astype(np.uint8)
 
 
-def scan_to_pixels(scan: np.ndarray, width: int) -> np.ndarray:
+def scan_to_pixels(scan: np.ndarray, width: int, offset_hz: float = 0.0) -> np.ndarray:
     """Average instantaneous-frequency samples into ``width`` pixel bins."""
     n = len(scan)
     if n == 0:
@@ -557,27 +561,112 @@ def scan_to_pixels(scan: np.ndarray, width: int) -> np.ndarray:
     edges = np.linspace(0, n, width + 1).astype(np.int32)
     sums = np.add.reduceat(scan, edges[:-1])
     counts = np.maximum(np.diff(edges), 1).astype(np.float32)
-    return freq_to_pixel(sums / counts)
+    return freq_to_pixel(sums / counts, offset_hz)
 
 
-def find_sync(freq: np.ndarray, expected: int, search_ms: float, sync_ms: float, fs: int) -> int:
-    """Locate a 1200 Hz sync pulse near ``expected``. Returns the index where
-    the sync pulse starts, or ``expected`` if nothing convincing is found.
+def find_sync(
+    freq: np.ndarray,
+    expected: int,
+    search_ms: float,
+    sync_ms: float,
+    fs: int,
+    offset_hz: float = 0.0,
+) -> int | None:
+    """Locate a 1200 Hz sync pulse (moved by ``offset_hz``) near ``expected``.
+    Returns the index where the sync pulse starts, or None if nothing convincing
+    is found.
     """
     half = _ms_to_samples(search_ms, fs)
     sync_n = _ms_to_samples(sync_ms, fs)
     lo = max(0, expected - half)
     hi = min(len(freq), expected + half + sync_n)
     if hi - lo < sync_n + 1:
-        return expected
+        return None
     window = freq[lo:hi]
     window_s = _smooth(window, _ms_to_samples(2.0, fs))
-    is_sync = ((window_s > 1050) & (window_s < 1350)).astype(np.float32)
+    is_sync = ((window_s > 1050 + offset_hz) & (window_s < 1350 + offset_hz)).astype(np.float32)
     kernel = np.ones(sync_n, dtype=np.float32)
     conv = np.convolve(is_sync, kernel, mode="valid")
     if conv.max() < sync_n * 0.6:
-        return expected
+        return None
     return lo + int(np.argmax(conv))
+
+
+# A picture joined without its VIS: this many line syncs in a row, each the mode's sync
+# length (0.6-1.5x) and one line period after the last (within 0.5 % + 1 ms: the
+# sender's clock), name the mode. A sync's tone may be mistuned (SSB) by up to 200 Hz,
+# as the VIS detector allows; black (1500 Hz, also Martin's separators) stays out of
+# reach, though in noise it breaks into short runs. A sync is a steady tone: the middle
+# of a recording's syncs varies by 6-22 Hz (standard deviation), a run of white noise
+# through the band by 139 Hz or more; and the train's syncs share one tone.
+_TRAIN_SYNCS = 5
+_TRAIN_MAX_OFFSET_HZ = 200.0
+_TRAIN_BAND_HZ = (FREQ_SYNC - _TRAIN_MAX_OFFSET_HZ - 25.0, FREQ_SYNC + _TRAIN_MAX_OFFSET_HZ + 25.0)
+_TRAIN_MAX_STD_HZ = 60.0
+_TRAIN_TONE_SPREAD_HZ = 50.0
+
+
+@dataclass(frozen=True)
+class SyncTrain:
+    mode: Mode
+    line_start: int  # sample index where the first whole line of the train begins
+    offset_hz: float  # the syncs' measured tone less 1200 Hz
+    syncs: int
+
+
+def find_sync_train(freq: np.ndarray, fs: int, modes: list[Mode]) -> SyncTrain | None:
+    """Join a picture under way from its line syncs: the mode with the shortest line
+    period whose syncs repeat ``_TRAIN_SYNCS`` times (a train of period P also repeats
+    at 2P, never at P/2). Modes with the same timing (Robot 12 / 24 BW) give the taller
+    picture."""
+    smooth = _smooth(freq, _ms_to_samples(2.0, fs))
+    mask = (smooth > _TRAIN_BAND_HZ[0]) & (smooth < _TRAIN_BAND_HZ[1])
+    runs = _runs(_close_gaps(mask, _ms_to_samples(1.0, fs)))
+    if len(runs) < _TRAIN_SYNCS:
+        return None
+    starts = np.array([a for a, _ in runs], dtype=np.int64)
+    widths = np.array([b - a for a, b in runs], dtype=np.int64)
+    # The middle 60 % of each run: its mean tone and steadiness.
+    core_lo = starts + widths // 5
+    core_n = np.maximum(widths - 2 * (widths // 5), 1)
+    sm = smooth.astype(np.float64)
+    csum = np.concatenate([[0.0], np.cumsum(sm)])
+    csq = np.concatenate([[0.0], np.cumsum(sm * sm)])
+    tone = (csum[core_lo + core_n] - csum[core_lo]) / core_n
+    std = np.sqrt(np.maximum((csq[core_lo + core_n] - csq[core_lo]) / core_n - tone * tone, 0.0))
+    steady = (std <= _TRAIN_MAX_STD_HZ) & (np.abs(tone - FREQ_SYNC) <= _TRAIN_MAX_OFFSET_HZ)
+    for mode in sorted(modes, key=lambda m: (m.line_ms, -m.height)):
+        sync = next((seg for seg in mode.segments if seg.kind == "sync"), None)
+        sync_at_ms = _segment_offset(mode, "sync")
+        if sync is None or sync_at_ms is None:
+            continue
+        sync_n = _ms_to_samples(sync.ms, fs)
+        period = mode.line_ms * fs / 1000.0
+        tol = 0.005 * period + _ms_to_samples(1.0, fs)
+        fits = steady & (widths >= 0.6 * sync_n) & (widths <= 1.5 * sync_n)
+        cand = starts[fits]
+        cand_tone = tone[fits]
+        for i in range(len(cand)):
+            chain = [i]
+            while True:
+                nxt = cand[chain[-1]] + period
+                j = int(np.searchsorted(cand, nxt - tol))
+                if j < len(cand) and abs(cand[j] - nxt) <= tol:
+                    chain.append(j)
+                else:
+                    break
+            if len(chain) < _TRAIN_SYNCS:
+                continue
+            tones = cand_tone[chain]
+            offset = float(np.median(tones)) - FREQ_SYNC
+            if np.max(np.abs(tones - (offset + FREQ_SYNC))) > _TRAIN_TONE_SPREAD_HZ:
+                continue
+            sync_at = _ms_to_samples(sync_at_ms, fs)
+            first = next((int(cand[c]) for c in chain if cand[c] - sync_at >= 0), None)
+            if first is None:
+                continue
+            return SyncTrain(mode, first - sync_at, offset, len(chain))
+    return None
 
 
 @dataclass
@@ -628,9 +717,11 @@ class DecodeState:
     # fix-up). Callers drain this to fire on_line events.
     written_rows: list[int] = field(default_factory=list)
     slant: SlantTracker = field(default_factory=SlantTracker)
+    offset_hz: float = 0.0  # the picture's mistune: every tone moved by it
+    missed_syncs: int = 0  # lines in a row whose sync was not found
 
 
-def make_decode_state(mode: Mode, fs: int) -> DecodeState:
+def make_decode_state(mode: Mode, fs: int, offset_hz: float = 0.0) -> DecodeState:
     img = np.zeros((mode.height, mode.width, 3), dtype=np.uint8)
     slant = SlantTracker(nominal_line_samples=_ms_to_samples(mode.line_ms, fs))
     if mode.color in ("ycrcb420", "ycrcb422"):
@@ -648,6 +739,7 @@ def make_decode_state(mode: Mode, fs: int) -> DecodeState:
             last_cr_row=np.full(mode.width, 128, dtype=np.uint8),
             last_cb_row=np.full(mode.width, 128, dtype=np.uint8),
             slant=slant,
+            offset_hz=offset_hz,
         )
     if mode.color == "pd_ycrcb":
         # PD: one chroma row per scan-line (shared by the pair of output rows).
@@ -660,8 +752,9 @@ def make_decode_state(mode: Mode, fs: int) -> DecodeState:
             cr_seen=np.zeros(mode.scan_lines, dtype=bool),
             cb_seen=np.zeros(mode.scan_lines, dtype=bool),
             slant=slant,
+            offset_hz=offset_hz,
         )
-    return DecodeState(mode=mode, image=img, slant=slant)
+    return DecodeState(mode=mode, image=img, slant=slant, offset_hz=offset_hz)
 
 
 def _align_to_sync(freq: np.ndarray, fs: int, state: DecodeState, cursor: int) -> int:
@@ -676,7 +769,12 @@ def _align_to_sync(freq: np.ndarray, fs: int, state: DecodeState, cursor: int) -
         return cursor
     expected_sync = cursor + _ms_to_samples(sync_offset_ms, fs)
     slant_mag_ms = abs(state.slant.correction) * 1000.0 / fs
-    sync_at = find_sync(freq, expected_sync, 8.0 + slant_mag_ms, sync_seg.ms, fs)
+    sync_at = find_sync(freq, expected_sync, 8.0 + slant_mag_ms, sync_seg.ms, fs, state.offset_hz)
+    if sync_at is None:
+        state.missed_syncs += 1
+        sync_at = expected_sync
+    else:
+        state.missed_syncs = 0
     state.slant.observe(sync_at - expected_sync)
     return sync_at - _ms_to_samples(sync_offset_ms, fs)
 
@@ -691,6 +789,7 @@ def decode_line(freq: np.ndarray, fs: int, state: DecodeState, line_index: int, 
     if state.mode.color == "pd_ycrcb":
         return _decode_pd_line(freq, fs, state, line_index, cursor)
     mode = state.mode
+    off = state.offset_hz
     cursor = _align_to_sync(freq, fs, state, cursor)
 
     seg_cursor = cursor
@@ -704,33 +803,35 @@ def decode_line(freq: np.ndarray, fs: int, state: DecodeState, line_index: int, 
         if seg.kind == "chroma_sep" and end > seg_cursor:
             # Median ignores transition slopes at segment edges; classify by
             # nearest canonical tone (1500=Cr, 2300=Cb).
-            mean_f = float(np.median(freq[seg_cursor:end]))
+            mean_f = float(np.median(freq[seg_cursor:end])) - state.offset_hz
             chroma_kind = 1 if abs(mean_f - 1500.0) < abs(mean_f - 2300.0) else 2
         elif seg.kind == "scan":
             if mode.color == "rgb":
-                pixels = scan_to_pixels(freq[seg_cursor:end], mode.width)
+                pixels = scan_to_pixels(freq[seg_cursor:end], mode.width, off)
                 state.image[line_index, :, seg.channel] = pixels
             elif mode.color == "mono":
-                pixels = scan_to_pixels(freq[seg_cursor:end], mode.width)
+                pixels = scan_to_pixels(freq[seg_cursor:end], mode.width, off)
                 state.image[line_index, :, :] = pixels[:, None]
             elif mode.color in ("ycrcb420", "ycrcb422"):
                 assert state.y_plane is not None
                 assert state.cr_plane is not None
                 assert state.cb_plane is not None
                 if seg.channel == 0:
-                    state.y_plane[line_index, :] = scan_to_pixels(freq[seg_cursor:end], mode.width)
+                    state.y_plane[line_index, :] = scan_to_pixels(
+                        freq[seg_cursor:end], mode.width, off
+                    )
                 elif seg.channel == 1:
                     state.cr_plane[line_index, :] = scan_to_pixels(
-                        freq[seg_cursor:end], mode.chroma_width
+                        freq[seg_cursor:end], mode.chroma_width, off
                     )
                     cr_seen_now = True
                 elif seg.channel == 2:
                     state.cb_plane[line_index, :] = scan_to_pixels(
-                        freq[seg_cursor:end], mode.chroma_width
+                        freq[seg_cursor:end], mode.chroma_width, off
                     )
                     cb_seen_now = True
                 elif seg.channel == -2:
-                    pixels = scan_to_pixels(freq[seg_cursor:end], mode.chroma_width)
+                    pixels = scan_to_pixels(freq[seg_cursor:end], mode.chroma_width, off)
                     if chroma_kind == 1:
                         state.cr_plane[line_index, :] = pixels
                         cr_seen_now = True
@@ -787,6 +888,7 @@ def _decode_pd_line(
     assert state.cb_plane is not None
     assert state.cr_seen is not None
     assert state.cb_seen is not None
+    off = state.offset_hz
     cursor = _align_to_sync(freq, fs, state, cursor)
     seg_cursor = cursor
     row_odd = 2 * scan_line
@@ -795,7 +897,7 @@ def _decode_pd_line(
         seg_n = _ms_to_samples(seg.ms, fs)
         end = min(seg_cursor + seg_n, len(freq))
         if seg.kind == "scan":
-            pixels = scan_to_pixels(freq[seg_cursor:end], mode.width)
+            pixels = scan_to_pixels(freq[seg_cursor:end], mode.width, off)
             if seg.channel == 0:
                 state.y_plane[row_odd, :] = pixels
             elif seg.channel == 1:
@@ -901,23 +1003,19 @@ def decode_offline(
     freq = instantaneous_freq(audio, fs)
 
     vis = find_vis(freq, fs)
-    if forced_mode is not None:
-        mode = forced_mode
-        start_sample = vis[1] if vis else 0
+    if vis is not None:
+        vis_code, cursor, leader_hz = vis
+        mode = forced_mode if forced_mode is not None else MODES[vis_code]
+        offset = leader_hz - FREQ_LEADER
+        if mode.has_start_sync:
+            cursor += _ms_to_samples(9.0, fs)
     else:
-        if vis is None:
+        train = find_sync_train(freq, fs, [forced_mode] if forced_mode is not None else _MODE_LIST)
+        if train is None:
             return None
-        vis_code, start_sample = vis
-        if vis_code not in MODES:
-            logger.error("sstv_unknown_vis vis=%d", vis_code)
-            return None
-        mode = MODES[vis_code]
+        mode, cursor, offset = train.mode, train.line_start, train.offset_hz
 
-    cursor = start_sample
-    if mode.has_start_sync:
-        cursor += _ms_to_samples(9.0, fs)
-
-    state = make_decode_state(mode, fs)
+    state = make_decode_state(mode, fs, offset)
     for line in range(mode.scan_lines):
         if cursor + state.slant.line_samples() > len(freq):
             break
@@ -950,11 +1048,19 @@ class StreamingSSTV:
 
     When ``forced_mode`` is set, the parsed VIS code is ignored and the given
     mode is used instead. The detected VIS pulse position still anchors timing.
+    Without a VIS (the picture was under way), the line syncs start it: their period
+    names the mode, or only the forced mode is looked for. Ten lines in a row without
+    a sync end a picture (the sender stopped, or the signal went).
     """
 
     # Drop old samples when we have more than this much buffer outside the
     # active decode window. Keeps memory bounded for long idle periods.
     _COMPACT_THRESHOLD_S = 5.0
+    # While looking: the audio kept (five syncs of the slowest mode, Scottie DX, and
+    # the line before), and how often the buffer is searched.
+    _LOOKING_KEEP_S = 5.5
+    _SEARCH_EVERY_S = 0.25
+    _MAX_MISSED_SYNCS = 10
 
     def __init__(
         self,
@@ -983,6 +1089,7 @@ class StreamingSSTV:
         self._dstate: DecodeState | None = None
         self._line_index = 0
         self._cursor = 0  # global sample index where current line begins
+        self._next_search = 0  # sample count at which LOOKING searches again
 
     def process(self, samples: np.ndarray) -> None:
         """Push a chunk of mono audio samples."""
@@ -997,6 +1104,9 @@ class StreamingSSTV:
 
     def flush(self) -> None:
         """Emit the in-progress image even if the audio ended mid-stream."""
+        if self.state == StreamerState.LOOKING:
+            self._next_search = 0
+            self._advance()
         if self.state == StreamerState.DECODING and self._dstate is not None:
             self._emit_image()
 
@@ -1013,6 +1123,7 @@ class StreamingSSTV:
         self._dstate = None
         self._line_index = 0
         self._cursor = 0
+        self._next_search = 0
 
     def set_forced_mode(self, mode: Mode | None) -> None:
         """Override VIS-code interpretation. Takes effect on the next VIS
@@ -1059,7 +1170,7 @@ class StreamingSSTV:
     def _advance(self) -> None:
         while True:
             if self.state == StreamerState.LOOKING:
-                if not self._try_find_vis():
+                if not self._try_start():
                     return
             elif self.state == StreamerState.DECODING:
                 if not self._try_decode_line():
@@ -1067,46 +1178,55 @@ class StreamingSSTV:
             else:
                 return
 
-    def _try_find_vis(self) -> bool:
+    def _try_start(self) -> bool:
+        if self._produced < self._next_search:
+            return False
+        self._next_search = self._produced + _ms_to_samples(self._SEARCH_EVERY_S * 1000.0, self.fs)
         # VIS detection needs at least 200 ms leader + 300 ms bits = 500 ms.
         # Search only within the current buffer.
-        min_n = _ms_to_samples(500.0, self.fs)
-        if len(self._freq) < min_n:
+        if len(self._freq) < _ms_to_samples(500.0, self.fs):
             return False
         vis = find_vis(self._freq, self.fs)
-        if vis is None:
-            return False
-        vis_code, post_stop_local = vis
-        if self.forced_mode is not None:
-            mode: Mode = self.forced_mode
+        if vis is not None:
+            vis_code, post_stop_local, leader_hz = vis
+            mode: Mode = self.forced_mode if self.forced_mode is not None else MODES[vis_code]
+            cursor = post_stop_local + self._buf_offset
+            if mode.has_start_sync:
+                cursor += _ms_to_samples(9.0, self.fs)
+            self.vis_code = vis_code
+            self._begin(mode, cursor, leader_hz - FREQ_LEADER)
+            logger.info(
+                "sstv_stream_mode_locked vis=%d mode=%s forced=%s offset_hz=%.0f",
+                vis_code,
+                mode.name,
+                self.forced_mode is not None,
+                self._dstate.offset_hz if self._dstate is not None else 0.0,
+            )
         else:
-            looked_up = MODES.get(vis_code)
-            if looked_up is None:
-                logger.error("sstv_unknown_vis_streaming vis=%d", vis_code)
-                # Discard the rejected VIS region and keep scanning so the
-                # decoder doesn't wedge waiting for a reset that never comes.
-                self._freq = self._freq[post_stop_local:]
-                self._buf_offset += post_stop_local
+            modes = [self.forced_mode] if self.forced_mode is not None else _MODE_LIST
+            train = find_sync_train(self._freq, self.fs, modes)
+            if train is None:
                 return False
-            mode = looked_up
+            mode = train.mode
+            self.vis_code = None
+            self._begin(mode, train.line_start + self._buf_offset, train.offset_hz)
+            logger.info(
+                "sstv_stream_joined mode=%s syncs=%d offset_hz=%.0f forced=%s",
+                mode.name,
+                train.syncs,
+                train.offset_hz,
+                self.forced_mode is not None,
+            )
+        if self.events.on_mode:
+            self.events.on_mode(mode, mode.vis if self.vis_code is None else self.vis_code)
+        return True
+
+    def _begin(self, mode: Mode, cursor: int, offset_hz: float) -> None:
         self.mode = mode
-        self.vis_code = vis_code
-        self._dstate = make_decode_state(mode, self.fs)
-        post_stop_global = post_stop_local + self._buf_offset
-        self._cursor = post_stop_global
-        if mode.has_start_sync:
-            self._cursor += _ms_to_samples(9.0, self.fs)
+        self._dstate = make_decode_state(mode, self.fs, offset_hz)
+        self._cursor = cursor
         self._line_index = 0
         self.state = StreamerState.DECODING
-        logger.info(
-            "sstv_stream_mode_locked vis=%d mode=%s forced=%s",
-            vis_code,
-            mode.name,
-            self.forced_mode is not None,
-        )
-        if self.events.on_mode:
-            self.events.on_mode(mode, vis_code)
-        return True
 
     def _try_decode_line(self) -> bool:
         if self.mode is None or self._dstate is None:
@@ -1127,7 +1247,14 @@ class StreamingSSTV:
             for r in self._dstate.written_rows:
                 self.events.on_line(self.mode, r, self._dstate.image[r])
         self._line_index += 1
-        if self._line_index >= self.mode.scan_lines:
+        if self._dstate.missed_syncs >= self._MAX_MISSED_SYNCS:
+            logger.info(
+                "sstv_picture_ended reason=no_sync mode=%s line=%d",
+                self.mode.name,
+                self._line_index,
+            )
+            self._emit_image()
+        elif self._line_index >= self.mode.scan_lines:
             self._emit_image()
         return True
 
@@ -1144,8 +1271,9 @@ class StreamingSSTV:
 
     def _maybe_compact(self) -> None:
         if self.state == StreamerState.LOOKING:
-            # VIS detection needs ~500 ms of buffer; keep a bit more for safety.
-            keep_from_global = self._produced - _ms_to_samples(800.0, self.fs)
+            keep_from_global = self._produced - _ms_to_samples(
+                self._LOOKING_KEEP_S * 1000.0, self.fs
+            )
         elif self.state == StreamerState.DECODING:
             # In DECODING state we don't reach into samples before _cursor.
             keep_from_global = self._cursor - _ms_to_samples(20.0, self.fs)

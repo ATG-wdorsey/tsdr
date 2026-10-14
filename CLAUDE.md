@@ -411,7 +411,9 @@ signal, like ADS-B, DAB and TETRA, are modes). `DemodSpec.decoder` names one; th
 `DemodulatorStage` turns on the demodulator's pre-squelch tap (`Demodulator._tap`, in NFM,
 USB/LSB and AM: `CARRIER_MODES`) and feeds it the audio; `with_decoder` /
 `carried_decoder` keep it across mode changes. A spec saved with mode SSTV loads as USB +
-SSTV.
+SSTV. SSTV starts a picture on its VIS or, joined under way, on its line syncs
+(`find_sync_train`: their period names the mode); the leader's or the syncs' measured tone
+gives the mistune, taken off every tone; ten lines without a sync end a picture.
 
 All demodulators inherit from `radio/demodulators/__init__.py:Demodulator`. The base class owns the `_audio_batches` buffer and provides `_emit_audio(samples, sample_rate, timestamp, *, stereo=False)` and `get_audio()`. Subclass `__init__` must call `super().__init__()`; subclass `reset()` should call `super().reset()` to clear the buffer.
 
