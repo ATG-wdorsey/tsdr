@@ -404,6 +404,14 @@ Tests use real recorded IQ samples stored as `.cu8.zst` in `tests/samples/`. All
 
 Tests cover DSP primitives (CostasLoop, MuellerMuller, FMDiscriminator), decoder correctness (RDS group decoding, FLEX sync/BCH/frame decode), demodulator output (WFM stereo detection), and signal processing diagnostics (chunk boundary artifacts, AGC behavior, resampling edge effects).
 
+**Scope.** Regression tests are a judgment call, for critical or frequently called code: DSP, demodulators,
+decoders end to end on recordings, the engine and its workers, device data paths, persistence, SEARCH's
+decisions, crash guards. Don't test UI rendering or layout, console conveniences or minor changes: code review
+covers those, and their failures are visible and cheap. Per-stage tests written while developing a decoder are
+scaffolding: once it decodes its recording end to end, keep that test and the FEC/CRC checks against reference
+vectors. Decode a recording once per module (a module-scoped fixture) and assert on the result. Lab instruments
+are never part of the suite.
+
 DSP building blocks in `radio.dsp` (CostasLoop, MuellerMuller, FMDiscriminator) are shared across decoders. New decoders should reuse these rather than reimplementing timing recovery, carrier tracking, or FM discrimination.
 
 ## Developing Decoders
