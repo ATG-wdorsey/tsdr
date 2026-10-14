@@ -1013,9 +1013,11 @@ class StreamingPolyphaseResampler:
         h_padded = np.zeros(n_padded, dtype=np.float32)
         h_padded[: len(h_scaled)] = h_scaled
 
-        # Build polyphase bank: poly_bank[phase, tap]
+        # Build polyphase bank: poly_bank[phase, tap]. Phase p's branch is h[p], h[p + up],
+        # h[p + 2 up], ... for the newest input sample back to the oldest; the kernel walks
+        # its window oldest first, so each branch is stored reversed.
         taps_per_phase = n_padded // up
-        self._poly_bank = np.ascontiguousarray(h_padded.reshape(taps_per_phase, up).T)
+        self._poly_bank = np.ascontiguousarray(h_padded.reshape(taps_per_phase, up).T[:, ::-1])
         self._taps_per_phase = taps_per_phase
 
         # Per-channel state
