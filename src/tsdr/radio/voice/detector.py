@@ -6,9 +6,11 @@ project on real over-the-air audio demodulated by tsdr (2 m, 70 cm, VHF/UHF
 land mobile, NOAA, airband AM), labeled by a large audio classifier (PANNs
 Cnn14) and checked against the owner's listening; weak-signal copies of real
 transmissions (receiver noise added to their IQ) and synthetic data, tones,
-digital voice and SSTV as not voice. On the owner's labels it separates voice
-from not voice by 3 s after key-up (AUC 0.996; only speech that starts later is
-missed) at about 3 ms of CPU per second of audio.
+digital voice, SSTV, key-up bursts, quiet open microphones and AM noise as not
+voice. On the owner's labels it separates voice from not voice by 3 s after
+key-up (AUC 0.994; only speech that starts later is missed; 0.974 and 0.996 on
+two sets of hard cases the owner labeled) at about 3 ms of CPU per second of
+audio.
 
 VoiceStream frames a transmission's audio into log-mel frames as it arrives
 (aligned to the transmission's first sample, as in training) and scores the
@@ -31,7 +33,7 @@ THRESHOLD = 0.5  # P(speech) at or above which a window is speech
 FIRST_S = 1.0
 HOP_S = 0.5
 
-_CONSTANTS = ("fs", "frame", "hop", "n_mels", "f_lo", "f_hi", "win_frames")
+_CONSTANTS = ("fs", "frame", "hop", "n_mels", "f_lo", "f_hi", "win_frames", "norm_floor")
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,7 @@ def load_model(path: Path = MODEL) -> VoiceNet:
     """The network of `path`; ValueError if it was trained on another front end."""
     with np.load(path) as m:
         for name in _CONSTANTS:
-            if float(m[name]) != float(getattr(frontend, name.upper())):
+            if name not in m.files or float(m[name]) != float(getattr(frontend, name.upper())):
                 raise ValueError(f"{path} was trained on another front end ({name})")
     return VoiceNet(path)
 

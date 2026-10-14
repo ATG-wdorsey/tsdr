@@ -19,7 +19,15 @@ from tsdr.radio.voice.detector import (
     detector,
     load_model,
 )
-from tsdr.radio.voice.frontend import FS, HOP, N_MELS, WIN_FRAMES, logmel, normalize
+from tsdr.radio.voice.frontend import (
+    FS,
+    HOP,
+    N_MELS,
+    NORM_FLOOR,
+    WIN_FRAMES,
+    logmel,
+    normalize,
+)
 
 SAMPLES = Path(__file__).parents[1] / "samples"
 
@@ -78,6 +86,24 @@ def test_a_model_for_another_front_end_is_refused(tmp_path: Path) -> None:
     np.savez(path, **arrays)
     with pytest.raises(ValueError, match="n_mels"):
         load_model(path)
+
+
+def test_a_model_without_the_normalization_floor_is_refused(tmp_path: Path) -> None:
+    with np.load(MODEL) as m:
+        arrays = {k: m[k] for k in m.files if k != "norm_floor"}
+    path = tmp_path / "old.npz"
+    np.savez(path, **arrays)
+    with pytest.raises(ValueError, match="norm_floor"):
+        load_model(path)
+
+
+def test_a_quiet_window_keeps_its_level() -> None:
+    rng = np.random.default_rng(5)
+    loud = logmel(0.03 * rng.normal(size=2 * FS))[:WIN_FRAMES]  # -30 dBFS
+    quiet = logmel(0.0003 * rng.normal(size=2 * FS))[:WIN_FRAMES]  # -70 dBFS
+    assert abs(normalize(loud).mean()) < 1e-6
+    assert normalize(quiet).mean() == pytest.approx(quiet.mean() - NORM_FLOOR, abs=1e-5)
+    assert normalize(quiet).mean() < -1.5
 
 
 def test_stream_scores_the_same_windows_as_framing_it_all_at_once() -> None:

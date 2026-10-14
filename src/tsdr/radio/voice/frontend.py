@@ -4,9 +4,12 @@ Audio at 8 kHz; frames of 256 samples (32 ms, Hann) every 128 (16 ms); power
 spectrum -> 32 mel bands (HTK scale, 100-3800 Hz, triangular, area-normalized)
 -> log10. A window of WIN_FRAMES frames (2 s) is normalized by subtracting its
 mean over time and bands, so the detector does not depend on the audio level
-(NFM audio follows the deviation setting and the transmitter). The model was
-trained on exactly these computations: voice.npz carries the constants and the
-detector refuses a model made for others.
+(NFM audio follows the deviation setting and the transmitter), but by no less
+than NORM_FLOOR (the mean of white noise at -50 dBFS): a quieter window keeps
+its low level, so a dead carrier or faint room noise is not stretched into
+something speech-like. The model was trained on exactly these computations:
+voice.npz carries the constants and the detector refuses a model made for
+others.
 """
 
 import numpy as np
@@ -17,6 +20,7 @@ N_MELS = 32
 F_LO, F_HI = 100.0, 3800.0
 WIN_S = 2.0
 WIN_FRAMES = int(round((WIN_S * FS - FRAME) / HOP)) + 1  # 124
+NORM_FLOOR = -3.1  # log10 mel power: white noise at -50 dBFS
 
 
 def _mel(f: np.ndarray) -> np.ndarray:
@@ -56,5 +60,5 @@ def logmel(a8: np.ndarray) -> np.ndarray:
 
 
 def normalize(win: np.ndarray) -> np.ndarray:
-    """A window of log-mel frames, level-normalized."""
-    return win - win.mean()
+    """A window of log-mel frames, level-normalized down to NORM_FLOOR."""
+    return win - max(float(win.mean()), NORM_FLOOR)

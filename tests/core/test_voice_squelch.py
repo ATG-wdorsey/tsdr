@@ -18,6 +18,7 @@ from tsdr.core.sdr.pipeline.stages.denoiser_stage import DenoiserStage
 from tsdr.core.sdr.samples_batch import SamplesBatch
 from tsdr.core.sdr.search import SearchConfig
 from tsdr.core.sdr.voice_squelch import DECIDE_S, LATE_S, VoiceSquelch
+from tsdr.radio.demodulators.am import AMDemodulator
 from tsdr.radio.demodulators.nfm import NarrowbandFMDemodulator
 from tsdr.radio.voice.detector import Classification
 from tsdr.radio.voice.frontend import FS
@@ -149,16 +150,35 @@ def test_windows_are_scored_every_half_second_from_one_second(fake: list[_FakeSt
     assert fake[-1].times == [1.0, 1.5, 2.0, 2.5, 3.0]
 
 
-def test_hiss_and_a_dead_carrier_are_not_voice() -> None:
+def _demodulated_noise(demod_class: type, seconds: float) -> np.ndarray:
+    """What a demodulator plays with its squelch open on noise alone (no carrier)."""
     rng = np.random.default_rng(4)
-    for audio in (
-        0.3 * rng.normal(size=int((LATE_S + 1) * RATE)),
-        np.zeros(int((LATE_S + 1) * RATE)),
-    ):
-        vsq = _vsq()
-        for i in range(0, len(audio), int(0.05 * RATE)):
-            vsq.feed(audio[i : i + int(0.05 * RATE)].astype(np.float32), RATE, True)
-        assert vsq.verdict_for(1, DIAL) == "not_voice"
+    n = int(seconds * RATE)
+    iq = (0.01 * (rng.normal(size=n) + 1j * rng.normal(size=n))).astype(np.complex64)
+    demod = demod_class(sample_rate=RATE)
+    out = []
+    for i in range(0, n, 3072):
+        demod.demodulate(iq[i : i + 3072], 0.0)
+        out += [b.samples for b in demod.get_audio()]
+    return np.concatenate(out).astype(np.float32)
+
+
+@pytest.mark.parametrize(
+    "audio",
+    [
+        pytest.param(
+            lambda: _demodulated_noise(NarrowbandFMDemodulator, LATE_S + 1), id="nfm-noise"
+        ),
+        pytest.param(lambda: _demodulated_noise(AMDemodulator, LATE_S + 1), id="am-noise"),
+        pytest.param(lambda: np.zeros(int((LATE_S + 1) * RATE), np.float32), id="dead-carrier"),
+    ],
+)
+def test_noise_and_a_dead_carrier_are_not_voice(audio) -> None:
+    vsq = _vsq()
+    a = audio()
+    for i in range(0, len(a), int(0.05 * RATE)):
+        vsq.feed(a[i : i + int(0.05 * RATE)], RATE, True)
+    assert vsq.verdict_for(1, DIAL) == "not_voice"
 
 
 def test_weather_radio_is_voice() -> None:
