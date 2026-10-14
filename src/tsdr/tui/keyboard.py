@@ -160,6 +160,8 @@ class KeyboardMixin(MixinBase):
                 self._lock_out_channel(permanent=True)
             case Action.SEARCH_UNLOCK:
                 self._unlock()
+            case Action.SEARCH_VSQ:
+                self._toggle_vsq()
             case Action.BANDWIDTH_UP:
                 self._adjust_channel_bandwidth(1)
             case Action.BANDWIDTH_DOWN:

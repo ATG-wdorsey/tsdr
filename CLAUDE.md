@@ -294,13 +294,36 @@ only on local peaks of the step-wide locating levels (`local_peaks`, with the
 grid channel past each end measured too): a strong signal's leakage into the
 channels beside it slopes down from its center, so its edges, locked out or
 not, are never targets. The
-squelch threshold is the hold threshold. SEARCH never moves the hardware:
+squelch holds the channel: `SearchStage` passes the demodulator's squelch state
+(`SDRDeviceContext.demod_status`, what the listener hears) to the controller,
+which holds while it is open; one unaveraged FFT frame of noise reads about 1 dB
+either side of its mean, too noisy to decide (the threshold decides only before
+the demodulator reports). SEARCH never moves the hardware:
 starting it selects free tuning, it skips channels within the LO offset of the
 LO, the engine drops a jump that would recenter, and any other dial move, a
 recenter, a sample rate change, center tuning, a non-narrowband demodulator,
 turning the squelch off or stopping the device stops it. The spectrum shades the range. Starting, stopping and lockouts live in `core/search_control.py`;
 lasting lockouts are memories tagged `lockout` (the engine follows
 `MemoriesChangedEvent`).
+
+VSQ, the voice squelch (`core/sdr/voice_squelch.py`; `SearchConfig.voice_squelch`,
+`v`, `search --vsq`), lets SEARCH leave transmissions without speech.
+`DenoiserStage` feeds it the audio before RNNoise, resampled to 8 kHz, and
+mutes the output on a "not voice" verdict. `radio/voice` scores the last 2 s
+of the transmission every 0.5 s from 1 s in the pipeline thread (`VoiceStream`:
+log-mel frames into a small CNN, numpy only, weights in `voice.npz`, about
+1.3 ms a window; `search_control` loads the model when VSQ is turned on). A
+verdict belongs to one transmission (squelch open; a closure shorter than
+`GAP_S`, 0.5 s, is a fade within it) on one dial channel of one run: a speech
+window makes it "voice"; none by `DECIDE_S` (3 s) makes it
+"not_voice", or by `LATE_S` (5 s) if the last second at `DECIDE_S` was a quiet
+carrier (below `QUIET_DB`: a late talker). `SearchController.update(voice=...)`
+treats "not_voice" as a closed squelch, leaving the channel disarmed until its
+signal drops. The model comes from the vdetect project (real over-the-air
+audio demodulated by tsdr); a model for another front end is refused, and
+`voice.npz` carries reference logits its test checks the numpy port against.
+`SDRDeviceContext.voice_squelch` carries it between the two pipelines and to
+the UI (meter label `VSQ`, the `VSQ` badge, a Stats row).
 
 ## Analog filter
 

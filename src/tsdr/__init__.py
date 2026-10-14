@@ -1,5 +1,13 @@
+import os
 import platform
 import sys
+
+# OpenBLAS (numpy's BLAS) keeps a worker per core that spins after each matrix
+# product. tsdr's only products on the stream (the voice detector's small
+# matrices) run as fast on one thread, and the spinning workers take the cores
+# the pipeline and audio threads need. Read once, when numpy loads (numba
+# imports it below); a user's own setting wins.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 if len(sys.argv) <= 1:
     print("Starting TSDR (this may take a moment on first run)...", file=sys.stderr, flush=True)

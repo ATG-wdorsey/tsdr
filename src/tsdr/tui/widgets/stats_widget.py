@@ -13,11 +13,13 @@ from tsdr.core.events.events import (
 )
 from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import get_engine
+from tsdr.core.sdr.voice_squelch import VsqStatus
 from tsdr.core.units import format_hz
 from tsdr.devices import NetworkDeviceParams
 from tsdr.devices.base import HasJitterBuffer, SpectrumViewStatus
 from tsdr.tui.commands._format import format_rate
 from tsdr.tui.widgets.section_panel import Section, SectionPanel
+from tsdr.tui.widgets.snr_widget import VSQ_COLOR
 
 if TYPE_CHECKING:
     from tsdr.devices._jitter_buffer import JitterBuffer
@@ -88,6 +90,8 @@ class StatsWidget(SectionPanel):
         self._level_dbfs: float | None = None
         self._audio_underflows: int = 0
         self._audio_drops: int = 0
+        self._denoise = False
+        self._vsq: VsqStatus | None = None
 
     def on_mount(self) -> None:
         self._read_config()
@@ -138,6 +142,8 @@ class StatsWidget(SectionPanel):
         self._requested_sample_rate = device.config.sample_rate
         profile = device.demod_profile
         self._channel_bandwidth = profile.channel_bandwidth if profile else None
+        self._denoise = engine.config.denoise
+        self._vsq = device.voice_squelch.status
 
     def update_stats(self, event: StatsUpdateEvent) -> None:
         self.current_event = event
@@ -146,6 +152,7 @@ class StatsWidget(SectionPanel):
         device = get_engine().devices.get(self._device_id or "")
         if device is not None:
             self._analog_bandwidth = device.analog_bandwidth_hz
+            self._vsq = device.voice_squelch.status
         self.refresh()
 
     def _update_level(self, event: StatsUpdateEvent) -> None:
@@ -329,7 +336,24 @@ class StatsWidget(SectionPanel):
         lines.append(_row("Underruns:", f"[{ur_color}]{self._audio_underflows}[/{ur_color}]"))
         if self._audio_drops > 0:
             lines.append(_row("Drops:", f"[red]{self._audio_drops}[/red]"))
+        if event.stereo:
+            return lines
+        lines.append(_row("Denoise:", "[green]on[/green]" if self._denoise else "[dim]off[/dim]"))
+        lines.append(self._vsq_line())
         return lines
+
+    def _vsq_line(self) -> str:
+        """VSQ (`v` while SEARCH runs) and the detector's last label."""
+        vsq = self._vsq
+        if vsq is None:
+            return _row("VSQ:", "[dim]off[/dim]")
+        verdict = {
+            "voice": "[green]voice[/green]",
+            "not_voice": f"[{VSQ_COLOR}]not voice[/{VSQ_COLOR}]",
+        }.get(vsq.verdict, f"[white]listening[/white] [dim]{vsq.carrier_s:.1f}s[/dim]")
+        if vsq.last is not None:
+            verdict += f" [dim]· {vsq.last.label} {vsq.last.probability:.2f}[/dim]"
+        return _row("VSQ:", verdict)
 
     def _network_lines(self) -> list[str]:
         lines = ["[bold]Network:[/bold]"]

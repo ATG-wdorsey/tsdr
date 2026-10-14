@@ -17,6 +17,7 @@ from tsdr.core.sdr.search import (
     locate_levels,
     signal_peaks,
 )
+from tsdr.core.sdr.voice_squelch import Verdict
 from tsdr.radio.dsp.squelch import iq_power_db
 
 RATE = 10e6
@@ -96,6 +97,8 @@ class _Run:
         self.lo_hz = lo_hz
         self.lo_exclusion = lo_exclusion
         self.status = None
+        self.voice: dict[float, Verdict] = {}  # VSQ's verdict per channel (none = VSQ off)
+        self.squelch_open: bool | None = None  # the demodulator's; None = the level decides
 
     def level(self, f: float) -> float:
         return self.signals.get(round(f), NOISE)
@@ -114,10 +117,12 @@ class _Run:
                 tuned_hz=self.tuned,
                 current_db=self.level(self.tuned),
                 hold_db=SQUELCH,
+                squelch_open=self.squelch_open,
                 bandwidth_hz=BW,
                 lo_hz=self.lo_hz,
                 lo_exclusion_hz=self.lo_exclusion,
                 outer_locate_db=outer,
+                voice=self.voice.get(self.tuned),
             )
             if target is not None:
                 self.jumps.append(target)
@@ -261,6 +266,51 @@ def test_max_dwell_moves_on_and_skips_the_old_channel_until_it_drops() -> None:
     run.signals[round(144.5e6)] = -60.0  # a new transmission
     run.tick(0.3)
     assert run.jumps == [144.5e6, 145.5e6, 144.5e6]
+
+
+def test_not_voice_starts_the_hold_under_a_carrier_then_moves_on() -> None:
+    run = _Run()
+    run.signals[round(144.5e6)] = -60.0
+    run.signals[round(145.5e6)] = -65.0
+    run.voice[144.5e6] = "listening"
+    run.tick(3.0)
+    assert run.jumps == [144.5e6]
+    assert run.status.state == "holding" and run.status.voice == "listening"
+    run.voice[144.5e6] = "not_voice"
+    run.tick(1.9)  # the carrier is up, but the hold counts down: time to lock it out
+    assert run.jumps == [144.5e6]
+    assert run.status.voice == "not_voice" and 0.0 < run.status.hold_left_s < 0.2
+    run.tick(0.3)
+    assert run.jumps == [144.5e6, 145.5e6]
+
+
+def test_a_channel_left_as_not_voice_waits_until_its_signal_drops() -> None:
+    run = _Run()
+    run.signals[round(144.5e6)] = -60.0
+    run.voice[144.5e6] = "not_voice"
+    run.tick(2.5)
+    assert run.status.state == "waiting"  # nowhere else to go: it stays, muted
+    run.signals[round(145.5e6)] = -65.0
+    run.tick(0.3)
+    assert run.jumps == [144.5e6, 145.5e6]
+    del run.signals[round(145.5e6)]
+    run.tick(3.0)  # 144.5 is still on: not taken back
+    assert run.jumps == [144.5e6, 145.5e6]
+    del run.signals[round(144.5e6)]
+    run.tick(0.2)
+    run.signals[round(144.5e6)] = -60.0  # a new transmission
+    run.tick(0.3)
+    assert run.jumps == [144.5e6, 145.5e6, 144.5e6]
+
+
+def test_a_voice_verdict_holds_like_the_squelch() -> None:
+    run = _Run()
+    run.signals[round(144.5e6)] = -60.0
+    run.signals[round(145.5e6)] = -65.0
+    run.voice[144.5e6] = "voice"
+    run.tick(10.0)
+    assert run.jumps == [144.5e6]
+    assert run.status.state == "holding"
 
 
 def test_a_requested_jump_is_not_repeated_while_the_engine_applies_it() -> None:
@@ -442,3 +492,35 @@ def test_the_locating_levels_pick_among_channels_that_read_alike() -> None:
         controller.update(t, config, channels, levels, **kwargs)[0] for t in (0.0, 0.05, 0.1)
     ]
     assert targets[-1] == 145.5e6
+
+
+def test_noise_at_the_squelch_does_not_hold_a_channel_whose_squelch_is_shut() -> None:
+    # One unaveraged FFT frame per update reads a 10 kHz channel of noise with
+    # about 1 dB of scatter: noise 0.75 dB under the squelch reads above it in a
+    # quarter of the frames, which kept restarting the hold on an empty airband
+    # channel. The demodulator's squelch (averaged, opening 3 dB higher) stays
+    # shut there, and it decides.
+    rng = np.random.default_rng(0)
+    run = _Run()
+    run.signals[round(144.5e6)] = -60.0
+    run.tick(0.2)
+    run.signals[round(145.5e6)] = -60.0
+    run.squelch_open = False
+    for _ in range(int(4.0 / 0.05)):
+        run.signals[round(144.5e6)] = SQUELCH - 0.75 + rng.normal(scale=1.06)
+        run.tick(0.05)
+    assert run.jumps == [144.5e6, 145.5e6]
+
+
+def test_holds_while_the_squelch_is_open_even_if_a_frame_reads_low() -> None:
+    run = _Run()
+    run.signals[round(144.5e6)] = -60.0
+    run.tick(0.2)
+    run.signals[round(145.5e6)] = -50.0
+    run.signals[round(144.5e6)] = NOISE  # the FFT frame misses it; the squelch hears it
+    run.squelch_open = True
+    run.tick(5.0)
+    assert run.jumps == [144.5e6]
+    run.squelch_open = False
+    run.tick(2.2)
+    assert run.jumps == [144.5e6, 145.5e6]

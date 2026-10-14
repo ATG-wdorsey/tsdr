@@ -12,6 +12,7 @@ from tsdr.core.sdr.config import DeviceConfig, DeviceConfigChanges, PipelineConf
 from tsdr.core.sdr.pipeline.pipeline import ProcessingPipeline
 from tsdr.core.sdr.pipeline.stage_factory import create_stage, stage_type_of
 from tsdr.core.sdr.pipeline.stages.demodulator_stage import DemodulatorStage
+from tsdr.core.sdr.voice_squelch import VoiceSquelch
 from tsdr.core.sdr.workers.io_worker import IOWorker
 from tsdr.core.sdr.workers.pipeline_worker import PipelineWorker
 from tsdr.core.tracing import traced
@@ -152,6 +153,9 @@ class SDRDeviceContext:
 
         # Stereo status (set by demodulators)
         self.stereo: bool | None = None
+
+        # VSQ, the voice squelch for SEARCH (fed and read by the pipeline worker)
+        self.voice_squelch = VoiceSquelch(device_id)
 
         # Retained decoder output (written by pipeline worker, read by UI thread)
         self.decoder_history: deque[DecodedMessage] = deque(maxlen=DECODER_HISTORY_MAX)

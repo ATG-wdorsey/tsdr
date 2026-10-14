@@ -136,6 +136,8 @@ class SearchStage:
         # Capture time (0.0 = not stamped, as in tests). Clock sync can step it;
         # a step only shortens or lengthens one hold or attack.
         now = data.capture_utc_s if data.capture_utc_s > 0.0 else clock_sync.now_utc_seconds()
+        demod = context.device_context.demod_status
+        squelch_open = demod.squelch_open if demod is not None else None
         target, status = self._controller.update(
             now,
             search,
@@ -144,11 +146,13 @@ class SearchStage:
             tuned_hz=tuned,
             current_db=float(levels[-1]),
             hold_db=channel.squelch_db,
+            squelch_open=squelch_open,
             bandwidth_hz=channel.bandwidth_hz,
             lo_hz=data.center_frequency,
             lo_exclusion_hz=abs(lo_offset),
             locate_db=locate,
             outer_locate_db=outer,
+            voice=context.device_context.voice_squelch.verdict_for(search.run, tuned),
         )
         device_id = context.device_context.device_id
         if target is not None:
@@ -165,7 +169,8 @@ class SearchStage:
         last = self._last_status
         if (
             last is None
-            or (status.state, status.channel_hz) != (last.state, last.channel_hz)
+            or (status.state, status.channel_hz, status.voice)
+            != (last.state, last.channel_hz, last.voice)
             or now - self._status_at >= _STATUS_INTERVAL_S
         ):
             self._last_status = status

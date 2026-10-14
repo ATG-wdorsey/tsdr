@@ -17,6 +17,8 @@ from typing import Literal
 
 import numpy as np
 
+from tsdr.core.sdr.voice_squelch import Verdict
+
 LOCKOUT_TAG = "lockout"
 DEFAULT_HOLD_S = 2.0
 # Without a trigger set, SEARCH stops on channels this far above the squelch.
@@ -41,6 +43,7 @@ class SearchConfig:
     trigger_db: float | None = None  # None = TRIGGER_ABOVE_SQUELCH_DB over the squelch, live
     hold_s: float = DEFAULT_HOLD_S
     max_dwell_s: float | None = None  # None = unlimited
+    voice_squelch: bool = False  # VSQ: transmissions without speech are let go
     lockouts: frozenset[float] = frozenset()  # this session's, Hz
     memory_lockouts: frozenset[float] = frozenset()  # memories tagged LOCKOUT_TAG, Hz
     run: int = 0  # bumped by each start, so a jump requested by an earlier run is dropped
@@ -169,6 +172,7 @@ class SearchStatus:
     level_db: float
     hold_left_s: float
     active: int  # channels above the trigger
+    voice: Verdict | None = None  # VSQ's verdict on the dial's transmission; None = VSQ off
 
 
 def channel_powers_db(
@@ -223,7 +227,8 @@ class SearchController:
         self._arrived_at = 0.0
         self._last_open = -math.inf
         self._heard = False
-        # Channels left at the maximum dwell: not eligible until they drop below the hold.
+        # Channels left at the maximum dwell or as not voice (VSQ): not eligible
+        # until they drop below the hold.
         self._disarmed: set[float] = set()
         self._pending: float | None = None
         self._pending_at = 0.0
@@ -238,23 +243,33 @@ class SearchController:
         tuned_hz: float,
         current_db: float,
         hold_db: float,  # the squelch threshold
+        squelch_open: bool | None = None,  # the demodulator's squelch; None = unknown
         bandwidth_hz: float,
         lo_hz: float,
         lo_exclusion_hz: float,
         locate_db: np.ndarray | None = None,
         outer_locate_db: tuple[float, float] = (-np.inf, -np.inf),
+        voice: Verdict | None = None,
     ) -> tuple[float | None, SearchStatus]:
         """Returns the channel to jump to (or None) and the status. `locate_db`
         (levels over locating_bandwidth) picks among eligible channels, which
         must be local peaks of it (`outer_locate_db`: the grid channels just
         past each end): SEARCH stops on a signal's center, never on the edge of
-        a strong signal, locked out or not."""
+        a strong signal, locked out or not. The dial's channel is held while
+        `squelch_open` (what the listener hears: the squelch averages the
+        channel and opens 3 dB over its threshold); a single FFT frame of
+        noise reads about 1 dB either side of its mean, so `current_db`
+        against `hold_db` decides only while the squelch state is unknown.
+        `voice` is VSQ's verdict on the dial's transmission (None = VSQ off):
+        "not_voice" closes the squelch for the hold, and SEARCH leaves the
+        channel disarmed."""
         if not np.array_equal(channels_hz, self._channels):
             self._channels = channels_hz
             self._above_since = np.full(len(channels_hz), np.nan)
         trigger_db = config.trigger_for(hold_db)
         hold_db = min(hold_db, trigger_db)
-        is_open = current_db >= hold_db
+        is_open = squelch_open if squelch_open is not None else current_db >= hold_db
+        is_open = is_open and voice != "not_voice"
 
         if tuned_hz != self._current:
             # Within a run the dial moves only by SEARCH's jumps and `[` / `]`
@@ -296,7 +311,7 @@ class SearchController:
         waiting_on_jump = self._pending is not None and now - self._pending_at < _PENDING_TIMEOUT_S
         if (released or dwelt) and not waiting_on_jump and eligible.any():
             target = float(channels_hz[np.argmax(np.where(eligible, pick, -np.inf))])
-            if dwelt and not released:
+            if (dwelt and not released) or voice == "not_voice":
                 self._disarmed.add(tuned_hz)
             self._pending = target
             self._pending_at = now
@@ -309,5 +324,7 @@ class SearchController:
         else:
             state = "waiting" if self._heard else "searching"
             hold_left = 0.0
-        status = SearchStatus(state, tuned_hz, current_db, hold_left, int(np.count_nonzero(above)))
+        status = SearchStatus(
+            state, tuned_hz, current_db, hold_left, int(np.count_nonzero(above)), voice
+        )
         return target, status

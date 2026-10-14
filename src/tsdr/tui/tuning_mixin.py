@@ -31,6 +31,7 @@ from tsdr.core.search_control import (
     search_jump,
     set_search_edge,
     set_search_step,
+    set_voice_squelch,
     start_search,
     stop_search,
     unlock,
@@ -246,6 +247,18 @@ class TuningMixin(MixinBase):
             self.show_status(f"Dropped {result.session} session lockout{plural}")
         else:
             self.show_status("No session lockouts to drop")
+
+    def _toggle_vsq(self) -> None:
+        """`v`: VSQ, SEARCH skipping transmissions without speech."""
+        device = self._focused()
+        if device is None:
+            return
+        try:
+            on = set_voice_squelch(device.device_id)
+        except SDRException as e:
+            self._show_error(str(e))
+            return
+        self.show_status("VSQ on: SEARCH skips transmissions without speech" if on else "VSQ off")
 
     def _center_view_on_dial(self) -> None:
         device = self._focused()

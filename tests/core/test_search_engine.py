@@ -22,6 +22,7 @@ from tsdr.core.events.events import (
 from tsdr.core.landmarks import next_target
 from tsdr.core.memories import get_memory_store, init_memory_store
 from tsdr.core.sdr.config import DeviceConfig
+from tsdr.core.sdr.datatypes import DemodStatus
 from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import SDREngine
 from tsdr.core.sdr.exceptions import SDRException
@@ -312,6 +313,41 @@ def test_the_stage_finds_a_carrier_and_the_engine_tunes_to_it(
     assert config.search == search
     assert events[-1].status.channel_hz == carrier
     assert events[-1].status.state == "holding"
+
+
+def test_the_stage_holds_while_the_demodulators_squelch_is_open(
+    engine: SDREngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hold follows the squelch the listener hears: frames of the channel
+    that read above the threshold do not hold it once the squelch has shut."""
+    start_search("pluto", trigger_db=-40.0, hold_s=0.5)
+    context = engine.devices["pluto"]
+    squelch = {"open": False}
+    monkeypatch.setattr(
+        type(context), "demod_status", property(lambda _: DemodStatus(squelch_open=squelch["open"]))
+    )
+    stage = SearchStage(context.config)
+    pipeline_context = PipelineContext(
+        device_context=context, event_bus=engine.event_bus, config=engine.config
+    )
+    first, second = 147.0e6, 145.0e6
+    t = [1000.0]
+
+    def feed(seconds: float, tones: dict[float, float]) -> None:
+        for _ in range(round(seconds / 0.05)):
+            stage.on_config_change(context.config)
+            stage.process(_batch(context.config, t[0], tones), pipeline_context)
+            t[0] += 0.05
+
+    feed(0.3, {first: -30.0})
+    assert _config(engine).tuned_frequency == first
+    squelch["open"] = True
+    above_squelch = audio_channel(context.config).squelch_db + 3.0
+    feed(1.0, {second: -30.0})  # the frames miss the first channel
+    assert _config(engine).tuned_frequency == first  # its squelch is open
+    squelch["open"] = False
+    feed(1.0, {first: above_squelch, second: -30.0})
+    assert _config(engine).tuned_frequency == second
 
 
 def test_the_stage_is_idle_without_search(engine: SDREngine) -> None:

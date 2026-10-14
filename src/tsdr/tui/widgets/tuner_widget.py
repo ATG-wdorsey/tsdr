@@ -35,7 +35,7 @@ from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import format_hz
 from tsdr.tui.commands._format import format_rate
 from tsdr.tui.model.store import get_ui_store
-from tsdr.tui.widgets.snr_widget import SNRWidget
+from tsdr.tui.widgets.snr_widget import VSQ_COLOR, SNRWidget
 
 Half = Literal["top", "bottom"]
 
@@ -302,13 +302,17 @@ _SEARCH_BADGES: dict[SearchState, str] = {
     "holding": "[black on green] HOLD [/]",
     "waiting": "[black on cyan] WAIT [/]",
 }
+_VSQ_BADGE = f"[black on {VSQ_COLOR}] VSQ [/]"
 
 
 def _search_lines(status: SearchStatus | None, lockouts: int = 0) -> tuple[str, str]:
     """The state column's last two lines while SEARCH runs: state, and the
-    channel level with the number of lockouts in force (session and saved)."""
+    channel level with the number of lockouts in force (session and saved).
+    A hold that VSQ cut short (not voice, muted) shows VSQ for HOLD."""
     badge = _SEARCH_BADGES["searching" if status is None else status.state]
     if status is not None and status.state == "holding":
+        if status.voice == "not_voice":
+            badge = _VSQ_BADGE
         badge += f" [dim]{status.hold_left_s:.1f}s[/dim]"
     known = status is not None and status.level_db != float("-inf")
     level = f"[bold]{status.level_db:.0f}[/bold]" if status is not None and known else ""
@@ -411,6 +415,7 @@ class TunerWidget(Vertical):
             meter.update_squelch(None, None)
 
         self._render_state_column(device.active_mode, float(config.tuned_frequency), config.search)
+        self._update_vsq(config.search)
 
     def _render_state_column(
         self, mode: str, freq_hz: float, search: SearchConfig | None = None
@@ -452,10 +457,19 @@ class TunerWidget(Vertical):
         self._search_status = event.status
         config = device.config
         self._render_state_column(device.active_mode, float(config.tuned_frequency), config.search)
+        self._update_vsq(config.search)
 
     def _vol_line(self) -> str:
         vol = f"VOL {int(self._volume * 100)}%"
-        return f"[green]{vol}[/green]" if self._denoise else vol
+        return f"{vol} [black on green]DN[/black on green]" if self._denoise else vol
+
+    def _update_vsq(self, search: SearchConfig | None) -> None:
+        """VSQ (`v` while SEARCH runs) mutes a transmission it calls not voice."""
+        status = self._search_status
+        self.query_one("#tuner-meter", SNRWidget).update_vsq(
+            search is not None and search.voice_squelch,
+            status is not None and status.voice == "not_voice",
+        )
 
     def update_config(self) -> None:
         self._read_config()

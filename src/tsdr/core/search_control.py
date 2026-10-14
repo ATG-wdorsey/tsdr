@@ -31,6 +31,7 @@ from tsdr.core.sdr.search import (
 from tsdr.core.sdr.tune_policy import fitting_offset, lo_offset_for
 from tsdr.core.tuning import STEP_LADDER, resolve_auto_step
 from tsdr.core.tuning_state import get_tuning_state
+from tsdr.radio.voice.detector import detector
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class SearchSettings:
     trigger_db: float | None = None  # None = follow the squelch (SearchConfig.trigger_for)
     hold_s: float = DEFAULT_HOLD_S
     max_dwell_s: float | None = None
+    voice_squelch: bool = False
     lockouts: set[float] = field(default_factory=set)
 
 
@@ -216,6 +218,7 @@ def start_search(
     hold_s: float | None = None,
     max_dwell_s: float | None = None,
     step_hz: float | None = None,
+    voice_squelch: bool | None = None,
     full_band: bool = False,
 ) -> SearchConfig:
     """Start (or restart) SEARCH. Settings not given are the ones set earlier
@@ -285,6 +288,10 @@ def start_search(
         max_dwell_s = settings.max_dwell_s
     elif max_dwell_s == 0:
         max_dwell_s = None
+    if voice_squelch is None:
+        voice_squelch = settings.voice_squelch
+    if voice_squelch:
+        _load_detector()
 
     memory_lockouts = frozenset(
         float(m.frequency) for m in get_memory_store().find_by_tag(LOCKOUT_TAG)
@@ -300,6 +307,7 @@ def start_search(
         trigger_db=trigger_db,
         hold_s=hold,
         max_dwell_s=max_dwell_s,
+        voice_squelch=voice_squelch,
         lockouts=frozenset(settings.lockouts),
         memory_lockouts=memory_lockouts,
         run=next(_runs),
@@ -316,6 +324,7 @@ def start_search(
     if trigger_given:
         settings.trigger_db = trigger_db
     settings.hold_s, settings.max_dwell_s = hold, max_dwell_s
+    settings.voice_squelch = voice_squelch
     logger.info(
         "search_started device=%s low_hz=%.0f high_hz=%.0f step_hz=%.0f trigger_db=%s "
         "squelch_db=%.1f hold_s=%.1f",
@@ -473,6 +482,31 @@ def unlock(device_id: str) -> Unlocked:
         result.saved,
     )
     return result
+
+
+def set_voice_squelch(device_id: str, on: bool | None = None) -> bool:
+    """Turn VSQ on or off (None: toggle) in the running SEARCH; later runs
+    this session keep it. Returns the new state."""
+    engine = get_engine()
+    search = engine.get_device(device_id).config.search
+    if search is None:
+        raise SDRException("VSQ works while SEARCH runs: start it with /")
+    on = not search.voice_squelch if on is None else on
+    if on:
+        _load_detector()
+    engine.update_device_config(
+        device_id, while_search=search, search=replace(search, voice_squelch=on)
+    )
+    search_settings(device_id).voice_squelch = on
+    return on
+
+
+def _load_detector() -> None:
+    """Load the voice detector here (once; a few ms), not in the pipeline thread."""
+    try:
+        detector()
+    except (OSError, ValueError) as e:
+        raise SDRException(f"VSQ unavailable: {e}") from e
 
 
 def set_search_step(device_id: str, step_hz: float) -> float:
