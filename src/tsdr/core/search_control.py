@@ -529,3 +529,40 @@ def set_search_step(device_id: str, step_hz: float) -> float:
             device_id, while_search=search, search=replace(search, step_hz=step_hz)
         )
     return step_hz
+
+
+class SearchStepFollower:
+    """Keeps a running SEARCH on the tuning step when its channel changes under it:
+    another mode brings back that mode's own step (DMR's 12.5 kHz kept into NFM, whose
+    step was 5 kHz, put SEARCH and `[` / `]` on a 12.5 kHz grid), and a narrower channel
+    can leave the step coarser than it (grid_step). A new run's step (`search --step`)
+    and `s` / `S` during a run (set_search_step) are left as they are."""
+
+    def __init__(self) -> None:
+        self._seen: dict[str, tuple[int, str, float]] = {}
+
+    def check(self) -> None:
+        """Call after any device config change (all devices: changes are coalesced)."""
+        engine = get_engine()
+        for device_id, context in list(engine.devices.items()):
+            search = context.config.search
+            channel = audio_channel(context.config)
+            if search is None or channel is None:
+                self._seen.pop(device_id, None)
+                continue
+            seen = (search.run, channel.mode, channel.bandwidth_hz)
+            before = self._seen.get(device_id)
+            self._seen[device_id] = seen
+            if before is None or before[0] != search.run or before == seen:
+                continue
+            step = search_step(context, channel.mode)
+            if step != search.step_hz:
+                engine.update_device_config(
+                    device_id, while_search=search, search=replace(search, step_hz=step)
+                )
+                logger.info(
+                    "search_step_followed device=%s mode=%s step_hz=%.0f",
+                    device_id,
+                    channel.mode,
+                    step,
+                )

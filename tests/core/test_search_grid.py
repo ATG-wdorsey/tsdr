@@ -69,6 +69,23 @@ def test_a_coarse_step_chosen_during_search_gives_way_too(engine: SDREngine) -> 
     assert engine.devices["pluto"].config.search.step_hz == 12_500
 
 
+def test_another_mode_brings_its_own_step_into_search(engine: SDREngine) -> None:
+    """Each mode keeps its tuning step. SEARCH started in DMR (auto: 12.5 kHz on 2 m),
+    then NFM (step 5 kHz) picked: SEARCH and `[` / `]` stayed on the 12.5 kHz grid."""
+    get_tuning_state().set_step("NFM", 5_000)
+    engine.set_audio_demod("pluto", DemodSpec(mode="DMR"))
+    follower = search_control.SearchStepFollower()
+    assert start_search("pluto").step_hz == 12_500
+    follower.check()
+    engine.set_audio_demod("pluto", DemodSpec(mode="NFM"))
+    follower.check()
+    assert engine.devices["pluto"].config.search.step_hz == 5_000
+    follower.check()  # a run's own step (search --step) is kept until the channel changes
+    set_search_step("pluto", 10_000)
+    follower.check()
+    assert engine.devices["pluto"].config.search.step_hz == 10_000
+
+
 def _batch(config: DeviceConfig, t: float, tones: dict[float, float]) -> SamplesBatch:
     n = config.fft_size
     spectrum = np.full(n, -120.0, dtype=np.float32)

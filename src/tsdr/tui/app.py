@@ -22,6 +22,7 @@ from tsdr.core.preferences import (
     restore_tuning_state,
 )
 from tsdr.core.sdr.engine import SDREngine, get_engine
+from tsdr.core.search_control import SearchStepFollower
 from tsdr.core.tracing import log_stats, span
 from tsdr.core.tuning import flush_band_stack_writeback, subscribe_band_stack_writeback
 from tsdr.core.tuning_state import init_tuning_state
@@ -99,6 +100,7 @@ class TSDRApp(
             self._engine_sync = EngineSync(self._store, sdr_engine)
             self._prefs_sync = PrefsSync(self._store, self)
             self._engine_prefs_sync = EnginePrefsSync(sdr_engine, self)
+            self._search_step_follower = SearchStepFollower()
 
             self.event_adapter = TextualEventAdapter(self, sdr_engine.event_bus)
             self.event_adapter.start()

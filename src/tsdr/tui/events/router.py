@@ -16,6 +16,7 @@ from textual import on
 
 from tsdr.core.sdr.datatypes import DemodProfile
 from tsdr.core.sdr.engine import SDREngine
+from tsdr.core.search_control import SearchStepFollower
 from tsdr.core.tracing import span
 from tsdr.tui._mixin_base import MixinBase
 from tsdr.tui.events.engine_prefs_sync import EnginePrefsSync
@@ -81,6 +82,7 @@ class EventRouter(MixinBase):
     _reconciler: Reconciler
     _engine: SDREngine
     _engine_prefs_sync: EnginePrefsSync
+    _search_step_follower: SearchStepFollower
 
     def seed_from_engine(self) -> None:
         """Build initial devices tuple in the store from current engine state.
@@ -165,6 +167,7 @@ class EventRouter(MixinBase):
     @on(ConfigChanged)
     def handle_config_changed(self, _message: ConfigChanged) -> None:
         with span("ui.handle_config_changed"):
+            self._search_step_follower.check()
             for key in ("panel:stats", "spectrum", "tuner"):
                 w = self._reconciler.get(key)
                 if w is not None:

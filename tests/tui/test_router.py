@@ -79,6 +79,7 @@ def _make_router(store: UIStore, reconciler: _FakeReconciler, engine: _FakeEngin
     # EnginePrefsSync needs mark_dirty(); the router calls it from config /
     # pipeline / device / focus handlers. Stub it so we can assert it fired.
     obj._engine_prefs_sync = MagicMock()
+    obj._search_step_follower = MagicMock()
     # show_status / _show_error are bound from MixinBase contract; stub them.
     obj.show_status = MagicMock()
     obj._show_error = MagicMock()
