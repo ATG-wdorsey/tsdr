@@ -18,6 +18,7 @@ last WIN_S of frames every HOP_S from FIRST_S on; before WIN_S of audio, the
 frames so far are repeated to fill the window, as in training.
 """
 
+import zipfile
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -50,12 +51,16 @@ class Classification:
 
 
 def load_model(path: Path = MODEL) -> VoiceNet:
-    """The network of `path`; ValueError if it was trained on another front end."""
-    with np.load(path) as m:
-        for name in _CONSTANTS:
-            if name not in m.files or float(m[name]) != float(getattr(frontend, name.upper())):
-                raise ValueError(f"{path} was trained on another front end ({name})")
-    return VoiceNet(path)
+    """The network of `path`; ValueError if it was trained on another front end, or the
+    file is damaged or lacks an array (a truncated copy, another export's layout)."""
+    try:
+        with np.load(path) as m:
+            for name in _CONSTANTS:
+                if name not in m.files or float(m[name]) != float(getattr(frontend, name.upper())):
+                    raise ValueError(f"{path} was trained on another front end ({name})")
+        return VoiceNet(path)
+    except (zipfile.BadZipFile, EOFError, KeyError) as e:
+        raise ValueError(f"{path} is damaged or incomplete: {e}") from e
 
 
 @cache

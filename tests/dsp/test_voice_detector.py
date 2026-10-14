@@ -100,6 +100,25 @@ def test_a_model_without_the_normalization_floor_is_refused(tmp_path: Path) -> N
         load_model(path)
 
 
+@pytest.mark.parametrize("damage", ["truncated", "empty", "flipped_byte", "missing_array"])
+def test_a_damaged_model_is_refused_not_raised_raw(tmp_path: Path, damage: str) -> None:
+    # `v` turns VSQ on through load_model; anything but OSError/ValueError ended the app.
+    data = MODEL.read_bytes()
+    path = tmp_path / "voice.npz"
+    if damage == "truncated":
+        path.write_bytes(data[: len(data) // 2])
+    elif damage == "empty":
+        path.write_bytes(b"")
+    elif damage == "flipped_byte":
+        i = len(data) // 2
+        path.write_bytes(data[:i] + bytes([data[i] ^ 0xFF]) + data[i + 1 :])
+    else:
+        with np.load(MODEL) as m:
+            np.savez(path, **{k: m[k] for k in m.files if k != "w2"})
+    with pytest.raises(ValueError):
+        load_model(path)
+
+
 def test_a_quiet_window_keeps_its_level() -> None:
     rng = np.random.default_rng(5)
     loud = logmel(0.03 * rng.normal(size=2 * FS))[:WIN_FRAMES]  # -30 dBFS
