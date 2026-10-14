@@ -7,7 +7,8 @@ of the transmission (the squelch open on one dial channel of one SEARCH run)
 every 0.5 s from 1 s. A window the detector calls speech makes it "voice".
 Without one by DECIDE_S it is "not voice", unless the last second was a quiet
 carrier (below QUIET_DB: someone keyed up and has not spoken yet), which gets
-until LATE_S. SearchController then treats the squelch as closed: the hold
+until LATE_S. A squelch closure shorter than GAP_S is a fade within the
+transmission. SearchController then treats the squelch as closed: the hold
 counts down with the audio muted (time to lock the channel out), and SEARCH
 moves on. Speech reopens it.
 """
@@ -34,6 +35,9 @@ logger = logging.getLogger(__name__)
 DECIDE_S = 3.0
 LATE_S = 5.0
 QUIET_DB = -42.0  # dBFS of the demodulated audio over the last second
+# A squelch closure shorter than this is a fade within the transmission (a weak
+# mobile): its speech still counts, and the clock runs on.
+GAP_S = 0.5
 
 Verdict = Literal["listening", "voice", "not_voice"]
 
@@ -58,6 +62,7 @@ class VoiceSquelch:
         self._recent = CircularBuffer(FS, dtype=np.float32)  # the last second, for QUIET_DB
         self._verdict: Verdict = "listening"
         self._carrier = 0  # samples at FS
+        self._closed_s = 0.0  # how long the squelch has been shut
         self._deadline: float | None = None  # when no speech means not voice (set at DECIDE_S)
         self._last: Classification | None = None
 
@@ -94,8 +99,11 @@ class VoiceSquelch:
             return
         if squelch_open is False:
             if self._carrier:
-                self._start_transmission()
+                self._closed_s += len(samples) / sample_rate
+                if self._closed_s >= GAP_S:
+                    self._start_transmission()
             return
+        self._closed_s = 0.0
         if self._resampler is None or sample_rate != self._rate:
             self._resampler = make_rational_resampler(FS, sample_rate)
             self._rate = sample_rate
@@ -132,6 +140,7 @@ class VoiceSquelch:
     def _start_transmission(self) -> None:
         self._verdict = "listening"
         self._carrier = 0
+        self._closed_s = 0.0
         self._deadline = None
         self._recent.clear()
         if self._stream is not None:

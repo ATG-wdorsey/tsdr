@@ -313,8 +313,9 @@ mutes the output on a "not voice" verdict. `radio/voice` scores the last 2 s
 of the transmission every 0.5 s from 1 s in the pipeline thread (`VoiceStream`:
 log-mel frames into a small CNN, numpy only, weights in `voice.npz`, about
 1.3 ms a window; `search_control` loads the model when VSQ is turned on). A
-verdict belongs to one transmission (squelch open) on one dial channel of one
-run: a speech window makes it "voice"; none by `DECIDE_S` (3 s) makes it
+verdict belongs to one transmission (squelch open; a closure shorter than
+`GAP_S`, 0.5 s, is a fade within it) on one dial channel of one run: a speech
+window makes it "voice"; none by `DECIDE_S` (3 s) makes it
 "not_voice", or by `LATE_S` (5 s) if the last second at `DECIDE_S` was a quiet
 carrier (below `QUIET_DB`: a late talker). `SearchController.update(voice=...)`
 treats "not_voice" as a closed squelch, leaving the channel disarmed until its

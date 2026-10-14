@@ -17,7 +17,7 @@ from tsdr.core.sdr.io import load_iq
 from tsdr.core.sdr.pipeline.stages.denoiser_stage import DenoiserStage
 from tsdr.core.sdr.samples_batch import SamplesBatch
 from tsdr.core.sdr.search import SearchConfig
-from tsdr.core.sdr.voice_squelch import DECIDE_S, LATE_S, VoiceSquelch
+from tsdr.core.sdr.voice_squelch import DECIDE_S, GAP_S, LATE_S, VoiceSquelch
 from tsdr.radio.demodulators.am import AMDemodulator
 from tsdr.radio.demodulators.nfm import NarrowbandFMDemodulator
 from tsdr.radio.voice.detector import Classification
@@ -125,12 +125,29 @@ def test_quietness_is_judged_once_at_the_decision_time() -> None:
     assert vsq.verdict_for(1, DIAL) == "not_voice"
 
 
+def _closed(vsq: VoiceSquelch, seconds: float) -> None:
+    for _ in range(round(seconds / 0.05)):
+        vsq.feed(np.zeros(int(0.05 * RATE), dtype=np.float32), RATE, False)
+
+
 @pytest.mark.usefixtures("fake")
 def test_a_closed_squelch_ends_the_transmission() -> None:
     vsq = _vsq()
     _feed(vsq, DATA, DECIDE_S + 1.0)
-    vsq.feed(np.zeros(2500, dtype=np.float32), RATE, False)
+    _closed(vsq, GAP_S + 0.1)
     assert vsq.verdict_for(1, DIAL) == "listening" and not vsq.muted
+
+
+@pytest.mark.usefixtures("fake")
+def test_a_fade_shorter_than_the_gap_keeps_the_transmission() -> None:
+    # A weak mobile fades out for a moment: its speech still counts. VSQ had
+    # started over, and a pause after the fade got the channel muted (3 of the
+    # owner's 47 voice transmissions with a dropout every 4 s).
+    vsq = _vsq()
+    _feed(vsq, SPEECH, 1.5)
+    _closed(vsq, GAP_S - 0.1)
+    _feed(vsq, DATA, DECIDE_S + 1.0)
+    assert vsq.verdict_for(1, DIAL) == "voice" and not vsq.muted
 
 
 @pytest.mark.usefixtures("fake")
