@@ -48,8 +48,9 @@ def test_channel_bandwidth_fixed_vs_config() -> None:
 
 
 def test_sample_rate_fixed_for_spec_locked_decoders() -> None:
-    # Only spec-locked decoders report a required rate (drives the tuner's
-    # "Needs X" warning); rate-flexible demods leave it unset.
+    # Only spec-locked decoders report the rate they decode at (they convert any
+    # capture at or above it; a slower one drives the tuner's "Needs ≥ X"
+    # warning); rate-flexible demods leave it unset.
     assert demod_profile("ADSB").sample_rate == 2_400_000
     assert demod_profile("DAB").sample_rate == 2_048_000
     assert demod_profile("FT8").sample_rate is None

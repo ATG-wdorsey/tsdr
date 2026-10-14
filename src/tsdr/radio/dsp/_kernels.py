@@ -737,13 +737,14 @@ def _polyphase_resample_f32(
 
     t = time_register
     for i in range(n_out):
-        inp_idx = t // up
-        phase = t % up
-        # Convolve poly_bank[phase] with padded[inp_idx .. inp_idx + taps_per_phase]
-        base = inp_idx  # index into padded (already offset by h_len in padded layout)
+        # Window padded[t // up ..][:taps_per_phase] (padded is offset by h_len, so its
+        # last sample is input t // up) against branch t % up. 0-based slices vectorize.
+        base = t // up
+        row = poly_bank[t % up]
+        seg = padded[base : base + taps_per_phase]
         acc = np.float32(0.0)
         for j in range(taps_per_phase):
-            acc += poly_bank[phase, j] * padded[base + j]
+            acc += row[j] * seg[j]
         out[i] = acc
         t += down
 
@@ -759,6 +760,66 @@ def _polyphase_resample_f32(
 
     time_register_out = t - n_in * up
     return out, time_register_out
+
+
+@nb.njit(cache=True, fastmath=True)
+def _polyphase_resample_c64(
+    x: np.ndarray,
+    poly_bank: np.ndarray,
+    up: int,
+    down: int,
+    history: np.ndarray,
+    time_register: int,
+) -> tuple[np.ndarray, int]:
+    """`_polyphase_resample_f32` for complex64 IQ: both parts in one pass, sharing the
+    branch and window arithmetic. `history` is complex64[taps_per_phase - 1]."""
+    n_in = x.shape[0]
+    taps_per_phase = poly_bank.shape[1]
+    h_len = taps_per_phase - 1
+
+    n_out = 0
+    t = time_register
+    while t // up < n_in:
+        n_out += 1
+        t += down
+
+    # Real and imaginary parts as separate arrays, so each tap loop is two plain
+    # float32 dot products.
+    padded_len = h_len + n_in
+    re = np.empty(padded_len, dtype=np.float32)
+    im = np.empty(padded_len, dtype=np.float32)
+    for i in range(h_len):
+        re[i] = history[i].real
+        im[i] = history[i].imag
+    for i in range(n_in):
+        re[h_len + i] = x[i].real
+        im[h_len + i] = x[i].imag
+
+    out = np.empty(n_out, dtype=np.complex64)
+    t = time_register
+    for i in range(n_out):
+        base = t // up
+        row = poly_bank[t % up]
+        seg_re = re[base : base + taps_per_phase]
+        seg_im = im[base : base + taps_per_phase]
+        acc_re = np.float32(0.0)
+        acc_im = np.float32(0.0)
+        for j in range(taps_per_phase):
+            acc_re += row[j] * seg_re[j]
+            acc_im += row[j] * seg_im[j]
+        out[i] = complex(acc_re, acc_im)
+        t += down
+
+    if n_in >= h_len:
+        for i in range(h_len):
+            history[i] = x[n_in - h_len + i]
+    elif n_in > 0:
+        for i in range(h_len - n_in):
+            history[i] = history[n_in + i]
+        for i in range(n_in):
+            history[h_len - n_in + i] = x[i]
+
+    return out, t - n_in * up
 
 
 def lfilter(
@@ -1023,6 +1084,7 @@ class StreamingPolyphaseResampler:
         # Per-channel state
         self._histories: list[np.ndarray] = []
         self._time_register = 0
+        self._iq_history = np.zeros(taps_per_phase - 1, dtype=np.complex64)
 
     def _ensure_channels(self, n_ch: int) -> None:
         """Lazily create per-channel history buffers."""
@@ -1060,10 +1122,23 @@ class StreamingPolyphaseResampler:
         self._time_register = new_time
         return np.column_stack(channels)
 
+    def process_iq(self, iq: np.ndarray) -> np.ndarray:
+        """Resample complex64 IQ (one stream; don't mix with `process` on one instance)."""
+        out, self._time_register = _polyphase_resample_c64(
+            np.ascontiguousarray(iq, dtype=np.complex64),
+            self._poly_bank,
+            self.up,
+            self.down,
+            self._iq_history,
+            self._time_register,
+        )
+        return np.asarray(out)
+
     def reset(self) -> None:
         """Zero all state."""
         for h in self._histories:
             h[:] = 0
+        self._iq_history[:] = 0
         self._time_register = 0
 
 

@@ -21,6 +21,7 @@ import numpy as np
 from tsdr.core.events.events import DecodedMessage
 from tsdr.core.sdr.datatypes import DemodStatus
 from tsdr.radio.demodulators import Demodulator
+from tsdr.radio.dsp.rate_converter import IQRateConverter
 
 logger = logging.getLogger(__name__)
 
@@ -1043,11 +1044,14 @@ class ADSBDecoder(Demodulator):
     MESSAGE_TYPE = "adsb"
     HAS_TEXT = True
     FIXED_CHANNEL_BANDWIDTH = 2_000_000
+    # The detector is written for 2.4 samples a microsecond; faster captures are
+    # converted to it, keeping +-1 MHz (the 0.5 us pulses' main energy).
     FIXED_SAMPLE_RATE = 2_400_000
 
     def __init__(self, sample_rate: float = 2_400_000):
         super().__init__()
         self.sample_rate = sample_rate
+        self._rate = IQRateConverter(sample_rate, self.FIXED_SAMPLE_RATE, passband_hz=1.0e6)
         self._overlap = np.zeros(0, dtype=np.uint16)
         self._known_icaos: set[int] = set()
         self._pending_icaos: set[int] = set()
@@ -1057,7 +1061,7 @@ class ADSBDecoder(Demodulator):
         self._tracker = AircraftTracker()
 
     def demodulate(self, iq_samples: np.ndarray, capture_utc_s: float) -> None:
-        mag = magnitude_complex(iq_samples)
+        mag = magnitude_complex(self._rate.process(iq_samples))
         if len(self._overlap) > 0:
             mag = np.concatenate([self._overlap, mag])
 
@@ -1097,6 +1101,7 @@ class ADSBDecoder(Demodulator):
         return DemodStatus(quality_label=quality_label, quality=quality)
 
     def reset(self) -> None:
+        self._rate.reset()
         self._overlap = np.zeros(0, dtype=np.uint16)
         self._known_icaos.clear()
         self._pending_icaos.clear()
