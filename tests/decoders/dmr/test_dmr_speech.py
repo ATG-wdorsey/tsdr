@@ -15,7 +15,9 @@ from tsdr.radio.vocoder.agc import VoiceAGC
 from tsdr.radio.voice.detector import VoiceStream
 
 SAMPLE = (
-    Path(__file__).resolve().parents[2] / "samples" / "freq=443.7M_sr=62k5_dur=8s_gain=35_dmr.cu8.zst"
+    Path(__file__).resolve().parents[2]
+    / "samples"
+    / "freq=443.7M_sr=62k5_dur=8s_gain=35_dmr.cu8.zst"
 )
 RATE = 62_500.0
 FULL_SCALE = 32767 / 32768

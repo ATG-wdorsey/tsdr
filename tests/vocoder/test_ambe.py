@@ -186,9 +186,9 @@ def test_decoded_parameters_match_mbelib(monkeypatch: pytest.MonkeyPatch) -> Non
 
     def snapshot(ambe_d, cur_mp, prev_mp):  # type: ignore[no-untyped-def]
         bad = decode(ambe_d, cur_mp, prev_mp)
-        L = cur_mp.L
+        n = cur_mp.L
         seen.append(
-            (bad, float(cur_mp.w0), L, int(cur_mp.Vl[1 : L + 1].sum()), cur_mp.Ml[1 : L + 1].copy())
+            (bad, float(cur_mp.w0), n, int(cur_mp.Vl[1 : n + 1].sum()), cur_mp.Ml[1 : n + 1].copy())
         )
         return bad
 
@@ -198,11 +198,11 @@ def test_decoded_parameters_match_mbelib(monkeypatch: pytest.MonkeyPatch) -> Non
         dec.decode_ambe_d(bits, errs2=errs2)
 
     assert len(seen) == len(ref["L"])
-    for i, (bad, w0, L, voiced, ml) in enumerate(seen):
+    for i, (bad, w0, n, voiced, ml) in enumerate(seen):
         assert bad == ref["bad"][i], i
         assert w0 == pytest.approx(float(ref["w0"][i]), rel=1e-5), i
-        assert L == ref["L"][i], i
+        assert ref["L"][i] == n, i
         assert voiced == ref["voiced"][i], i
         np.testing.assert_allclose(
-            ml, ref["ml"][i, 1 : L + 1], rtol=5e-3, atol=1e-6, err_msg=str(i)
+            ml, ref["ml"][i, 1 : n + 1], rtol=5e-3, atol=1e-6, err_msg=str(i)
         )
