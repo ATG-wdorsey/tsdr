@@ -273,3 +273,28 @@ def resample_poly(x: np.ndarray, up: int, down: int) -> np.ndarray:
     y = np.convolve(x_up, h, mode="same")
 
     return y[::down]
+
+
+def rrc_taps(sps: float, alpha: float, ntaps_per_sym: int = 11) -> np.ndarray:
+    """Root-raised-cosine taps, `ntaps_per_sym` symbols long, unit energy (TETRA, DMR)."""
+    n_taps = int(ntaps_per_sym * sps) | 1  # ensure odd
+    t = (np.arange(n_taps) - (n_taps - 1) / 2.0) / sps  # normalized to symbol periods
+
+    h = np.zeros(n_taps)
+    for i, ti in enumerate(t):
+        if abs(ti) < 1e-10:
+            h[i] = 1.0 - alpha + 4.0 * alpha / np.pi
+        elif abs(abs(ti) - 1.0 / (4.0 * alpha)) < 1e-10:
+            h[i] = (alpha / np.sqrt(2.0)) * (
+                (1 + 2.0 / np.pi) * np.sin(np.pi / (4.0 * alpha))
+                + (1 - 2.0 / np.pi) * np.cos(np.pi / (4.0 * alpha))
+            )
+        else:
+            num = np.sin(np.pi * ti * (1 - alpha)) + 4 * alpha * ti * np.cos(
+                np.pi * ti * (1 + alpha)
+            )
+            den = np.pi * ti * (1 - (4 * alpha * ti) ** 2)
+            h[i] = num / den
+
+    h /= np.sqrt(np.sum(h**2))
+    return h.astype(np.float32)

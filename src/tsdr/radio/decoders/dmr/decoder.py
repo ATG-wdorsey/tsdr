@@ -39,7 +39,7 @@ from tsdr.radio.decoders.dmr.fec import (
     extract_voice_frames,
 )
 from tsdr.radio.demodulators import Demodulator
-from tsdr.radio.dsp import DCBlocker, FMChannelizer, MuellerMuller
+from tsdr.radio.dsp import DCBlocker, FMChannelizer, MuellerMuller, StreamingFilter, rrc_taps
 from tsdr.radio.vocoder.agc import VoiceAGC
 from tsdr.radio.vocoder.ambe import AmbePlus2Decoder
 
@@ -52,6 +52,12 @@ _DMR_PCM_RATE = 8000
 # wrong sign and no sync was found. The 4FSK data averages to zero over a few hundred
 # symbols, so a slow high-pass (80 ms) takes the offset off first.
 _DC_CUTOFF_HZ = 2.0
+# DMR shapes its symbols with a root-raised-cosine filter (alpha 0.2); the receiver's
+# matching filter lands each symbol on its level, free of its neighbors' (without it the
+# symbols' MER was 18.7 dB on the 443.7 MHz recording and 18.6 dB live, with it 24.9 and
+# 22.9 dB). Eight symbols of taps.
+_RRC_ALPHA = 0.2
+_RRC_SYMBOLS = 8
 _VOICE_TIMEOUT_SEC = 0.5
 # Require this many consecutive voice bursts before decoding audio.
 # Filters out false VOICE sync matches on noise.
@@ -209,13 +215,16 @@ class DMRDecoder(Demodulator):
         self._decimated_rate = self._channelizer.audio_rate
         self._sps = self._decimated_rate / SYMBOL_RATE
         self._dc = DCBlocker(self._decimated_rate, cutoff_hz=_DC_CUTOFF_HZ)
+        matched = rrc_taps(self._sps, _RRC_ALPHA, _RRC_SYMBOLS)
+        self._matched = StreamingFilter(
+            (matched / matched.sum()).astype(np.float32), [1.0], dtype=np.float32
+        )
 
         # Mueller-Muller symbol timing recovery
         self._mm = MuellerMuller(self._sps, gain=0.01)
 
-        # Constellation delay line: one symbol period of FM samples
-        self._constellation_delay = round(self._sps)
-        self._fm_tail = np.array([], dtype=np.float64)
+        # The symbol before this batch's first: the constellation pairs each symbol with it.
+        self._last_symbol = 0.0
 
         # Ring buffers: sign dibits for the sync search, and the symbols themselves (sliced
         # when a burst is complete: the ring then holds exactly that burst).
@@ -283,25 +292,17 @@ class DMRDecoder(Demodulator):
         self._last_snapshot_ts: float = 0.0
 
     def demodulate(self, iq_samples: np.ndarray, capture_utc_s: float) -> None:
-        fm = self._dc.process(self._channelizer.process(iq_samples))
-
-        # Transition constellation: plot each FM sample
-        # against the sample one symbol period earlier. Shows a 4x4 grid
-        # of clusters for the 16 possible dibit transitions.
-        delay = self._constellation_delay
-        if len(self._fm_tail) > 0:
-            fm_full = np.concatenate([self._fm_tail, fm])
-        else:
-            fm_full = fm
-        if len(fm_full) > delay:
-            current = fm_full[delay:]
-            delayed = fm_full[: len(current)]
-            self._constellation_points = (current + 1j * delayed).astype(np.complex64)
-        self._fm_tail = fm[-delay:].copy() if len(fm) >= delay else fm.copy()
+        fm = self._matched.process(self._dc.process(self._channelizer.process(iq_samples)))
 
         symbols = self._mm.process(fm)
         if len(symbols) < 2:
             return
+
+        # Constellation: each symbol (the timing loop's sample) against the one before
+        # it; on a clean signal, 16 points at the levels (+-1, +-1/3) in both directions.
+        pairs = np.concatenate([[self._last_symbol], symbols])
+        self._constellation_points = (pairs[1:] + 1j * pairs[:-1]).astype(np.complex64)
+        self._last_symbol = float(symbols[-1])
 
         for sym in symbols:
             sym_f = float(sym)
@@ -813,8 +814,9 @@ class DMRDecoder(Demodulator):
     def reset(self) -> None:
         self._channelizer.reset()
         self._dc.reset()
+        self._matched.reset()
         self._mm.reset()
-        self._fm_tail = np.array([], dtype=np.float64)
+        self._last_symbol = 0.0
         self._sync_buf[:] = 0
         self._sym_buf[:] = 0
         self._sync_pos = 0

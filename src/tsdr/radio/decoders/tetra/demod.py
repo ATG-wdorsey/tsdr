@@ -11,6 +11,7 @@ import numpy as np
 from tsdr.radio.decoders.tetra._kernels import fir_decim_c64_into
 from tsdr.radio.dsp._kernels import apply_freq_shift_c64
 from tsdr.radio.dsp.decimator import MultistageDecimator, smooth_decimation
+from tsdr.radio.dsp.filters import rrc_taps
 from tsdr.radio.dsp.mm import MuellerMuller
 
 # Default scratch size in seconds of IQ. Anything larger grows lazily in
@@ -24,31 +25,6 @@ TARGET_RATE = 72000.0
 def _flip_taps(taps: np.ndarray) -> np.ndarray:
     """Reverse a FIR tap array into the positive-stride layout `fir_decim_c64_into` expects."""
     return np.ascontiguousarray(taps[::-1]).astype(np.float32)
-
-
-def rrc_taps(sps: float, alpha: float, ntaps_per_sym: int = 11) -> np.ndarray:
-    """Design root raised cosine filter taps."""
-    n_taps = int(ntaps_per_sym * sps) | 1  # ensure odd
-    t = (np.arange(n_taps) - (n_taps - 1) / 2.0) / sps  # normalized to symbol periods
-
-    h = np.zeros(n_taps)
-    for i, ti in enumerate(t):
-        if abs(ti) < 1e-10:
-            h[i] = 1.0 - alpha + 4.0 * alpha / np.pi
-        elif abs(abs(ti) - 1.0 / (4.0 * alpha)) < 1e-10:
-            h[i] = (alpha / np.sqrt(2.0)) * (
-                (1 + 2.0 / np.pi) * np.sin(np.pi / (4.0 * alpha))
-                + (1 - 2.0 / np.pi) * np.cos(np.pi / (4.0 * alpha))
-            )
-        else:
-            num = np.sin(np.pi * ti * (1 - alpha)) + 4 * alpha * ti * np.cos(
-                np.pi * ti * (1 + alpha)
-            )
-            den = np.pi * ti * (1 - (4 * alpha * ti) ** 2)
-            h[i] = num / den
-
-    h /= np.sqrt(np.sum(h**2))
-    return h.astype(np.float32)
 
 
 def extract_soft_bits(diff: np.ndarray) -> np.ndarray:

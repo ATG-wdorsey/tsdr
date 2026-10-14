@@ -42,12 +42,23 @@ def dmr_iq():
 
 
 @pytest.fixture(scope="module")
-def dmr_decoder(dmr_iq):
-    """Module-scoped decoder that has processed the full IQ file."""
+def _dmr_run(dmr_iq):
+    """The full IQ file decoded once: the decoder, and its constellation's symbols past
+    the first second."""
     decoder = DMRDecoder(sample_rate=SAMPLE_RATE)
+    symbols = []
     for start in range(0, len(dmr_iq), 32768):
         decoder.demodulate(dmr_iq[start : start + 32768], 0.0)
-    return decoder
+        points = decoder.get_constellation()
+        if points is not None and start >= SAMPLE_RATE:
+            symbols.append(points[0].real)
+    return decoder, np.concatenate(symbols)
+
+
+@pytest.fixture(scope="module")
+def dmr_decoder(_dmr_run):
+    """Module-scoped decoder that has processed the full IQ file."""
+    return _dmr_run[0]
 
 
 def decimate_and_demod(iq, sample_rate=SAMPLE_RATE):
@@ -154,6 +165,18 @@ class TestFEC:
             assert np.all(bits[:8] == 0), (
                 f"Message bits wrong after correcting errors at {p1},{p2},{p3}"
             )
+
+
+def test_symbols_land_on_their_levels(_dmr_run) -> None:
+    """The constellation (Stats panel) pairs each symbol with the one before: 16 points
+    at the 4FSK levels. It plotted every FM sample, a web of transitions (11.2 dB here),
+    and without the RRC matched filter each symbol carried part of its neighbors' (5.4 dB
+    at the symbol instants, 12.2 with the filter, measured apart from the decoder)."""
+    symbols = _dmr_run[1]
+    levels = np.array([-1.0, -1 / 3, 1 / 3, 1.0])
+    nearest = levels[np.argmin(np.abs(symbols[:, None] - levels[None, :]), axis=1)]
+    mer_db = 10 * np.log10(np.mean(nearest**2) / np.mean((symbols - nearest) ** 2))
+    assert mer_db > 14.0, f"symbol MER {mer_db:.1f} dB"
 
 
 class TestBurstParsing:

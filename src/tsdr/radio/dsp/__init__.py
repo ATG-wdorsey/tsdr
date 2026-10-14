@@ -10,6 +10,7 @@ from tsdr.radio.dsp.filters import (
     firwin,
     lfilter_zi,
     resample_poly,
+    rrc_taps,
 )
 from tsdr.radio.dsp.fm_channelizer import FMChannelizer
 from tsdr.radio.dsp.fm_discriminator import FMDiscriminator
@@ -37,5 +38,6 @@ __all__ = [
     "lfilter",
     "lfilter_zi",
     "resample_poly",
+    "rrc_taps",
     "butter_highpass_sections",
 ]

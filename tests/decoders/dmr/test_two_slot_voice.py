@@ -6,7 +6,7 @@ its lock whenever the next burst was a sync-less burst of a slot it had not yet 
 call, and a lock drop cleared both slots' calls: joined mid-call, or after one missed
 sync, both slots stayed silent in 5 of the 6 ways their superframes can align. A missed
 A sync on one slot also needs 11 bursts in a row by timing on that slot.
-The signal here is synthesized: valid CACH and syncs, 4FSK at 4800 baud, from IQ.
+The signal here is synthesized: valid CACH, syncs and EMBs, RRC-shaped 4FSK at 4800 baud, as IQ.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from tsdr.radio.decoders.dmr.constants import (
 )
 from tsdr.radio.decoders.dmr.decoder import DMRDecoder
 from tsdr.radio.decoders.dmr.fec import _QR_16_7_6_WORDS, hamming_7_4_decode
+from tsdr.radio.dsp import rrc_taps
 
 RATE = 48_000.0
 _LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}  # dibit -> 4FSK symbol (ETSI TS 102 361-1)
@@ -76,9 +77,13 @@ def _voice_burst(
 
 
 def _iq(dibits: list[int], offset_hz: float = 0.0) -> np.ndarray:
+    """4FSK as DMR transmitters send it: each symbol a root-raised-cosine frequency pulse
+    (alpha 0.2), scaled so the receiver's matching filter lands it on its level."""
     sps = int(RATE / SYMBOL_RATE)
-    freq = np.repeat([_LEVEL[d] * dmr.DEVIATION / 3.0 for d in dibits], sps)
-    freq = np.convolve(freq, np.hanning(sps) / np.hanning(sps).sum(), mode="same")
+    impulses = np.zeros(len(dibits) * sps)
+    impulses[sps // 2 :: sps] = [_LEVEL[d] * dmr.DEVIATION / 3.0 for d in dibits]
+    pulse = rrc_taps(sps, 0.2, 8)
+    freq = np.convolve(impulses, pulse * (sps / pulse.sum()), mode="same")
     phase = 2 * np.pi * np.cumsum(freq + offset_hz) / RATE
     return (0.5 * np.exp(1j * phase)).astype(np.complex64)
 
