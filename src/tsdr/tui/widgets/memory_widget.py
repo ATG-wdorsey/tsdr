@@ -20,6 +20,7 @@ from tsdr.core.sdr.exceptions import SDRException
 from tsdr.core.units import format_hz
 from tsdr.tui.commands._format import freq_mhz
 from tsdr.tui.inline_edit import InlineEditor
+from tsdr.tui.pause import PAUSED_HINT, focused_paused
 from tsdr.tui.widgets.panel import PanelWidget, set_orientation_classes
 
 _ROW_LINES = 3  # each memory option is name / details / button lines
@@ -300,6 +301,9 @@ class MemoryWidget(Vertical, PanelWidget):
         if self._pending_remove is not None and not confirming:
             self._disarm_remove(self._pending_remove)
         if event.action == "recall":
+            if focused_paused():
+                self.app.show_status(PAUSED_HINT)  # type: ignore[attr-defined]
+                return
             self._recall(memory)
         elif event.action == "rename":
             self._begin_rename(memory.id)

@@ -307,7 +307,13 @@ Reception:
 - `Ctrl+U`: disable squelch.
 - `Shift+↑` / `Shift+↓`: decrease / increase volume.
 - `n`: toggle RNNoise denoising (`DN` beside the volume).
-- `Space`: start / stop the focused device.
+- `Space`: pause / resume the focused radio. Paused, the radio keeps streaming
+  (resuming is instant, with none of a restart's delays) and tsdr drops what it
+  reads: audio, spectrum and waterfall, decoders, SEARCH and recording all stop
+  where they are (`PAUSED` in the tuner). SEARCH stays on, its hold frozen. Keys
+  and clicks that operate the radio are ignored until Space resumes; the
+  console, the panels and the display keys (`i`, `k`/`j`, `h`/`l`, `H`/`L`,
+  `C`) still work. On a stopped radio Space starts it; `stop` stops it.
 - `d` then a second key: switch demodulator (`w` WFM, `n` NFM, `a` AM,
   `u` USB, `l` LSB, `c` CW, `o` off).
 - `D` then a second key: switch decoder (`a` ADS-B, `b` DAB, `c` ACARS, `d`

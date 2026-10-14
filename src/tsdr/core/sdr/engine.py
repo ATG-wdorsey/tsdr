@@ -11,6 +11,7 @@ from queue import Empty, Queue
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Unpack, cast
 
+from tsdr.core import clock_sync
 from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.events.bus import EventBus
 from tsdr.core.events.events import (
@@ -277,6 +278,46 @@ class SDREngine:
         if self.devices[device_id].state == DeviceState.ERROR:
             self.stop_device(device_id)
 
+    def set_paused(self, device_id: str, paused: bool) -> None:
+        """Pause or resume a running device (Space).
+
+        Paused, the radio keeps streaming and the I/O worker keeps reading it, so no
+        buffer overflows and resuming is instant, without a restart's delays; the
+        pipeline worker drops every batch: no audio, spectrum, decoding, SEARCH or
+        recording. SEARCH stays on, frozen: its clock leaves the pause out.
+
+        Raises:
+            SDRException: If the device doesn't exist or isn't running
+        """
+        if device_id not in self.devices:
+            raise SDRException(f"Device {device_id} not found")
+        context = self.devices[device_id]
+        if context.state != DeviceState.RUNNING:
+            raise SDRException(f"Device {device_id} is not running")
+        if paused == context.paused:
+            return
+        now = clock_sync.now_utc_seconds()
+        if paused:
+            context.paused_at_utc = now
+            context.paused = True
+            logger.info("device_paused device=%s", device_id)
+        else:
+            context.paused_seconds += now - context.paused_at_utc
+            context.resumed_at_utc = now
+            context.paused = False
+            logger.info(
+                "device_resumed device=%s paused_s=%.1f", device_id, now - context.paused_at_utc
+            )
+        # Pausing silences at once; resuming drops what was queued before the pause.
+        worker = self._audio_workers.get(device_id)
+        if worker is not None:
+            worker.request_flush()
+        self.event_bus.publish(
+            DeviceStateChangedEvent(
+                device_id=device_id, running=True, paused=paused, source_id="engine"
+            )
+        )
+
     def stop_device(self, device_id: str) -> None:
         """Stop a device.
 
@@ -300,6 +341,7 @@ class SDREngine:
 
         # Stop device workers
         context.stop(worker_runner=self.worker_runner, timeout=5.0)
+        context.paused = False
 
         self.event_bus.publish(
             DeviceStateChangedEvent(device_id=device_id, running=False, source_id="engine")

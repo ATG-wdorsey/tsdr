@@ -51,7 +51,9 @@ def _emit(line: str) -> None:
 def _on_device_state(event: Event) -> None:
     if not isinstance(event, DeviceStateChangedEvent):
         return
-    _emit(f"EVENT device_state device={event.device_id} running={event.running}")
+    _emit(
+        f"EVENT device_state device={event.device_id} running={event.running} paused={event.paused}"
+    )
 
 
 def _on_device_error(event: Event) -> None:

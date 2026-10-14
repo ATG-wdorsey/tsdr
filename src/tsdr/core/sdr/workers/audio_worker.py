@@ -501,6 +501,8 @@ class AudioOutputWorker:
         self._residual = None
         self._prebuffered = False
         self._needs_flush = False
+        # The next batch starts afresh (after a pause, a device change): no stall to report.
+        self._last_batch_time = None
         logger.info("audio_flush source=%s dropped=%d", self.source_id, dropped)
 
     def request_flush(self) -> None:

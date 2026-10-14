@@ -30,6 +30,7 @@ from tsdr.core.tuning import click_snap_step, save_previous_tune_state
 from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import axis_si_prefix
 from tsdr.tui.inline_edit import InlineEditor
+from tsdr.tui.pause import PAUSED_HINT, focused_paused
 from tsdr.tui.widgets.db_scale import (
     GRID_GRAY,
     grid_label,
@@ -898,6 +899,10 @@ class SpectrumWidget(ImageModeMixin, Widget):
     # Shared helpers
 
     def on_click(self, event: Click) -> None:
+        if focused_paused():
+            self.app.show_status(PAUSED_HINT)  # type: ignore[attr-defined]
+            event.stop()
+            return
         live = self._display_range()
         if live is None:
             return
@@ -949,6 +954,8 @@ class SpectrumWidget(ImageModeMixin, Widget):
     def on_mouse_scroll_up(self, event: MouseScrollUp) -> None:
         if event.shift:
             self._scroll_zoom(1)
+        elif focused_paused():
+            self.app.show_status(PAUSED_HINT)  # type: ignore[attr-defined]
         else:
             self._scroll_tune(1)
         event.stop()
@@ -956,6 +963,8 @@ class SpectrumWidget(ImageModeMixin, Widget):
     def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
         if event.shift:
             self._scroll_zoom(-1)
+        elif focused_paused():
+            self.app.show_status(PAUSED_HINT)  # type: ignore[attr-defined]
         else:
             self._scroll_tune(-1)
         event.stop()

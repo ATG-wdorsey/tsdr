@@ -53,6 +53,7 @@ def _worker() -> tuple[IOWorker, _SpectrumDevice, WorkerContext, list[FFTUpdateE
     device_context = MagicMock()
     device_context.device = device
     device_context.device_id = "kiwi"
+    device_context.paused = False
 
     bus = EventBus()
     events: list[FFTUpdateEvent] = []

@@ -24,6 +24,7 @@ from tsdr.tui.keybindings import (
     CHORD_LABELS,
     DECODER_CHORD_MODES,
     DEMOD_CHORD_MODES,
+    PAUSE_ALLOWED,
     Action,
     Context,
     build_lookup,
@@ -31,6 +32,7 @@ from tsdr.tui.keybindings import (
 )
 from tsdr.tui.model import Edge, adjusted_db_max, adjusted_db_min
 from tsdr.tui.model.store import get_ui_store
+from tsdr.tui.pause import PAUSED_HINT, focused_paused
 from tsdr.tui.widgets import SpectrumWidget
 from tsdr.tui.widgets.status_prompt import StatusPrompt
 
@@ -44,6 +46,14 @@ SQUELCH_STEP_DB = 1.0
 CHORD_TIMEOUT_S = 5.0
 
 FREQUENCY_PROMPT = "Frequency: "
+
+
+def _blocked_while_paused(action: Action | None, key: str) -> bool:
+    if action is not None:
+        return action not in PAUSE_ALLOWED
+    # Ctrl+digits recall a band (a retune); plain and Alt+ digits work the panels.
+    head, _, tail = key.rpartition("+")
+    return head == "ctrl" and tail.isdigit()
 
 
 class KeyboardMixin(MixinBase):
@@ -95,6 +105,15 @@ class KeyboardMixin(MixinBase):
                 return
 
         action = _LOOKUP.get((context, event.key))
+        if (
+            context is Context.GLOBAL
+            and focused_paused()
+            and _blocked_while_paused(action, event.key)
+        ):
+            self.show_status(PAUSED_HINT)
+            event.prevent_default()
+            event.stop()
+            return
         if action is not None:
             # An engine error from a shortcut (e.g. an out-of-range tune) is the
             # user's to see, as for commands and mouse gestures; escaping the
@@ -387,8 +406,8 @@ class KeyboardMixin(MixinBase):
 
         try:
             if device.state == DeviceState.RUNNING:
-                engine.stop_device(device.device_id)
-                self.show_status("Stopped")
+                engine.set_paused(device.device_id, not device.paused)
+                self.show_status(PAUSED_HINT if device.paused else "Resumed")
             else:
                 engine.start_device(device.device_id)
                 self.show_status("Started")

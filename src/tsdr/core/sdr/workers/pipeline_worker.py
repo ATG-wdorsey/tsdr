@@ -68,6 +68,9 @@ class PipelineWorker:
                     except queue.Empty:
                         continue
 
+                if self.device_context.drops(batch.capture_utc_s):
+                    continue
+
                 with span("iq_convert"):
                     try:
                         iq_samples = batch.to_iq_array()

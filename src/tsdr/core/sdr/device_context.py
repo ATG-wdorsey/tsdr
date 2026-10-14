@@ -137,6 +137,14 @@ class SDRDeviceContext:
 
         self.state = DeviceState.STOPPED
         self.error_message: str | None = None
+        # Paused (Space): the radio keeps streaming and the I/O worker keeps reading, so
+        # nothing backs up and resuming is instant; the pipeline worker drops the batches.
+        # Capture time spent paused (and the instant of the last resume) let SEARCH's
+        # clock skip the pause and the worker drop batches captured during it.
+        self.paused = False
+        self.paused_seconds = 0.0
+        self.paused_at_utc = 0.0
+        self.resumed_at_utc = 0.0
         # Guards state transitions the I/O worker makes from its own thread.
         self._state_lock = threading.Lock()
         # The last engine-wide config sent to the pipeline worker.
@@ -222,6 +230,11 @@ class SDRDeviceContext:
         with self._history_lock:
             return self.decoder_history_protocol, tuple(self.decoder_history)
 
+    def drops(self, capture_utc_s: float) -> bool:
+        """Whether the pipeline worker drops a batch: while paused, and one captured
+        during a pause that is still queued at the resume (0.0 = not stamped)."""
+        return self.paused or 0.0 < capture_utc_s < self.resumed_at_utc
+
     def start(self, worker_runner) -> None:
         """Start I/O and processing workers for this device."""
         if self.state != DeviceState.STOPPED:
@@ -231,6 +244,9 @@ class SDRDeviceContext:
         with self._state_lock:
             self.state = DeviceState.STARTING
             self.error_message = None
+        self.paused = False
+        self.paused_seconds = 0.0
+        self.resumed_at_utc = 0.0
 
         logger.debug("io_worker_starting device=%s", self.device_id)
         io_worker_instance = IOWorker(device_context=self)

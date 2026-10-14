@@ -247,7 +247,11 @@ BINDINGS: tuple[Binding, ...] = (
         (Action.VOLUME_UP, ("shift+up",), "Increase volume"),
         (Action.VOLUME_DOWN, ("shift+down",), "Decrease volume"),
         (Action.AUDIO_DENOISE, ("n",), "Toggle RNNoise denoising"),
-        (Action.DEVICE_TOGGLE, ("space",), "Start / stop the focused device"),
+        (
+            Action.DEVICE_TOGGLE,
+            ("space",),
+            "Pause / resume the focused radio (starts it when stopped; `stop` stops it)",
+        ),
         (Action.DEMOD_CHORD, ("d",), _chord_description("demodulator", DEMOD_CHORD_MODES)),
         (Action.DECODER_CHORD, ("D",), _chord_description("decoder", DECODER_CHORD_MODES)),
     ),
@@ -298,8 +302,27 @@ BINDINGS: tuple[Binding, ...] = (
 
 # Hand-curated typography, not derivable from BINDINGS. Re-check when those keys change.
 PLACEHOLDER = (
-    " ` console  space run  f freq  ←→ tune  ↑↓ bw  dD demod  gG gain"
+    " ` console  space pause  f freq  ←→ tune  ↑↓ bw  dD demod  gG gain"
     "  ⇧↕ vol  1-9 panel  mM^m mem  kj span  hl/HL db  i image"
+)
+
+
+# What still works while the focused radio is paused: resuming, the console, the panels,
+# and the display's own keys (the frozen spectrum can be zoomed and scaled).
+PAUSE_ALLOWED = frozenset(
+    {
+        Action.DEVICE_TOGGLE,
+        Action.CONSOLE_FOCUS,
+        Action.PANEL_KEYS,
+        Action.DISPLAY_IMAGE,
+        Action.DISPLAY_SPAN_IN,
+        Action.DISPLAY_SPAN_OUT,
+        Action.DISPLAY_FLOOR_UP,
+        Action.DISPLAY_FLOOR_DOWN,
+        Action.DISPLAY_CEILING_UP,
+        Action.DISPLAY_CEILING_DOWN,
+        Action.DISPLAY_CENTER_ON_DIAL,
+    }
 )
 
 
