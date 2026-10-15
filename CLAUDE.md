@@ -320,8 +320,16 @@ not, are never targets. The
 squelch holds the channel: `SearchStage` passes the demodulator's squelch state
 (`SDRDeviceContext.demod_status`, what the listener hears) to the controller,
 which holds while it is open; one unaveraged FFT frame of noise reads about 1 dB
-either side of its mean, too noisy to decide (the threshold decides only before
-the demodulator reports). SEARCH never moves the hardware:
+either side of its mean, too noisy to decide. So a channel's power averaged over
+`ATTACK_S` must be above the trigger for SEARCH to jump to it (mean power, as the
+squelch hears it: keyed CW, speech and time-slotted signals read their mean; the FFT
+stage averages `SEARCH_FRAMES` (8) frames per batch for SEARCH while it runs, each
+corrected, windowed and summed in fused numba passes), and a channel
+SEARCH jumps to is left after `ARRIVAL_S` (0.3 s) unless its squelch opens (the
+squelch's average starts from the first chunk after a retune, so a signal opens
+it at once); a channel a jump key chose gets the full hold. Decoder modes report
+no squelch: the dial channel's power averaged over `LEVEL_TC_S` stands in for it,
+opening at the line and closing `LEVEL_HYSTERESIS_DB` (1 dB) under it. SEARCH never moves the hardware:
 starting it selects free tuning, it skips channels within the LO offset of the
 LO, the engine drops a jump that would recenter, and any other dial move, a
 recenter, a sample rate change, center tuning, a non-narrowband demodulator,

@@ -396,6 +396,44 @@ def _fsk_gated_bitsync(
 
 
 @nb.njit(cache=True, fastmath=True)
+def iq_sums_c64(x: np.ndarray) -> tuple[float, float, float, float]:
+    """Sums of I, Q, I^2 and Q^2: a frame's DC offset and IQ balance in one pass."""
+    sr = 0.0
+    si = 0.0
+    srr = 0.0
+    sii = 0.0
+    for k in range(x.shape[0]):
+        r = np.float64(x[k].real)
+        i = np.float64(x[k].imag)
+        sr += r
+        si += i
+        srr += r * r
+        sii += i * i
+    return sr, si, srr, sii
+
+
+@nb.njit(cache=True, fastmath=True)
+def window_corrected_into(
+    x: np.ndarray, window: np.ndarray, dc_i: float, dc_q: float, q_scale: float, out: np.ndarray
+) -> None:
+    """out = ((I - dc_i) + j (Q - dc_q) q_scale) * window, in one pass."""
+    mi = np.float32(dc_i)
+    mq = np.float32(dc_q)
+    s = np.float32(q_scale)
+    for k in range(x.shape[0]):
+        w = window[k]
+        out[k] = complex((x[k].real - mi) * w, (x[k].imag - mq) * s * w)
+
+
+@nb.njit(cache=True, fastmath=True)
+def add_power_c64(spectrum: np.ndarray, total: np.ndarray) -> None:
+    """total += |spectrum|^2."""
+    for k in range(spectrum.shape[0]):
+        v = spectrum[k]
+        total[k] += v.real * v.real + v.imag * v.imag
+
+
+@nb.njit(cache=True, fastmath=True)
 def _iq_metrics_c64(iq: np.ndarray) -> tuple[float, float, float]:
     """Compute IQ signal metrics in a single pass (no intermediate arrays).
 

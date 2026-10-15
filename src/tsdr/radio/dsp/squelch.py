@@ -25,6 +25,7 @@ class SquelchGate:
         self._hang_samples = int(self._audio_rate * 0.5)
 
         self._power_ema_db = -120.0
+        self._seeded = False
         self._is_open = False
         self._hang_counter = 0
         self._gain = 1.0
@@ -41,6 +42,7 @@ class SquelchGate:
 
     def reset(self) -> None:
         self._power_ema_db = -120.0
+        self._seeded = False
         self._is_open = False
         self._hang_counter = 0
         self._gain = 1.0 if not self._enabled else 0.0
@@ -71,10 +73,16 @@ class SquelchGate:
             return None
 
         # Chunk-duration EMA: alpha adapts so the effective time constant is
-        # ~EMA_TC_MS regardless of chunk size.
-        dt = n_audio_samples / self._audio_rate
-        alpha = math.exp(-dt / self._ema_tc_s)
-        self._power_ema_db = alpha * self._power_ema_db + (1.0 - alpha) * power_db
+        # ~EMA_TC_MS regardless of chunk size. After a reset (a retune) it starts
+        # from the first chunk: rising from -120 dB took 0.15-0.25 s to open on a
+        # signal, muting the start of every transmission SEARCH or a tune landed on.
+        if not self._seeded:
+            self._power_ema_db = power_db
+            self._seeded = True
+        else:
+            dt = n_audio_samples / self._audio_rate
+            alpha = math.exp(-dt / self._ema_tc_s)
+            self._power_ema_db = alpha * self._power_ema_db + (1.0 - alpha) * power_db
 
         if self._power_ema_db >= self._threshold_db:
             self._is_open = True

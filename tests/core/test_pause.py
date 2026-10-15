@@ -22,6 +22,7 @@ from tsdr.core.sdr.exceptions import SDRException
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
 from tsdr.core.sdr.pipeline.stages.search_stage import SearchStage
 from tsdr.core.sdr.samples_batch import SamplesBatch
+from tsdr.core.sdr.search import ATTACK_S
 from tsdr.core.search_control import start_search
 from tsdr.core.tuning_state import init_tuning_state
 from tsdr.devices import MockParams, mock
@@ -180,14 +181,19 @@ def test_a_pause_freezes_searchs_hold(
     engine = search_engine
     start_search("pluto", trigger_db=-40.0, hold_s=0.5)
     context = engine.devices["pluto"]
+    first, second = 147.0e6, 145.0e6
+    first_on = [True]  # the squelch opens on the first channel while it transmits
     monkeypatch.setattr(
-        type(context), "demod_status", property(lambda _: DemodStatus(squelch_open=False))
+        type(context),
+        "demod_status",
+        property(
+            lambda c: DemodStatus(squelch_open=first_on[0] and c.config.tuned_frequency == first)
+        ),
     )
     stage = SearchStage(context.config)
     pipeline_context = PipelineContext(
         device_context=context, event_bus=engine.event_bus, config=engine.config
     )
-    first, second = 147.0e6, 145.0e6
     t = [1000.0]
 
     def feed(seconds: float, tones: dict[float, float]) -> None:
@@ -196,8 +202,9 @@ def test_a_pause_freezes_searchs_hold(
             stage.process(_batch(context.config, t[0], tones), pipeline_context)
             t[0] += 0.05
 
-    feed(0.3, {first: -30.0})
+    feed(ATTACK_S + 0.15, {first: -30.0})
     assert context.config.tuned_frequency == first
+    first_on[0] = False
     feed(0.25, {second: -30.0})  # the first has gone quiet; its hold is running
     assert context.config.tuned_frequency == first
 

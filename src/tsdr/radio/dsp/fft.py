@@ -28,6 +28,18 @@ class FFTPlan:
             flags=["FFTW_MEASURE"],
         )
 
+    @property
+    def input(self) -> np.ndarray:
+        """The plan's input buffer, to be filled in place before ``run``."""
+        buffer: np.ndarray = self._input
+        return buffer
+
+    def run(self) -> np.ndarray:
+        """Run the FFT on what the input buffer holds (owned by this plan, like ``execute``'s)."""
+        self._plan()
+        result: np.ndarray = self._output
+        return result
+
     def execute(self, windowed_samples: np.ndarray) -> np.ndarray:
         """Run FFT on pre-windowed samples. Returns complex64 result.
 

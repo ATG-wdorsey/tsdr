@@ -124,6 +124,16 @@ def test_reset_clears_state():
     assert gate.power_ema_db == -120.0
 
 
+def test_after_a_reset_a_signal_opens_it_at_once():
+    """A retune resets the gate. Its average rose from -120 dB, so a signal opened it
+    only after 0.15-0.25 s: the start of every transmission SEARCH landed on was muted."""
+    gate = _gate(threshold_db=-50.0)
+    _pump(gate, power_db=-80.0, chunks=30)
+    gate.reset()
+    _pump(gate, power_db=-48.0, chunks=1)
+    assert gate.is_open
+
+
 def test_threshold_change_midstream():
     gate = _gate(threshold_db=-30.0)
     _pump(gate, power_db=-40.0, chunks=80)

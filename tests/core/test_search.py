@@ -9,7 +9,9 @@ import pytest
 
 from tsdr.core.sdr.processing import compute_fft, fft_window, window_enbw_bins
 from tsdr.core.sdr.search import (
+    ARRIVAL_S,
     ATTACK_S,
+    LEVEL_HYSTERESIS_DB,
     SearchConfig,
     SearchController,
     channel_powers_db,
@@ -74,6 +76,7 @@ TRIGGER = -70.0
 SQUELCH = -80.0
 NOISE = -95.0
 START = 145.0e6  # the dial when SEARCH starts, quiet
+FIND = ATTACK_S + 0.1  # time for SEARCH to find a signal and jump to it
 
 
 def _config(**changes) -> SearchConfig:
@@ -139,9 +142,27 @@ def test_jumps_only_after_the_signal_stays_above_the_trigger_for_the_attack() ->
     assert run.jumps == [144.5e6]
 
 
-def test_a_blip_shorter_than_the_attack_is_ignored() -> None:
+def test_a_keyed_signal_is_found() -> None:
+    """A signal on in every other frame (time-slotted DMR or TETRA, keyed CW) reads its
+    mean power, as the squelch hears it: requiring every frame above the trigger never
+    found it."""
     run = _Run()
-    run.signals[round(144.5e6)] = -60.0
+    for k in range(round(2 * FIND / 0.05)):
+        if k % 2:
+            run.signals.pop(round(144.5e6), None)
+        else:
+            run.signals[round(144.5e6)] = -55.0
+        run.tick(0.05)
+    assert run.jumps == [144.5e6]
+
+
+def test_a_blip_is_ignored_unless_its_energy_reaches_the_trigger() -> None:
+    """One frame over the trigger, its power averaged over ATTACK_S under it, is ignored
+    (a strong burst's mean reaches it: the 0.3 s visit to an impulse is cheap)."""
+    run = _Run()
+    run.tick(1.0)
+    frames = max(1, round(ATTACK_S / 0.05))  # in the averaging window
+    run.signals[round(144.5e6)] = TRIGGER + 10 * math.log10(frames) - 1.0
     run.tick(0.05)
     del run.signals[round(144.5e6)]
     run.tick(1.0)
@@ -152,14 +173,14 @@ def test_the_strongest_eligible_channel_wins() -> None:
     run = _Run()
     run.signals[round(144.5e6)] = -65.0
     run.signals[round(145.5e6)] = -55.0
-    run.tick(0.2)
+    run.tick(FIND)
     assert run.jumps == [145.5e6]
 
 
 def test_holds_while_the_channel_is_above_the_squelch() -> None:
     run = _Run()
     run.signals[round(144.5e6)] = -60.0
-    run.tick(0.2)
+    run.tick(FIND)
     run.signals[round(145.5e6)] = -50.0  # stronger, but we hold
     run.signals[round(144.5e6)] = -75.0  # below the trigger, above the squelch
     run.tick(5.0)
@@ -170,19 +191,19 @@ def test_holds_while_the_channel_is_above_the_squelch() -> None:
 def test_moves_on_only_after_the_hold_time_below_the_squelch() -> None:
     run = _Run()
     run.signals[round(144.5e6)] = -60.0
-    run.tick(0.2)
+    run.tick(FIND)
     del run.signals[round(144.5e6)]  # transmission ends
     run.signals[round(145.5e6)] = -60.0
     run.tick(1.9)
     assert run.jumps == [144.5e6]
-    run.tick(0.3)
+    run.tick(0.7)  # the averaged level falls to the closing line in about 0.4 s
     assert run.jumps == [144.5e6, 145.5e6]
 
 
 def test_a_reply_within_the_hold_time_keeps_the_channel() -> None:
     run = _Run()
     run.signals[round(144.5e6)] = -60.0
-    run.tick(0.2)
+    run.tick(FIND)
     del run.signals[round(144.5e6)]
     run.signals[round(145.5e6)] = -60.0
     run.tick(1.5)
@@ -199,7 +220,7 @@ def test_stays_on_the_last_channel_until_a_new_hit() -> None:
     run.tick(0.5)
     assert run.status.state == "searching"
     run.signals[round(144.5e6)] = -60.0
-    run.tick(0.2)
+    run.tick(FIND)
     del run.signals[round(144.5e6)]
     run.tick(5.0)
     assert run.tuned == 144.5e6
@@ -227,17 +248,17 @@ def test_memory_lockouts_are_skipped() -> None:
     run = _Run(_config(memory_lockouts=frozenset({144.5e6})))
     run.signals[round(144.5e6)] = -60.0
     run.signals[round(145.5e6)] = -65.0
-    run.tick(0.3)
+    run.tick(FIND)
     assert run.jumps == [145.5e6]
 
 
 def test_locking_out_the_current_channel_releases_it() -> None:
     run = _Run()
     run.signals[round(144.5e6)] = -60.0
-    run.tick(0.2)
+    run.tick(FIND)
     run.signals[round(145.5e6)] = -65.0
     run.config = _config(lockouts=frozenset({144.5e6}))
-    run.tick(0.2)
+    run.tick(FIND)
     assert run.jumps == [144.5e6, 145.5e6]
 
 
@@ -252,7 +273,7 @@ def test_channels_beside_the_lo_are_skipped() -> None:
 def test_max_dwell_moves_on_and_skips_the_old_channel_until_it_drops() -> None:
     run = _Run(_config(max_dwell_s=3.0))
     run.signals[round(144.5e6)] = -60.0
-    run.tick(0.2)
+    run.tick(FIND)
     run.signals[round(145.5e6)] = -65.0
     run.tick(2.8)
     assert run.jumps == [144.5e6]
@@ -264,7 +285,7 @@ def test_max_dwell_moves_on_and_skips_the_old_channel_until_it_drops() -> None:
     del run.signals[round(144.5e6)]
     run.tick(0.2)
     run.signals[round(144.5e6)] = -60.0  # a new transmission
-    run.tick(0.3)
+    run.tick(FIND)
     assert run.jumps == [144.5e6, 145.5e6, 144.5e6]
 
 
@@ -291,7 +312,7 @@ def test_a_channel_left_as_not_voice_waits_until_its_signal_drops() -> None:
     run.tick(2.5)
     assert run.status.state == "waiting"  # nowhere else to go: it stays, muted
     run.signals[round(145.5e6)] = -65.0
-    run.tick(0.3)
+    run.tick(FIND)
     assert run.jumps == [144.5e6, 145.5e6]
     del run.signals[round(145.5e6)]
     run.tick(3.0)  # 144.5 is still on: not taken back
@@ -299,7 +320,7 @@ def test_a_channel_left_as_not_voice_waits_until_its_signal_drops() -> None:
     del run.signals[round(144.5e6)]
     run.tick(0.2)
     run.signals[round(144.5e6)] = -60.0  # a new transmission
-    run.tick(0.3)
+    run.tick(FIND)
     assert run.jumps == [144.5e6, 145.5e6, 144.5e6]
 
 
@@ -328,10 +349,12 @@ def test_a_requested_jump_is_not_repeated_while_the_engine_applies_it() -> None:
     }
     targets = [
         controller.update(t, run.config, run.channels, levels, **kwargs)[0]
-        for t in (0.0, 0.1, 0.2, 0.3)
+        for t in (0.0, ATTACK_S, ATTACK_S + 0.1, ATTACK_S + 0.2)
     ]
     assert targets == [None, 144.5e6, None, None]
-    assert controller.update(0.7, run.config, run.channels, levels, **kwargs)[0] == 144.5e6
+    assert (
+        controller.update(ATTACK_S + 0.6, run.config, run.channels, levels, **kwargs)[0] == 144.5e6
+    )
 
 
 def test_the_hold_never_sits_above_the_trigger() -> None:
@@ -339,7 +362,7 @@ def test_the_hold_never_sits_above_the_trigger() -> None:
     must still count as open while it is above the trigger."""
     run = _Run()
     run.signals[round(144.5e6)] = -65.0
-    run.tick(0.2)
+    run.tick(FIND)
     run.signals[round(145.5e6)] = -60.0
     controller, channels = run.controller, run.channels
     levels = np.array([run.level(f) for f in channels])
@@ -364,7 +387,7 @@ def test_a_channel_reached_by_a_jump_key_is_held_like_one_it_found() -> None:
     while quiet, so SEARCH doesn't jump straight back to the channel left."""
     run = _Run()
     run.signals[round(144.5e6)] = -60.0
-    run.tick(0.3)
+    run.tick(FIND)
     assert run.jumps == [144.5e6]
     run.tuned = 145.5e6  # a jump key, to a quiet channel; 144.5 MHz is still active
     run.tick(run.config.hold_s - 0.1)
@@ -405,7 +428,7 @@ def test_without_a_trigger_it_follows_the_squelch() -> None:
     run = _Run(_config(trigger_db=None))
     run.signals[round(144.5e6)] = SQUELCH + 2.0  # opens the squelch, under the trigger
     run.signals[round(145.5e6)] = SQUELCH + 4.0
-    run.tick(0.3)
+    run.tick(FIND)
     assert run.jumps == [145.5e6]
 
 
@@ -489,7 +512,8 @@ def test_the_locating_levels_pick_among_channels_that_read_alike() -> None:
         "locate_db": locate,
     }
     targets = [
-        controller.update(t, config, channels, levels, **kwargs)[0] for t in (0.0, 0.05, 0.1)
+        controller.update(t, config, channels, levels, **kwargs)[0]
+        for t in np.arange(0.0, ATTACK_S + 0.01, 0.05)
     ]
     assert targets[-1] == 145.5e6
 
@@ -503,7 +527,7 @@ def test_noise_at_the_squelch_does_not_hold_a_channel_whose_squelch_is_shut() ->
     rng = np.random.default_rng(0)
     run = _Run()
     run.signals[round(144.5e6)] = -60.0
-    run.tick(0.2)
+    run.tick(FIND)
     run.signals[round(145.5e6)] = -60.0
     run.squelch_open = False
     for _ in range(int(4.0 / 0.05)):
@@ -515,7 +539,7 @@ def test_noise_at_the_squelch_does_not_hold_a_channel_whose_squelch_is_shut() ->
 def test_holds_while_the_squelch_is_open_even_if_a_frame_reads_low() -> None:
     run = _Run()
     run.signals[round(144.5e6)] = -60.0
-    run.tick(0.2)
+    run.tick(FIND)
     run.signals[round(145.5e6)] = -50.0
     run.signals[round(144.5e6)] = NOISE  # the FFT frame misses it; the squelch hears it
     run.squelch_open = True
@@ -526,17 +550,33 @@ def test_holds_while_the_squelch_is_open_even_if_a_frame_reads_low() -> None:
     assert run.jumps == [144.5e6, 145.5e6]
 
 
-def test_without_the_demodulators_squelch_the_level_holds_down_to_3_db_under_it() -> None:
-    """Decoders report no squelch: the frame level decides, with the squelch's own
-    hysteresis (open at the line, held until 3 dB under it)."""
+def test_without_the_demodulators_squelch_the_averaged_level_stands_in_for_it() -> None:
+    """Decoders report no squelch: the dial channel's averaged level opens at the line
+    and holds the channel down to LEVEL_HYSTERESIS_DB under it. The squelch's 3 dB kept
+    SEARCH on a finished channel whose noise sat within 3 dB under the line."""
     run = _Run()
     run.signals[round(144.5e6)] = -60.0
-    run.tick(0.2)
+    run.tick(FIND)
     assert run.jumps == [144.5e6]
     run.signals[round(145.5e6)] = -60.0
-    run.signals[round(144.5e6)] = SQUELCH - 2.0  # under the line, within the 3 dB
+    run.signals[round(144.5e6)] = SQUELCH - LEVEL_HYSTERESIS_DB / 2  # still held
     run.tick(5.0)
     assert run.jumps == [144.5e6]
-    run.signals[round(144.5e6)] = SQUELCH - 4.0
-    run.tick(2.5)
+    run.signals[round(144.5e6)] = SQUELCH - 2.0  # the call is over, noise 2 dB under
+    run.tick(run.config.hold_s + 0.5)
+    assert run.jumps == [144.5e6, 145.5e6]
+
+
+def test_a_channel_whose_squelch_does_not_open_is_left_soon() -> None:
+    """A jump decided on frames that read above the squelch, onto a channel whose
+    squelch stays shut (noise near the line), is left after ARRIVAL_S instead of
+    being held the full hold while real transmissions are missed."""
+    run = _Run()
+    run.squelch_open = False
+    run.signals[round(144.5e6)] = -60.0
+    run.tick(FIND)
+    assert run.jumps == [144.5e6]
+    del run.signals[round(144.5e6)]
+    run.signals[round(145.5e6)] = -60.0
+    run.tick(ARRIVAL_S + 0.15)
     assert run.jumps == [144.5e6, 145.5e6]

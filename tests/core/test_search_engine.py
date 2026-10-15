@@ -29,7 +29,7 @@ from tsdr.core.sdr.exceptions import SDRException
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
 from tsdr.core.sdr.pipeline.stages.search_stage import SearchStage, audio_channel
 from tsdr.core.sdr.samples_batch import SamplesBatch
-from tsdr.core.sdr.search import LOCKOUT_TAG
+from tsdr.core.sdr.search import ATTACK_S, LOCKOUT_TAG
 from tsdr.core.sdr.tune_policy import fitting_offset
 from tsdr.core.search_control import (
     clear_session_lockouts,
@@ -239,6 +239,10 @@ def test_a_step_change_follows_into_search(engine: SDREngine) -> None:
 # --- the stage --------------------------------------------------------------
 
 
+# Batches (at 20 a second) for SEARCH to find a carrier, jump to it and report it.
+FIND_BATCHES = round(ATTACK_S / 0.05) + 3
+
+
 def _batch(
     config: DeviceConfig, t: float, tones: dict[float, float], rate: float = RATE
 ) -> SamplesBatch:
@@ -273,7 +277,7 @@ def test_the_stage_finds_a_carrier_and_the_engine_tunes_to_it(
         device_context=context, event_bus=engine.event_bus, config=engine.config
     )
     carrier = 147.0e6
-    for i in range(4):
+    for i in range(FIND_BATCHES):
         stage.on_config_change(context.config)
         batch = _batch(context.config, 1000.0 + 0.05 * i, {carrier: -30.0}, reported_rate)
         stage.process(batch, pipeline_context)
@@ -308,7 +312,7 @@ def test_the_stage_holds_while_the_demodulators_squelch_is_open(
             stage.process(_batch(context.config, t[0], tones), pipeline_context)
             t[0] += 0.05
 
-    feed(0.3, {first: -30.0})
+    feed(ATTACK_S + 0.15, {first: -30.0})
     assert _config(engine).tuned_frequency == first
     squelch["open"] = True
     above_squelch = audio_channel(context.config).squelch_db + 3.0
@@ -345,17 +349,19 @@ def _nfm(rate: float, seconds: float, offset_hz: float, start: float, stop: floa
 
 
 def test_search_follows_transmissions_through_the_running_pipeline(tmp_path) -> None:
-    """A recording with two transmissions, one after the other: SEARCH goes to
-    the first, holds it, and moves to the second once the first has been
-    quiet for the hold time."""
-    rate, seconds = 1e6, 2.0
+    """A recording with two transmissions, one after the other: SEARCH, running in the
+    engine's pipeline, goes to each. In either order: the file plays in real time, and on a
+    cold numba cache the pipeline's first batches wait seconds for its kernels to compile,
+    so what it can't keep up with is dropped (the order and the hold are the controller
+    tests' business)."""
+    rate, seconds = 1e6, 3.0
     rng = np.random.default_rng(0)
     n = int(rate * seconds)
     iq = (rng.normal(size=n) + 1j * rng.normal(size=n)).astype(np.complex64) * np.float32(
         1e-3 / np.sqrt(2)
     )
     iq += _nfm(rate, seconds, 200e3, 0.3, 1.3)
-    iq += _nfm(rate, seconds, -250e3, 1.0, 2.0)
+    iq += _nfm(rate, seconds, -250e3, 1.0, 3.0)
     path = tmp_path / "two.cf32"
     iq.tofile(path)
 
@@ -378,13 +384,18 @@ def test_search_follows_transmissions_through_the_running_pipeline(tmp_path) -> 
         while engine.devices["file"].state != DeviceState.RUNNING and time.monotonic() < deadline:
             time.sleep(0.01)
         start_search("file", trigger_db=-45.0, hold_s=0.2)
-        time.sleep(1.8)
+        # Polled: the second jump comes at about 1.6 s, later on a busy machine or a cold cache.
+        deadline = time.monotonic() + 10.0
+        while len(set(tuned) - {DeviceConfig().center_frequency}) < 2:
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.02)
     finally:
         engine.stop_device("file")
         engine.shutdown(timeout=5.0)
     center = DeviceConfig().center_frequency
     jumps = [f - center for f in tuned if f != center]
-    assert jumps[:2] == [200e3, -250e3]
+    assert sorted(jumps[:2]) == [-250e3, 200e3]
 
 
 def test_a_jump_decided_before_a_manual_tune_does_not_land(
@@ -548,7 +559,7 @@ def test_jump_targets_without_a_demodulator_use_spectrum_peaks(engine: SDREngine
     assert any(abs(t - 147.0031e6) < RATE / context.config.fft_size for t in targets)
 
 
-def _stage_run(engine: SDREngine, tones: dict[float, float], batches: int = 4) -> None:
+def _stage_run(engine: SDREngine, tones: dict[float, float], batches: int = FIND_BATCHES) -> None:
     context = engine.devices["pluto"]
     stage = SearchStage(context.config)
     pipeline_context = PipelineContext(

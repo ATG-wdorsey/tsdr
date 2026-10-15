@@ -1,7 +1,7 @@
 import numpy as np
 
 from tsdr.core.sdr.buffers import CircularBuffer
-from tsdr.core.sdr.config import DeviceConfig
+from tsdr.core.sdr.config import DeviceConfig, SDRConfig
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
 from tsdr.core.sdr.processing import (
     apply_dc_offset_correction,
@@ -11,7 +11,11 @@ from tsdr.core.sdr.processing import (
 )
 from tsdr.core.sdr.samples_batch import SamplesBatch
 from tsdr.core.tracing import span, traced
+from tsdr.radio.dsp._kernels import add_power_c64, iq_sums_c64, window_corrected_into
 from tsdr.radio.dsp.fft import FFTPlan
+
+# FFT frames SEARCH averages per batch (spread over it) while it runs.
+SEARCH_FRAMES = 8
 
 
 class FFTStage:
@@ -77,6 +81,46 @@ class FFTStage:
             self._cached_sample_rate = sample_rate
         return self._cached_fftfreq
 
+    def _search_spectrum(
+        self, iq: np.ndarray, config: SDRConfig | None, latest: np.ndarray
+    ) -> np.ndarray:
+        """SEARCH's spectrum: the power of SEARCH_FRAMES frames spread over the batch,
+        averaged (one frame of noise reads about 1 dB either side of its mean in a 12.5 kHz
+        channel at 32768 points). The newest frame is the display's. The others get the
+        display's corrections, fused with the window into the FFT's input in one pass."""
+        n = self.fft_size
+        if len(iq) < 2 * n:
+            return latest
+        window, inv_norm_sq = self._get_or_create_window()
+        frames = min(SEARCH_FRAMES, len(iq) // n)
+        starts = np.linspace(0, len(iq) - n, frames).astype(np.intp)[:-1]
+        dc = config is not None and config.dc_offset_correction
+        balance = config is not None and config.iq_imbalance_correction
+        total = np.zeros(n, dtype=np.float32)
+        for start in starts:
+            segment = iq[start : start + n]
+            dc_i = dc_q = 0.0
+            q_scale = 1.0
+            if dc or balance:
+                sr, si, srr, sii = iq_sums_c64(segment)
+                if dc:
+                    dc_i, dc_q = sr / n, si / n
+                var_i = srr / n - (sr / n) ** 2
+                var_q = sii / n - (si / n) ** 2
+                if balance and var_i > 0 and var_q > 0:
+                    q_scale = float(np.sqrt(var_i / var_q))
+            window_corrected_into(segment, window, dc_i, dc_q, q_scale, self._fft_plan.input)
+            add_power_c64(self._fft_plan.run(), total)
+        total = np.fft.fftshift(total)
+        total *= np.float32(inv_norm_sq)
+        # exp and log, not power and log10: numpy's float32 power and log10 take 10-15x longer.
+        total += np.exp(latest * np.float32(np.log(10.0) / 10.0))
+        total *= np.float32(1.0 / frames)
+        total += np.float32(1e-20)
+        np.log(total, out=total)
+        total *= np.float32(10.0 / np.log(10.0))
+        return total
+
     @traced("fft")
     def process(self, data: SamplesBatch, context: PipelineContext) -> SamplesBatch | None:
         """Compute FFT from IQ samples.
@@ -114,6 +158,10 @@ class FFTStage:
             window, inv_norm_sq = self._get_or_create_window()
             spectrum = compute_fft(iq_window, window, inv_norm_sq, self._fft_plan)
         instant_spectrum = spectrum
+        device = context.device_context
+        if SEARCH_FRAMES > 1 and device is not None and device.config.search is not None:
+            with span("search_frames"):
+                instant_spectrum = self._search_spectrum(data.iq_samples, config, spectrum)
 
         # Apply exponential moving average for spectrum smoothing
         # alpha = 1/N where N is spectrum_averaging: N=1 means no averaging, higher = more smoothing

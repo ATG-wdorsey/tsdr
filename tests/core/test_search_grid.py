@@ -19,6 +19,7 @@ from tsdr.core.sdr.engine import SDREngine
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
 from tsdr.core.sdr.pipeline.stages.search_stage import SearchStage
 from tsdr.core.sdr.samples_batch import SamplesBatch
+from tsdr.core.sdr.search import ATTACK_S
 from tsdr.core.search_control import set_search_step, start_search
 from tsdr.core.tuning_state import get_tuning_state, init_tuning_state
 from tsdr.devices import MockParams, mock
@@ -109,7 +110,7 @@ def test_a_station_between_100_khz_grid_points_is_found(engine: SDREngine) -> No
         device_context=context, event_bus=engine.event_bus, config=engine.config
     )
     station = 146.950e6  # off the 100 kHz grid, on the 12.5 kHz one
-    for i in range(6):
+    for i in range(round(ATTACK_S / 0.05) + 3):
         stage.on_config_change(context.config)
         stage.process(_batch(context.config, 1000.0 + 0.05 * i, {station: -30.0}), pipeline_context)
     assert context.config.tuned_frequency == station
