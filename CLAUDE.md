@@ -414,7 +414,18 @@ USB/LSB and AM: `CARRIER_MODES`) and feeds it the audio; `with_decoder` /
 `carried_decoder` keep it across mode changes. A spec saved with mode SSTV loads as USB +
 SSTV. SSTV starts a picture on its VIS or, joined under way, on its line syncs
 (`find_sync_train`: their period names the mode); the leader's or the syncs' measured tone
-gives the mistune, taken off every tone; ten lines without a sync end a picture.
+gives the mistune, taken off every tone. The line timing is a straight line through the syncs
+taken (`SlantTracker`: Theil-Sen over the latest 32, the line length weighed against the
+mode's by how sure each is); every line is placed on it, so one sync's jitter doesn't move a
+line, and a fade is crossed on it. A sync after a miss counts once another near the line
+confirms it within four lines; until two syncs agree, two off the line that a sender's clock
+(0.5 % of a line per line) can explain start it there. The search window grows by what the
+line length may be off. A picture whose syncs have been found where its mode puts them (3
+lines) ends when they are gone for ten lines and 20 s (a shorter fade leaves a band of noise);
+one without (begun in the wrong mode) after ten lines; any ends when the next picture's VIS turns up while
+syncs are missing (searched only after the picture's start, so it can't begin again from its
+own). The lines without a sync at its end are cleared (fewer than ten left: no picture), and
+`look_again` resumes looking over the audio from there.
 
 All demodulators inherit from `radio/demodulators/__init__.py:Demodulator`. The base class owns the `_audio_batches` buffer and provides `_emit_audio(samples, sample_rate, timestamp, *, stereo=False)` and `get_audio()`. Subclass `__init__` must call `super().__init__()`; subclass `reset()` should call `super().reset()` to clear the buffer.
 

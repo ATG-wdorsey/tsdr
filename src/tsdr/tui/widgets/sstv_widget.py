@@ -54,6 +54,10 @@ class SSTVWidget(Horizontal, PanelWidget):
     def __init__(self) -> None:
         super().__init__()
         self._latest: SSTVData | None = None
+        # The picture shown: the newest one any message carried, kept until the next
+        # picture's first line replaces it (a picture's DONE and the next start can
+        # arrive in one event).
+        self._image: np.ndarray | None = None
         self._last_rendered_id: int = -1  # id() of the last numpy image rendered
         self._status = Static("", id="sstv-status")
         self._progress = Static("", id="sstv-progress")
@@ -82,9 +86,9 @@ class SSTVWidget(Horizontal, PanelWidget):
     def _apply_image_mode(self, enabled: bool) -> None:
         self._kitty.display = enabled
         self._alt.display = not enabled
-        if enabled and self._latest is not None and self._latest.image is not None:
+        if enabled and self._image is not None:
             # Defer until layout is established so the Kitty widget has a region.
-            self.call_after_refresh(self._render_image, self._latest.image)
+            self.call_after_refresh(self._render_image, self._image)
         else:
             self._kitty.remove_image(_IMAGE_KEY)
             self._last_rendered_id = -1
@@ -94,27 +98,16 @@ class SSTVWidget(Horizontal, PanelWidget):
         for msg in event.messages:
             if isinstance(msg.data, SSTVData):
                 latest = msg.data
+                if msg.data.image is not None:
+                    self._image = msg.data.image
         if latest is None:
             return
         self._latest = latest
         self._refresh_display()
-        # A new transmission's on_mode message arrives as state=decoding with
-        # line_index=-1 and no image; drop the previous frame so it doesn't
-        # linger under the incoming image's first line snapshot.
-        if (
-            latest.state == StreamerState.DECODING
-            and latest.line_index < 0
-            and latest.image is None
-        ):
-            self._kitty.remove_image(_IMAGE_KEY)
-            self._last_rendered_id = -1
-        if (
-            self.image_mode
-            and latest.image is not None
-            and id(latest.image) != self._last_rendered_id
-        ):
-            self._render_image(latest.image)
-            self._last_rendered_id = id(latest.image)
+        image = self._image
+        if self.image_mode and image is not None and id(image) != self._last_rendered_id:
+            self._render_image(image)
+            self._last_rendered_id = id(image)
 
     def _refresh_display(self) -> None:
         data = self._latest

@@ -203,12 +203,12 @@ class SSTVAudioDecoder(AudioDecoder):
         self._push(f"SSTV {mode.name} L{idx + 1}/{mode.scan_lines}", data)
 
     def _on_image(self, mode: Mode, img: np.ndarray) -> None:
+        assert self._decoder is not None
         data = self._make_data(
-            StreamerState.DONE, mode, line_index=mode.scan_lines - 1, image=img.copy()
+            StreamerState.DONE, mode, line_index=self._decoder.picture_lines - 1, image=img.copy()
         )
         self._push(f"SSTV {mode.name} (done)", data)
-        assert self._decoder is not None
-        self._decoder.reset()
+        self._decoder.look_again()
         self._last_line_emit_mono = 0.0
         self._next_looking_emit_sample = 0
 

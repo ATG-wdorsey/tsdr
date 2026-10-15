@@ -17,6 +17,7 @@ coefficients from that paper's Appendix B.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -402,9 +403,10 @@ def _close_gaps(mask: np.ndarray, gap_n: int) -> np.ndarray:
     return out
 
 
-def find_vis(freq: np.ndarray, fs: int) -> tuple[int, int, float] | None:
+def find_vis(freq: np.ndarray, fs: int, *, parity: bool = False) -> tuple[int, int, float] | None:
     """Locate a VIS header. Returns (vis_code, sample_index_after_stop_bit, leader_hz):
-    the leader's measured frequency gives the picture's mistune (SSB).
+    the leader's measured frequency gives the picture's mistune (SSB). With ``parity``,
+    only a VIS whose parity checks counts (searching within a picture).
 
     Anchors on the leader tone, not the sync band, so the detector tolerates
     operator mistuning up to ±200 Hz. For each ≥200 ms run of smoothed freq
@@ -462,7 +464,7 @@ def find_vis(freq: np.ndarray, fs: int) -> tuple[int, int, float] | None:
                 start_offset = i
                 break
         if start_offset < 0:
-            logger.info(
+            logger.debug(
                 "sstv_vis_near_miss reason=no_start_bit leader_freq=%.0f t=%.3fs",
                 leader_freq,
                 leader_end / fs,
@@ -498,15 +500,14 @@ def find_vis(freq: np.ndarray, fs: int) -> tuple[int, int, float] | None:
         # Require a known mode: image data and voice can synthesize bit
         # patterns that satisfy parity but decode to garbage VIS codes, and
         # any VIS we can't render is useless to surface anyway.
-        if vis not in MODES:
+        if vis not in MODES or (parity and not parity_ok):
             continue
         global_start = start_bit_idx
         stop_end = start_bit_idx + 10 * bit_n
 
         leader_dev = abs(leader_freq - FREQ_LEADER)
         score = (200.0 if parity_ok else 0.0) + bit_conf * 0.5 - leader_dev * 0.25
-        log = logger.info if not parity_ok else logger.debug
-        log(
+        logger.debug(
             "sstv_vis_candidate vis=%d parity=%s leader_freq=%.0f bit_conf=%.0f "
             "score=%.0f at_sample=%d t=%.3fs",
             vis,
@@ -523,7 +524,7 @@ def find_vis(freq: np.ndarray, fs: int) -> tuple[int, int, float] | None:
         return None
     candidates.sort(reverse=True)
     score, vis, stop_end, leader_freq = candidates[0]
-    logger.info(
+    logger.debug(
         "sstv_vis_detected vis=%d score=%.0f candidates=%d leader_hz=%.0f",
         vis,
         score,
@@ -564,6 +565,20 @@ def scan_to_pixels(scan: np.ndarray, width: int, offset_hz: float = 0.0) -> np.n
     return freq_to_pixel(sums / counts, offset_hz)
 
 
+# A line sync: 60 % of a sync length within 150 Hz of the picture's sync tone, its median
+# within 75 Hz, and no wider than 1.5 syncs (a VIS start bit runs on into its bits, all in
+# that band). A short sync (Martin, Pasokon, Wrasse: about 5 ms) must also be a steady
+# tone. In SSB noise (2.4 kHz) these take noise for a Martin sync on about 2 % of the lines
+# instead of 24 %; real syncs are found as often down to 6 dB, at 3 dB about 8 points less
+# often (Martin 84 %), and at 0 dB 15-30 points less. The picture's tone, measured from
+# its leader, is within 15 Hz at 6 dB and up and 52 Hz at 3 dB; 100 Hz let in four times
+# as much noise for Robot 36's longer sync.
+_SYNC_TONE_HZ = 75.0
+_SYNC_MAX_WIDTH = 1.5
+_SHORT_SYNC_MS = 8.0
+_SHORT_SYNC_MAX_STD_HZ = 100.0
+
+
 def find_sync(
     freq: np.ndarray,
     expected: int,
@@ -584,12 +599,27 @@ def find_sync(
         return None
     window = freq[lo:hi]
     window_s = _smooth(window, _ms_to_samples(2.0, fs))
-    is_sync = ((window_s > 1050 + offset_hz) & (window_s < 1350 + offset_hz)).astype(np.float32)
+    target = FREQ_SYNC + offset_hz
+    in_band = np.abs(window_s - target) < 150.0
     kernel = np.ones(sync_n, dtype=np.float32)
-    conv = np.convolve(is_sync, kernel, mode="valid")
-    if conv.max() < sync_n * 0.6:
+    conv = np.convolve(in_band.astype(np.float32), kernel, mode="valid")
+    at = int(np.argmax(conv))
+    if conv[at] < sync_n * 0.6:
         return None
-    return lo + int(np.argmax(conv))
+    core = window_s[at + sync_n // 5 : at + sync_n - sync_n // 5]
+    if abs(float(np.median(core)) - target) > _SYNC_TONE_HZ:
+        return None
+    if sync_ms < _SHORT_SYNC_MS and float(core.std()) > _SHORT_SYNC_MAX_STD_HZ:
+        return None
+    # The width of the band run around the sync's middle.
+    gaps = np.flatnonzero(~_close_gaps(in_band, _ms_to_samples(1.0, fs)))
+    mid = at + sync_n // 2
+    k = int(np.searchsorted(gaps, mid))
+    run_lo = int(gaps[k - 1]) + 1 if k > 0 else 0
+    run_hi = int(gaps[k]) if k < len(gaps) else len(in_band)
+    if run_hi - run_lo > _SYNC_MAX_WIDTH * sync_n:
+        return None
+    return lo + at
 
 
 # A picture joined without its VIS: this many line syncs in a row, each the mode's sync
@@ -669,29 +699,81 @@ def find_sync_train(freq: np.ndarray, fs: int, modes: list[Mode]) -> SyncTrain |
     return None
 
 
+# How far a sender's clock may run off, as a share of the line per line: how far a sync may
+# be from where a line length not yet measured puts it.
+_CLOCK_SHARE = 1 / 200
+_FIT_SYNCS = 32  # the latest syncs taken that the line is fitted to
+
+
 @dataclass
 class SlantTracker:
-    """Integral-feedback tracker for per-line sample-rate drift.
-
-    Each line, the decoder observes ``drift = actual_sync - expected_sync``.
-    We absorb a fraction of every observation into ``correction``, which is
-    added to the nominal line length for subsequent lines. With a true drift
-    of C samples per line, the loop converges geometrically to correction=C.
-    """
+    """Where a picture's line syncs fall: a straight line, sync = start + line length * line,
+    fitted to the latest syncs taken. Theil-Sen (the line length is the median of the slopes
+    between pairs of syncs), so a stray sync barely moves it, weighed against the mode's line
+    length by how sure each is: syncs a line or two apart, each off by its jitter, say little
+    about a sender's clock, which is within 0.5 %. A fade is crossed on the line length the
+    picture has shown so far. Positions are samples in the decoder's buffer; `rebase` follows
+    it when audio is dropped from its front."""
 
     nominal_line_samples: int = 0
-    correction: int = 0
-    alpha: float = 0.3
+    jitter: float = 1.0  # the least scatter assumed of the syncs found, samples
+    lines: list[int] = field(default_factory=list)  # the syncs taken: their lines
+    syncs: list[float] = field(default_factory=list)  # and where they were found
+    line_length: float = 0.0  # samples; the nominal until two syncs are taken
+    line_sigma: float = 0.0  # its standard error, samples
+    start: float = 0.0  # where the line through the syncs puts line 0's
 
-    def observe(self, drift: int) -> None:
-        delta = int(round(self.alpha * drift))
-        # Cap correction at ±5% of nominal to defend against runaway
-        # detection noise; this is far more than any real clock mismatch.
-        cap = max(1, int(self.nominal_line_samples * 0.05))
-        self.correction = max(-cap, min(cap, self.correction + delta))
+    def __post_init__(self) -> None:
+        self.restart()
+
+    @property
+    def correction(self) -> int:
+        """The measured line length less the nominal, samples."""
+        return round(self.line_length - self.nominal_line_samples)
 
     def line_samples(self) -> int:
-        return self.nominal_line_samples + self.correction
+        return round(self.line_length)
+
+    def sync_at(self, line: int) -> float:
+        """Where the line through the syncs puts ``line``'s."""
+        return self.start + self.line_length * line
+
+    def rebase(self, shift: int) -> None:
+        if shift:
+            self.syncs = [s + shift for s in self.syncs]
+            self.start += shift
+
+    def restart(self) -> None:
+        self.lines.clear()
+        self.syncs.clear()
+        self.line_length = float(self.nominal_line_samples)
+        self.line_sigma = self.nominal_line_samples * _CLOCK_SHARE / 2
+
+    def take(self, line: int, sync: float) -> None:
+        self.lines.append(line)
+        self.syncs.append(float(sync))
+        del self.lines[:-_FIT_SYNCS], self.syncs[:-_FIT_SYNCS]
+        k = np.array(self.lines, dtype=np.float64)
+        at = np.array(self.syncs)
+        n = len(k)
+        if n >= 2:
+            i, j = np.triu_indices(n, 1)
+            slope = float(np.median((at[j] - at[i]) / (k[j] - k[i])))
+            resid = at - slope * k
+            spread = 1.4826 * float(np.median(np.abs(resid - np.median(resid))))
+            # The fit's standard error, and the clock's (0.5 % is two of them) about the
+            # nominal: the line length is their weighted mean.
+            fit_var = (max(spread, self.jitter) * math.sqrt(12.0 / n) / (k[-1] - k[0])) ** 2
+            prior_var = (self.nominal_line_samples * _CLOCK_SHARE / 2) ** 2
+            w = prior_var / (prior_var + fit_var)
+            self.line_length = self.nominal_line_samples + w * (slope - self.nominal_line_samples)
+            self.line_sigma = math.sqrt(prior_var * fit_var / (prior_var + fit_var))
+        self.start = float(np.median(at - self.line_length * k))
+
+    def line_error(self) -> float:
+        """How far the line length may be off, samples per line: three standard errors, at
+        most a sender clock's 0.5 %."""
+        return min(self.nominal_line_samples * _CLOCK_SHARE, 3.0 * self.line_sigma)
 
 
 @dataclass
@@ -718,12 +800,19 @@ class DecodeState:
     written_rows: list[int] = field(default_factory=list)
     slant: SlantTracker = field(default_factory=SlantTracker)
     offset_hz: float = 0.0  # the picture's mistune: every tone moved by it
-    missed_syncs: int = 0  # lines in a row whose sync was not found
+    missed_syncs: int = 0  # lines since the last sync taken (0: this line's was)
+    synced_lines: int = 0  # lines whose sync was taken
+    near_syncs: int = 0  # lines with a sync found near where expected, taken or not
+    line: int = 0  # lines aligned so far
+    next_cursor: int | None = None  # where the last line said the next begins
+    tentative: tuple[int, float] | None = None  # a sync near the track after a miss, unconfirmed
+    candidates: list[tuple[int, float]] = field(default_factory=list)  # recent syncs off it
 
 
 def make_decode_state(mode: Mode, fs: int, offset_hz: float = 0.0) -> DecodeState:
     img = np.zeros((mode.height, mode.width, 3), dtype=np.uint8)
-    slant = SlantTracker(nominal_line_samples=_ms_to_samples(mode.line_ms, fs))
+    nominal = _ms_to_samples(mode.line_ms, fs)
+    slant = SlantTracker(nominal_line_samples=nominal, jitter=_near(nominal, fs) / 3)
     if mode.color in ("ycrcb420", "ycrcb422"):
         cw = mode.chroma_width
         cr = np.full((mode.height, cw), 128, dtype=np.uint8)
@@ -757,26 +846,140 @@ def make_decode_state(mode: Mode, fs: int, offset_hz: float = 0.0) -> DecodeStat
     return DecodeState(mode=mode, image=img, slant=slant, offset_hz=offset_hz)
 
 
+def _near(nominal: int, fs: int) -> int:
+    """How far from the track a sync on it may be found: 1 ms and a quarter percent of a line."""
+    return _ms_to_samples(1.0, fs) + nominal // 400
+
+
+def sync_search_ms(state: DecodeState, fs: int) -> float:
+    """How far either side of where the track puts it a line's sync is looked for: 8 ms, more
+    for each line since the last sync taken (by what the line length may be off, at least
+    0.2 % of a line), up to a quarter of a line."""
+    slant = state.slant
+    nominal = slant.nominal_line_samples
+    per_line = max(0.002 * nominal, slant.line_error())
+    grown = min(per_line * state.missed_syncs, 0.25 * nominal)
+    return 8.0 + grown * 1000.0 / fs
+
+
+def joined_line_start(freq: np.ndarray, fs: int, train: SyncTrain) -> int:
+    """Where a joined picture's first line begins: at its first sync as `find_sync`
+    places it (a line's sync is then where the next is looked for), the train's own
+    estimate if it isn't found."""
+    sync = next(seg for seg in train.mode.segments if seg.kind == "sync")
+    sync_at_ms = _segment_offset(train.mode, "sync")
+    assert sync_at_ms is not None
+    sync_offset = _ms_to_samples(sync_at_ms, fs)
+    at = find_sync(freq, train.line_start + sync_offset, 8.0, sync.ms, fs, train.offset_hz)
+    return train.line_start if at is None else at - sync_offset
+
+
+_CONFIRM_LINES = 4  # a sync after a miss is taken once another confirms it within this many lines
+
+
 def _align_to_sync(freq: np.ndarray, fs: int, state: DecodeState, cursor: int) -> int:
-    """Find the sync pulse near its expected position, observe drift, and
-    return a cursor anchored to the line start. Search window grows with the
-    current slant correction so a large per-line drift can't slip past it.
+    """Find this line's sync where the picture's track puts it and return where the line
+    begins: on the track (the straight line through the syncs taken), so one sync's jitter
+    doesn't move a line. Sets ``state.next_cursor``.
+
+    A sync found near the track (1 ms and a quarter percent of a line, more by what the line
+    length may be off for each line since the last sync taken) is taken at once on the line
+    after a sync; after a miss it may be noise, and is taken once another near the track
+    confirms it within four lines. Until two syncs agree, the picture may be where its start
+    didn't put it: two syncs off the track within four lines that a sender's clock (0.5 %) can
+    explain start it there. Two that agree are the picture's line; it doesn't jump.
     """
     mode = state.mode
     sync_seg = next((s for s in mode.segments if s.kind == "sync"), None)
     sync_offset_ms = _segment_offset(mode, "sync")
+    slant = state.slant
+    nominal = slant.nominal_line_samples
     if sync_seg is None or sync_offset_ms is None:
+        state.next_cursor = cursor + nominal
         return cursor
-    expected_sync = cursor + _ms_to_samples(sync_offset_ms, fs)
-    slant_mag_ms = abs(state.slant.correction) * 1000.0 / fs
-    sync_at = find_sync(freq, expected_sync, 8.0 + slant_mag_ms, sync_seg.ms, fs, state.offset_hz)
-    if sync_at is None:
-        state.missed_syncs += 1
-        sync_at = expected_sync
+    sync_offset = _ms_to_samples(sync_offset_ms, fs)
+    if state.next_cursor is not None and cursor != state.next_cursor:
+        shift = cursor - state.next_cursor  # the streamer dropped audio before the cursor
+        slant.rebase(shift)
+        if state.tentative is not None:
+            state.tentative = (state.tentative[0], state.tentative[1] + shift)
+        state.candidates = [(k, at + shift) for k, at in state.candidates]
+    line = state.line
+    state.line += 1
+    if state.tentative is not None and line - state.tentative[0] > _CONFIRM_LINES:
+        state.tentative = None
+    state.candidates = [c for c in state.candidates if line - c[0] <= _CONFIRM_LINES]
+    expected = slant.sync_at(line) if slant.lines else float(cursor + sync_offset)
+    sync_at = find_sync(
+        freq, round(expected), sync_search_ms(state, fs), sync_seg.ms, fs, state.offset_hz
+    )
+    if sync_at is not None:
+        _place_sync(state, line, float(sync_at), expected, fs)
+    state.missed_syncs = line - (slant.lines[-1] if slant.lines else -1)
+    if not slant.lines:
+        state.next_cursor = cursor + nominal
+        return cursor
+    state.next_cursor = round(slant.sync_at(line + 1)) - sync_offset
+    return round(slant.sync_at(line)) - sync_offset
+
+
+def _place_sync(state: DecodeState, line: int, sync_at: float, expected: float, fs: int) -> None:
+    """Take a sync found on ``line`` into the track, hold it, or keep it as a candidate."""
+    slant = state.slant
+    nominal = slant.nominal_line_samples
+    near = _near(nominal, fs)
+    one_ms = _ms_to_samples(1.0, fs)
+    clock = nominal * _CLOCK_SHARE  # what a sender's clock moves a sync per line
+    off = sync_at - expected
+    if abs(off) <= one_ms + nominal // 200:
+        state.near_syncs += 1
+    if len(slant.lines) >= 2:
+        gap = line - slant.lines[-1]
+        error = slant.line_error()
+        allowed = near + gap * error
+    elif slant.lines:
+        # One sync: the next is where a sender's clock can put it.
+        gap = line - slant.lines[-1]
+        error = clock
+        allowed = one_ms + gap * clock
     else:
-        state.missed_syncs = 0
-    state.slant.observe(sync_at - expected_sync)
-    return sync_at - _ms_to_samples(sync_offset_ms, fs)
+        gap = line + 1  # from the start's estimate, as if line -1 had a sync there
+        error = clock
+        allowed = near + line * clock
+    if abs(off) <= allowed:
+        held = state.tentative
+        if gap == 1:
+            taken = [(line, sync_at)]
+        elif (
+            held is not None
+            and abs(sync_at - held[1] - (line - held[0]) * slant.line_length)
+            <= near + (line - held[0]) * error
+        ):
+            taken = [held, (line, sync_at)]
+        else:
+            state.tentative = (line, sync_at)
+            return
+    elif len(slant.lines) < 2:
+        pair = next(
+            (
+                c
+                for c in reversed(state.candidates)
+                if abs(sync_at - c[1] - (line - c[0]) * nominal) <= one_ms + (line - c[0]) * clock
+            ),
+            None,
+        )
+        if pair is None:
+            state.candidates.append((line, sync_at))
+            return
+        slant.restart()
+        taken = [pair, (line, sync_at)]
+    else:
+        return
+    for k, at in taken:
+        slant.take(k, at)
+    state.synced_lines += len(taken)
+    state.tentative = None
+    state.candidates.clear()
 
 
 def decode_line(freq: np.ndarray, fs: int, state: DecodeState, line_index: int, cursor: int) -> int:
@@ -873,7 +1076,8 @@ def decode_line(freq: np.ndarray, fs: int, state: DecodeState, line_index: int, 
                 )
                 state.written_rows.append(prev)
 
-    return cursor + state.slant.line_samples()
+    assert state.next_cursor is not None
+    return state.next_cursor
 
 
 def _decode_pd_line(
@@ -918,7 +1122,8 @@ def _decode_pd_line(
     if row_even < mode.height:
         state.image[row_even, :, :] = _ycrcb_to_rgb(state.y_plane[row_even], cr_row, cb_row)
         state.written_rows.append(row_even)
-    return cursor + state.slant.line_samples()
+    assert state.next_cursor is not None
+    return state.next_cursor
 
 
 def finalize_image(state: DecodeState) -> np.ndarray:
@@ -936,6 +1141,21 @@ def finalize_image(state: DecodeState) -> np.ndarray:
         cb_full = _upsample_x(cb, mode.width)
         state.image = _ycrcb_to_rgb(state.y_plane, cr_full, cb_full)
     return state.image
+
+
+def _clear_lines(state: DecodeState, first: int) -> None:
+    """Clear the picture from line ``first`` on (black, as lines not yet drawn)."""
+    mode = state.mode
+    row = 2 * first if mode.color == "pd_ycrcb" else first
+    state.image[row:] = 0
+    if state.y_plane is not None:
+        state.y_plane[row:] = 0
+    if mode.color in ("ycrcb420", "ycrcb422"):
+        # Neutral chroma, marked seen so no line above is copied down.
+        for plane, seen in ((state.cr_plane, state.cr_seen), (state.cb_plane, state.cb_seen)):
+            assert plane is not None and seen is not None
+            plane[row:] = 128
+            seen[row:] = True
 
 
 def _segment_offset(mode: Mode, kind: str) -> float | None:
@@ -1013,7 +1233,7 @@ def decode_offline(
         train = find_sync_train(freq, fs, [forced_mode] if forced_mode is not None else _MODE_LIST)
         if train is None:
             return None
-        mode, cursor, offset = train.mode, train.line_start, train.offset_hz
+        mode, cursor, offset = train.mode, joined_line_start(freq, fs, train), train.offset_hz
 
     state = make_decode_state(mode, fs, offset)
     for line in range(mode.scan_lines):
@@ -1044,13 +1264,18 @@ class StreamingSSTV:
 
     Push samples via :meth:`process`. The decoder runs a small state machine:
     waits for a VIS header, then decodes lines as enough samples arrive,
-    finally emits the completed image and resets.
+    finally emits the completed image; :meth:`look_again` then looks for the
+    next picture in the audio from where this one ended.
 
     When ``forced_mode`` is set, the parsed VIS code is ignored and the given
     mode is used instead. The detected VIS pulse position still anchors timing.
     Without a VIS (the picture was under way), the line syncs start it: their period
-    names the mode, or only the forced mode is looked for. Ten lines in a row without
-    a sync end a picture (the sender stopped, or the signal went).
+    names the mode, or only the forced mode is looked for.
+
+    A picture ends early when its syncs are gone for ten lines and 20 s (the sender
+    stopped, or the signal went: a shorter fade only leaves a band of noise), or when
+    the next picture's VIS turns up while they are missing. The lines without a sync
+    at its end are cleared.
     """
 
     # Drop old samples when we have more than this much buffer outside the
@@ -1061,6 +1286,10 @@ class StreamingSSTV:
     _LOOKING_KEEP_S = 5.5
     _SEARCH_EVERY_S = 0.25
     _MAX_MISSED_SYNCS = 10
+    _MISSED_SYNCS_S = 20.0
+    _LOCKED_LINES = 3  # lines with a sync near where expected before a fade is waited out
+    # A VIS (two leaders, its bits) lies within this much audio.
+    _VIS_SPAN_S = 1.5
 
     def __init__(
         self,
@@ -1090,6 +1319,13 @@ class StreamingSSTV:
         self._line_index = 0
         self._cursor = 0  # global sample index where current line begins
         self._next_search = 0  # sample count at which LOOKING searches again
+        # While syncs are missing: where the audio that may hold the next VIS begins
+        # (the line before the first missed one), and how far it has been searched.
+        self._miss_from: int | None = None
+        self._vis_searched_to = 0
+        self._picture_from = 0  # where the picture began (past its VIS)
+        self._picture_lines = 0  # lines in the last picture emitted
+        self._resume_at = 0  # where looking resumes after it
 
     def process(self, samples: np.ndarray) -> None:
         """Push a chunk of mono audio samples."""
@@ -1108,7 +1344,22 @@ class StreamingSSTV:
             self._next_search = 0
             self._advance()
         if self.state == StreamerState.DECODING and self._dstate is not None:
-            self._emit_image()
+            self._emit_image(self._line_index, self._produced)
+
+    def look_again(self) -> None:
+        """Look for the next picture, in the audio from where the last one ended on: its
+        VIS may already be there."""
+        drop = min(max(self._resume_at - self._buf_offset, 0), len(self._freq))
+        self._freq = self._freq[drop:]
+        self._buf_offset += drop
+        self.state = StreamerState.LOOKING
+        self.mode = None
+        self.vis_code = None
+        self._dstate = None
+        self._line_index = 0
+        self._cursor = 0
+        self._next_search = 0
+        self._miss_from = None
 
     def reset(self) -> None:
         self._hilbert.reset()
@@ -1124,6 +1375,7 @@ class StreamingSSTV:
         self._line_index = 0
         self._cursor = 0
         self._next_search = 0
+        self._miss_from = None
 
     def set_forced_mode(self, mode: Mode | None) -> None:
         """Override VIS-code interpretation. Takes effect on the next VIS
@@ -1134,6 +1386,11 @@ class StreamingSSTV:
     @property
     def line_index(self) -> int:
         return self._line_index
+
+    @property
+    def picture_lines(self) -> int:
+        """Lines in the picture last emitted (fewer than the mode's when it ended early)."""
+        return self._picture_lines
 
     @property
     def dstate(self) -> DecodeState | None:
@@ -1209,9 +1466,10 @@ class StreamingSSTV:
                 return False
             mode = train.mode
             self.vis_code = None
-            self._begin(mode, train.line_start + self._buf_offset, train.offset_hz)
+            start = joined_line_start(self._freq, self.fs, train)
+            self._begin(mode, start + self._buf_offset, train.offset_hz)
             logger.info(
-                "sstv_stream_joined mode=%s syncs=%d offset_hz=%.0f forced=%s",
+                'sstv_stream_joined mode="%s" syncs=%d offset_hz=%.0f forced=%s',
                 mode.name,
                 train.syncs,
                 train.offset_hz,
@@ -1225,21 +1483,24 @@ class StreamingSSTV:
         self.mode = mode
         self._dstate = make_decode_state(mode, self.fs, offset_hz)
         self._cursor = cursor
+        self._picture_from = cursor
         self._line_index = 0
+        self._miss_from = None
         self.state = StreamerState.DECODING
 
     def _try_decode_line(self) -> bool:
         if self.mode is None or self._dstate is None:
             return False
         line_samples = self._dstate.slant.line_samples()
-        # Need full line + sync search margin to decode this line. Margin
-        # scales with current slant correction so we don't dispatch decode_line
-        # before the actual sync arrives.
-        slant_mag = abs(self._dstate.slant.correction)
-        margin = _ms_to_samples(10.0, self.fs) + slant_mag
+        # Need full line + sync search margin to decode this line, so we don't
+        # dispatch decode_line before the actual sync arrives.
+        margin = _ms_to_samples(sync_search_ms(self._dstate, self.fs) + 2.0, self.fs)
         need_end_global = self._cursor + line_samples + margin
         if need_end_global - self._buf_offset > len(self._freq):
             return False  # wait for more samples
+        if self._miss_from is not None and self._next_vis_found(need_end_global):
+            return True
+        line_start = self._cursor
         local_cursor = self._local(self._cursor)
         next_local = decode_line(self._freq, self.fs, self._dstate, self._line_index, local_cursor)
         self._cursor = next_local + self._buf_offset
@@ -1247,24 +1508,72 @@ class StreamingSSTV:
             for r in self._dstate.written_rows:
                 self.events.on_line(self.mode, r, self._dstate.image[r])
         self._line_index += 1
-        if self._dstate.missed_syncs >= self._MAX_MISSED_SYNCS:
-            logger.info(
-                "sstv_picture_ended reason=no_sync mode=%s line=%d",
-                self.mode.name,
-                self._line_index,
-            )
-            self._emit_image()
-        elif self._line_index >= self.mode.scan_lines:
-            self._emit_image()
+        missed = self._dstate.missed_syncs
+        if missed == 0:
+            self._miss_from = None
+        elif self._miss_from is None:
+            # Never before the picture: its own VIS would end it.
+            self._miss_from = max(line_start - line_samples, self._picture_from, self._buf_offset)
+            self._vis_searched_to = self._miss_from
+        # A fade gets 20 s once syncs have been found where this mode puts them; a picture
+        # begun in the wrong mode (a VIS bit error) or on noise has none and ends after ten
+        # lines.
+        end_after = self._MAX_MISSED_SYNCS
+        if self._dstate.near_syncs >= self._LOCKED_LINES:
+            end_after = max(end_after, int(self._MISSED_SYNCS_S * 1000.0 / self.mode.line_ms))
+        if missed >= end_after or self._line_index >= self.mode.scan_lines:
+            resume = self._cursor if self._miss_from is None else self._miss_resume()
+            if missed >= self._MAX_MISSED_SYNCS:
+                logger.info(
+                    'sstv_picture_ended reason=no_sync mode="%s" line=%d',
+                    self.mode.name,
+                    self._line_index - missed,
+                )
+                self._emit_image(self._line_index - missed, resume)
+            else:
+                self._emit_image(self._line_index, resume)
         return True
 
-    def _emit_image(self) -> None:
+    def _next_vis_found(self, upto: int) -> bool:
+        """While syncs are missing, look for the next picture's VIS in the audio up to
+        ``upto`` (global) every quarter second of it; end the picture if one is there."""
+        assert self.mode is not None and self._miss_from is not None
+        if upto - self._vis_searched_to < _ms_to_samples(self._SEARCH_EVERY_S * 1000.0, self.fs):
+            return False
+        lo = self._miss_resume()
+        self._vis_searched_to = upto
+        if find_vis(self._freq[self._local(lo) : self._local(upto)], self.fs, parity=True) is None:
+            return False
+        assert self._dstate is not None
+        kept = self._line_index - self._dstate.missed_syncs
+        logger.info('sstv_picture_ended reason=vis mode="%s" line=%d', self.mode.name, kept)
+        self._emit_image(kept, lo)
+        return True
+
+    def _miss_resume(self) -> int:
+        """Where the audio that may hold a VIS not yet seen begins."""
+        assert self._miss_from is not None
+        span = _ms_to_samples(self._VIS_SPAN_S * 1000.0, self.fs)
+        return max(self._miss_from, self._vis_searched_to - span, self._buf_offset)
+
+    def _emit_image(self, lines: int, resume_at: int) -> None:
+        """Emit the picture with its first ``lines`` lines (the rest cleared); looking
+        resumes at ``resume_at`` (global)."""
         if self.mode is None or self._dstate is None:
             return
+        self._picture_lines = lines
+        # Past the picture's start, so it can't begin again from the same VIS or syncs.
+        self._resume_at = max(resume_at, self._picture_from + 1)
+        self._miss_from = None
+        if lines < self._MAX_MISSED_SYNCS and lines < self._line_index:
+            # Too little to be a picture (begun on noise or in the wrong mode): look again.
+            self.look_again()
+            return
+        if lines < self._line_index:
+            _clear_lines(self._dstate, lines)
         img = finalize_image(self._dstate)
         # Transition to DONE before the callback so the callback can mutate
-        # state (e.g. reset() to resume scanning for the next transmission)
-        # and have it stick.
+        # state (e.g. look_again() for the next transmission) and have it stick.
         self.state = StreamerState.DONE
         if self.events.on_image:
             self.events.on_image(self.mode, img)
@@ -1275,10 +1584,18 @@ class StreamingSSTV:
                 self._LOOKING_KEEP_S * 1000.0, self.fs
             )
         elif self.state == StreamerState.DECODING:
-            # In DECODING state we don't reach into samples before _cursor.
+            # In DECODING state we don't reach into samples before _cursor, or
+            # those that may hold the next VIS.
             keep_from_global = self._cursor - _ms_to_samples(20.0, self.fs)
+            if self._miss_from is not None:
+                keep_from_global = min(keep_from_global, self._miss_resume())
         else:
-            return
+            # DONE, until the caller looks again: what that would search, at most what
+            # LOOKING keeps.
+            keep_from_global = max(
+                self._resume_at,
+                self._produced - _ms_to_samples(self._LOOKING_KEEP_S * 1000.0, self.fs),
+            )
         drop_local = keep_from_global - self._buf_offset
         if drop_local > _ms_to_samples(self._COMPACT_THRESHOLD_S * 1000.0, self.fs):
             self._freq = self._freq[drop_local:]

@@ -29,10 +29,12 @@ from tsdr.radio.decoders.sstv import (
     StreamerState,
     StreamingEvents,
     StreamingSSTV,
+    decode_line,
     decode_offline,
     find_vis,
     hilbert_fft,
     instantaneous_freq,
+    make_decode_state,
 )
 
 SAMPLES_DIR = Path(__file__).resolve().parents[1] / "samples" / "sstv"
@@ -286,6 +288,151 @@ def test_a_picture_under_way_is_joined_from_its_line_syncs(
     rows = lines - 6  # the picture's own rows, from the top (the train's lines included)
     later = reference[joined_at + 1 : joined_at + 1 + rows].astype(int)
     assert np.abs(image[:rows].astype(int) - later).mean() < 3.0
+
+
+def _through_the_decoder(audio: np.ndarray, fs: int) -> list[SSTVData]:
+    """``audio`` through SSTVAudioDecoder, as a mode's audio reaches it."""
+    decoder = SSTVAudioDecoder()
+    out: list[SSTVData] = []
+    chunk = int(0.05 * fs)
+    for i in range(0, len(audio), chunk):
+        decoder.process(audio[i : i + chunk], fs, 1.7e9 + i / fs)
+        out += [m.data for m in decoder.get_messages() if isinstance(m.data, SSTVData)]
+    return out
+
+
+def _starts(got: list[SSTVData]) -> list[int | None]:
+    return [d.vis_code for d in got if d.state == StreamerState.DECODING and d.line_index < 0]
+
+
+def test_the_next_picture_starts_from_its_vis_after_a_joined_one(
+    _samples: dict[str, tuple[np.ndarray, int]],
+) -> None:
+    """A picture joined under way is drawn from the top, so it runs on past its end;
+    the sender's next picture, a second later, starts from its VIS (ending the first
+    threw away the audio holding it), and the first keeps only its own lines."""
+    audio, fs = _samples["Martin_1.mp3"]
+    mode = MODES[44]
+    line_n = mode.line_ms * fs / 1000.0
+    cut = _picture_start(audio, fs) + int((int(mode.scan_lines * 0.4) + 0.1) * line_n)
+    gap = (np.random.default_rng(1).standard_normal(fs) * 0.01).astype(np.float32)
+    got = _through_the_decoder(np.concatenate([audio[cut:], gap, audio]), fs)
+    assert _starts(got) == [None, 44]
+    first = next(d for d in got if d.state == StreamerState.DONE)
+    assert first.line_index < mode.scan_lines - 1
+
+
+def test_the_line_timing_follows_a_sender_clock_a_few_tenths_of_a_percent_off() -> None:
+    """A sender whose clock runs 0.4 % slow: each Scottie DX sync comes 50 samples (at
+    12 kHz) later than the last. Each is where the clock can put it, so every one is taken
+    and they give the line length; refused as too far apart, the picture never locked."""
+    fs, skew, lines = 12_000, 0.004, 40
+    mode = MODES[76]
+    state = make_decode_state(mode, fs)
+    line_n = state.slant.nominal_line_samples * (1 + skew)
+    sync_ms = next(seg.ms for seg in mode.segments if seg.kind == "sync")
+    before_sync = sum(
+        seg.ms for seg in mode.segments[: [g.kind for g in mode.segments].index("sync")]
+    )
+    freq = np.full(int((lines + 2) * line_n), 1900.0, dtype=np.float32)
+    for k in range(lines + 1):
+        at = int(round(k * line_n + before_sync * fs / 1000.0))
+        freq[at : at + int(sync_ms * fs / 1000.0)] = 1200.0
+    cursor = 0
+    for k in range(lines):
+        cursor = decode_line(freq, fs, state, k, cursor)
+    assert state.missed_syncs == 0
+    assert state.synced_lines == lines
+    assert abs(state.slant.correction - skew * state.slant.nominal_line_samples) <= 3
+
+
+def test_a_weak_picture_from_a_sender_clock_off_keeps_its_line_timing() -> None:
+    """A weak picture, every second sync lost, from a sender whose clock runs 0.4 % slow: two
+    Scottie DX syncs two lines apart are 100 samples (at 12 kHz) farther apart than the mode
+    says. They must be allowed what the clock moves them over both lines and give the line
+    length; held to one line's tolerance, the picture never locked and its lines slid off."""
+    fs, skew, lines = 12_000, 0.004, 40
+    mode = MODES[76]
+    state = make_decode_state(mode, fs)
+    line_n = state.slant.nominal_line_samples * (1 + skew)
+    sync_ms = next(seg.ms for seg in mode.segments if seg.kind == "sync")
+    before_sync = sum(
+        seg.ms for seg in mode.segments[: [g.kind for g in mode.segments].index("sync")]
+    )
+    freq = np.full(int((lines + 2) * line_n), 1900.0, dtype=np.float32)
+    for k in range(0, lines + 1, 2):
+        at = int(round(k * line_n + before_sync * fs / 1000.0))
+        freq[at : at + int(sync_ms * fs / 1000.0)] = 1200.0
+    cursor = 0
+    for k in range(lines):
+        cursor = decode_line(freq, fs, state, k, cursor)
+    assert abs(cursor - lines * line_n) < 0.002 * line_n
+
+
+def test_a_picture_that_stops_in_ssb_noise_ends_with_its_own_lines(
+    _samples: dict[str, tuple[np.ndarray, int]],
+) -> None:
+    """The sender stops 30 lines into a Martin picture; SSB noise follows. Noise passed
+    for Martin's short syncs on about half the lines, so the picture ran on, painting
+    noise to its last line; now it ends and keeps its 30 lines."""
+    audio, fs = _samples["Martin_1.mp3"]
+    mode = MODES[44]
+    stop = _picture_start(audio, fs) + int(30 * mode.line_ms * fs / 1000.0)
+    n = 24 * fs
+    spectrum = np.fft.rfft(np.random.default_rng(4).standard_normal(n))
+    f = np.fft.rfftfreq(n, 1 / fs)
+    spectrum[(f < 300) | (f > 2700)] = 0
+    noise = np.fft.irfft(spectrum, n)
+    noise *= np.sqrt(np.mean(audio[:stop] ** 2) / np.mean(noise**2))
+    got = _through_the_decoder(np.concatenate([audio[:stop], noise.astype(np.float32)]), fs)
+    done = [d for d in got if d.state == StreamerState.DONE]
+    assert len(done) == 1
+    assert 28 <= done[0].line_index + 1 <= 31
+
+
+def test_a_picture_that_lost_its_first_syncs_does_not_begin_again(
+    _samples: dict[str, tuple[np.ndarray, int]],
+) -> None:
+    """Looking for the next picture's VIS while syncs are missing must not find the
+    picture's own: it began again from it without end, keeping a copy each time."""
+    audio, fs = _samples["ScottieDX.mp3"]
+    line_n = int(MODES[76].line_ms * fs / 1000.0)
+    start = _picture_start(audio, fs)
+    heard = audio[: start + 20 * line_n].copy()
+    heard[start : start + 2 * line_n] = np.random.default_rng(3).standard_normal(2 * line_n)
+    starts: list[int] = []
+
+    def on_mode(_mode: Mode, vis: int) -> None:
+        starts.append(vis)
+        assert len(starts) < 4, "the picture began again from its own VIS"
+
+    decoder = StreamingSSTV(
+        fs, events=StreamingEvents(on_mode=on_mode, on_image=lambda _m, _i: decoder.look_again())
+    )
+    for i in range(0, len(heard), 2048):
+        decoder.process(heard[i : i + 2048])
+    decoder.flush()
+    assert starts == [76]
+
+
+def test_a_fade_leaves_one_picture(
+    _samples: dict[str, tuple[np.ndarray, int]], _decoded: Decoded
+) -> None:
+    """Four seconds of noise across a picture (27 Robot 36 lines: a satellite fading)
+    leave one picture, still aligned below the fade; it was split in two, the panel
+    showing only the second part, drawn from the top."""
+    audio, fs = _samples["Robot_36.mp3"]
+    mode, reference = _decoded["Robot_36.mp3"]
+    line_n = mode.line_ms * fs / 1000.0
+    fade_at, n = _picture_start(audio, fs) + int(80 * line_n), 4 * fs
+    heard = audio.copy()
+    heard[fade_at : fade_at + n] = np.random.default_rng(2).standard_normal(n) * 0.5
+    got = _through_the_decoder(heard, fs)
+    assert _starts(got) == [8]
+    done = [d for d in got if d.state == StreamerState.DONE]
+    assert len(done) == 1 and done[0].image is not None
+    below = 80 + 30
+    assert np.abs(done[0].image[below:].astype(int) - reference[below:].astype(int)).mean() < 10
 
 
 def test_a_mistuned_picture_keeps_its_brightness(
