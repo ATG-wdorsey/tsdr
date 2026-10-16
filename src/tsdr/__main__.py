@@ -15,6 +15,7 @@ from tsdr.tui import tty
 from tsdr.tui.app import TSDRApp
 from tsdr.tui.doctor import run_doctor
 from tsdr.tui.doctor.logbuffer import install_log_buffer
+from tsdr.warmup import start_if_needed
 
 _LOG_FORMAT = "%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s:%(lineno)d - %(message)s"
 _LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
@@ -130,6 +131,12 @@ def main() -> None:
     if args.headless:
         _enable_stdout_logging(verbose=args.verbose)
     logger = logging.getLogger(__name__)
+
+    # numba kernels compile on their first use, in tsdr's threads: compile them now in a
+    # process of its own, the first time after an install (tsdr.warmup).
+    warmup_proc = start_if_needed()
+    if warmup_proc is not None:
+        logger.info("numba_warmup_started pid=%d", warmup_proc.pid)
 
     mode = "headless" if args.headless else "tui"
     logger.info(

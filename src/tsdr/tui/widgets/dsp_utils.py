@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 _STYLE_NONE = Style()
 
 
-@njit
+@njit(cache=True)
 def render_spectrum_to_buf(
     buf: np.ndarray,
     y_vals: np.ndarray,

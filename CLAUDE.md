@@ -484,6 +484,8 @@ A sample file is a hard prerequisite — do not write decoder code until it exis
 
 All hot-path DSP primitives live in `_kernels.py` as `@nb.njit(cache=True)` functions. Use `fastmath=True` only when the algorithm tolerates relaxed floating-point semantics (filters, discriminators -- not CRC/sync).
 
+**Warm-up:** a kernel compiles on its first call and numba keeps it in its disk cache, which an install invalidates. `tsdr/warmup.py` calls every kernel with the argument types tsdr gives it (a read-only array is a type of its own: a device's bytes give one), in a process of its own (`start_if_needed`, from `main()`: the first start after an install, about 26 s of one core at the lowest priority), so no first use stalls tsdr's threads (the first DMR call took 4 s). A new kernel gets `cache=True` and a call there.
+
 **Vectorization:** index inner loops from 0 over a slice (`seg = buf[base : base + k]`, then `seg[j]`). With `buf[base + j]` numba can't prove the index is non-negative, and the wraparound check it adds to every load stops LLVM from vectorizing the loop (14x slower in the decimating FIR).
 
 **When to use numba:**
