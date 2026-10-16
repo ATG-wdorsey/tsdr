@@ -7,6 +7,48 @@ git tag (`v0.2.0`, ...); `main` on GitHub always holds the latest release. Versi
 The changes in 0.2.0 were also offered upstream as pull requests; their full descriptions (why, cause, change,
 testing) are in [PRs.md](PRs.md).
 
+## [Unreleased]
+
+Work on the trunk since 0.3.0, for the next release.
+
+### Added
+
+- `demod sstv off` stops the SSTV decoder and keeps the mode it rides on; `demod <mode>` says when SSTV stays on.
+- A wheel built past a release says which commit it is, in the Stats panel's title and `tsdr --version`
+  (`0.3.0+N.gHASH`: N commits past v0.3.0; `.dirty` with uncommitted changes).
+
+### Changed
+
+- **The meter reads C/N**: the tuned channel's power over the noise in its bandwidth, the noise taken from the band's
+  floor (the 10th percentile of the band's power averaged over 1 s, so neighbors and a station's skirts don't count as
+  noise), with peak-detector ballistics (a higher reading at once, a lower one with a 0.5 s time constant). On a 106.7
+  MHz FM station at gain 35, 25, 15 and 5 it reads 54.7, 41.2, 34.5 and 27.8 dB within about 1 dB (before: 47.6, 43.6,
+  39.4 and 39.2, jumping over 18 dB); a 30 dB C/N signal beside a station 20 dB stronger reads 29.8 dB (before: 17.5).
+- **No stall the first time a mode is used after an install**: tsdr compiles its numba kernels in a background process
+  at the lowest priority (the first DMR use took 4.07 s, now 0.06 s; SEARCH's first frames 0.32 s, now 0.01 s; the first
+  spectrum 0.40 s, now none).
+- Recalling a memory, a band register or A/B applies all its stored settings, whatever the current mode (a recall in DMR
+  kept the current timeslot and deviation).
+- Audio from a digital codec (DMR, TETRA, DAB) is never denoised: it holds no receiver noise for RNNoise to take off
+  (the Stats panel reads `off (digital)`).
+- Starting SEARCH keeps the mode's saved tuning step, and the tuner shows SEARCH's grid while it runs; the squelch kept
+  while demodulation is off is saved across restarts. Console completion offers an optional argument's choices beside
+  the flags, and `demod` offers `off` only after a decoder.
+
+### Fixed
+
+- SSTV: a picture joined while tuned low locks on its syncs instead of its black porches (six recordings joined 40 % in
+  at -200 to +200 Hz: 72 of 72 right, 38 before; 22 modes at 10 mistunes: 220 of 220, 185 before), and APRS, RTTY and
+  PSK31 no longer start false pictures; looking for a picture takes about half the CPU, its buffer held near 5.5 s.
+- DMR: a second repeater on the same frequency is heard (each lock learns its own color code, shown in the DMR panel;
+  one with another color code played 60 ms in every 360 ms, or nothing with both slots busy); a radio in direct mode is
+  heard far more of the time (52-70 of 72 bursts in tests, 0-58 before); a fade that takes both slots' A syncs no longer
+  cuts 3-8 bursts from each call; the slicer measures its levels from each sync.
+- A damaged voice model makes VSQ unavailable whichever part of the file is damaged (none of 46,674 one-byte damages
+  to its headers gets through); a hand-edited infinite or out-of-range step or frequency is refused; memories and
+  preferences saved in another encoding read, keeping their other entries; a setting left queued when a device stops
+  no longer overrides the current ones at the next start.
+
 ## [0.3.0] - 2026-10-16
 
 SEARCH and its voice squelch, DMR's two timeslots, SSTV on any mode's audio, new keys and a readable spectrum: the work
