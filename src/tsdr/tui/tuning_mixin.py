@@ -193,17 +193,15 @@ class TuningMixin(MixinBase):
             self._show_error(str(e))
             return
         # A tuning step coarser than the channel would blind SEARCH between its grid
-        # points; it searched on the mode's automatic step, so the tuner shows that.
-        ts = get_tuning_state()
-        step = ts.step_for(device.active_mode)
+        # points; it searches on the mode's automatic step (the tuner shows the grid while
+        # it runs), and the saved step stays for after.
+        step = get_tuning_state().step_for(device.active_mode)
         coarse = ""
         if step is not None and search.step_hz < step:
             coarse = (
                 f"; step {format_hz(search.step_hz, decimals=1, long_suffix=True)} (auto: the "
                 f"{format_hz(step, decimals=1, long_suffix=True)} step would miss stations)"
             )
-            ts.set_step(device.active_mode, None)
-            self._publish_tuning_state_changed()
         low = format_hz(search.low_hz, decimals=3, long_suffix=True)
         high = format_hz(search.high_hz, decimals=3, long_suffix=True)
         trigger = "the squelch" if search.trigger_db is None else f"{search.trigger_db:.0f} dBFS"

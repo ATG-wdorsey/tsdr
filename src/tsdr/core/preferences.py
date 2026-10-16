@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 from tsdr.core import storage
 from tsdr.core.bandplans import get_bandplan_store
 from tsdr.core.demod_spec import PreviousTuneState
 from tsdr.core.devices import PersistedDevice, get_device_store
-from tsdr.core.sdr.config import WFM_DE_EMPHASIS_US, DeviceConfig
+from tsdr.core.sdr.config import WFM_DE_EMPHASIS_US, DeviceConfig, PipelineConfig
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.samples_batch import SampleFormat
 from tsdr.devices import DeviceParams, IQFileParams
@@ -110,14 +111,17 @@ def _build_persisted_device(context: SDRDeviceContext) -> PersistedDevice:
     }
 
     audio_config = context.config.pipelines.get("audio")
+    squelch = context.kept_squelch  # the receiver's, kept while demodulation is off
     if audio_config and audio_config.audio_spec is not None:
         fields["audio_spec"] = audio_config.audio_spec
-        if audio_config.squelch_enabled:
+        squelch = audio_config
+    if squelch is not None:
+        if squelch.squelch_enabled:
             fields["squelch_enabled"] = True
-        if audio_config.squelch_threshold_db != -50.0:
-            fields["squelch_threshold_db"] = audio_config.squelch_threshold_db
-        if audio_config.squelch_hang_ms != 100.0:
-            fields["squelch_hang_ms"] = audio_config.squelch_hang_ms
+        if squelch.squelch_threshold_db != -50.0:
+            fields["squelch_threshold_db"] = squelch.squelch_threshold_db
+        if squelch.squelch_hang_ms != 100.0:
+            fields["squelch_hang_ms"] = squelch.squelch_hang_ms
 
     return PersistedDevice(**{k: v for k, v in fields.items() if v is not None})
 
@@ -171,6 +175,7 @@ def restore_tuning_state(state: TuningState, prefs: dict[str, Any]) -> None:
                 isinstance(mode, str)
                 and isinstance(step, int | float)
                 and not isinstance(step, bool)
+                and math.isfinite(step)
                 and step > 0
             ):
                 state.set_step(mode, float(step))
@@ -215,6 +220,15 @@ def _build_device_config(device: PersistedDevice) -> DeviceConfig | None:
 def _restore_audio_pipeline(engine: SDREngine, device: PersistedDevice) -> None:
     spec = device.audio_spec
     if spec is None or spec.mode not in DEMODULATORS:
+        # Saved with demodulation off: the squelch waits for the next demodulator.
+        engine.get_device(device.id).kept_squelch = PipelineConfig(
+            stages=(),
+            squelch_enabled=bool(device.squelch_enabled),
+            squelch_threshold_db=(
+                -50.0 if device.squelch_threshold_db is None else device.squelch_threshold_db
+            ),
+            squelch_hang_ms=100.0 if device.squelch_hang_ms is None else device.squelch_hang_ms,
+        )
         return
     try:
         engine.set_audio_demod(device.id, spec)

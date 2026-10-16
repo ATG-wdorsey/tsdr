@@ -20,13 +20,22 @@ def config_dir() -> Path:
     return Path(user_config_dir("tsdr"))
 
 
+def _decoded(path: Path, data: bytes, encoding: str = "utf-8") -> str:
+    """`data` in `encoding`; saved in another encoding or damaged, what reads (a memory named
+    in Latin-1 would otherwise take every other one with it, and the next save its file)."""
+    try:
+        return data.decode(encoding)
+    except UnicodeDecodeError as e:
+        logger.warning("storage_read_not_utf8 path=%s error=%r", path, e)
+        return data.decode(encoding, errors="replace")
+
+
 def load_toml(filename: str) -> dict[str, Any]:
     path = config_dir() / filename
     if not path.exists():
         return {}
     try:
-        with open(path, "rb") as f:
-            return tomllib.load(f)
+        return tomllib.loads(_decoded(path, path.read_bytes()))
     except (OSError, tomllib.TOMLDecodeError) as e:
         logger.error("storage_load_failed path=%s error=%r", path, e)
         return {}
@@ -51,12 +60,7 @@ def read_text(filename: str) -> str:
     except OSError as e:
         logger.error("storage_read_failed path=%s error=%r", path, e)
         return ""
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError as e:
-        # Edited in another encoding, or damaged: keep what reads (a history keeps its entries).
-        logger.warning("storage_read_not_utf8 path=%s error=%r", path, e)
-        return data.decode("utf-8", errors="replace")
+    return _decoded(path, data)
 
 
 def write_text(filename: str, content: str) -> None:
@@ -94,8 +98,9 @@ def load_json(relpath: str) -> Any:
     if not path.exists():
         return None
     try:
-        with open(path, "rb") as f:
-            return json.load(f)
+        data = path.read_bytes()
+        # JSON may also be UTF-16 or UTF-32, or carry a BOM: its own detection says which.
+        return json.loads(_decoded(path, data, json.detect_encoding(data)))
     except (OSError, json.JSONDecodeError) as e:
         logger.error("storage_load_failed path=%s error=%r", path, e)
         return None

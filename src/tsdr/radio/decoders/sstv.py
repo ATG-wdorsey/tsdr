@@ -1661,6 +1661,13 @@ class StreamingSSTV:
                 self._produced - _ms_to_samples(self._LOOKING_KEEP_S * 1000.0, self.fs),
             )
         drop_local = keep_from_global - self._buf_offset
-        if drop_local > _ms_to_samples(self._COMPACT_THRESHOLD_S * 1000.0, self.fs):
+        # Every search while looking covers the whole buffer: it is held near what LOOKING
+        # keeps (compacted 5 s at a time, it ran 5.5-10.5 s).
+        threshold_s = (
+            self._SEARCH_EVERY_S
+            if self.state == StreamerState.LOOKING
+            else self._COMPACT_THRESHOLD_S
+        )
+        if drop_local > _ms_to_samples(threshold_s * 1000.0, self.fs):
             self._freq = self._freq[drop_local:]
             self._buf_offset += drop_local

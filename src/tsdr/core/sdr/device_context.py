@@ -348,7 +348,18 @@ class SDRDeviceContext:
                 logger.warning("pipeline_worker_stop_failed device=%s error=%r", self.device_id, e)
             self.pipeline_worker = None
 
-        self.state = DeviceState.STOPPED
+        # Snapshots offered before the stop never reached the workers. The next start
+        # applies the current configs at setup, and one of these, applied after, would win
+        # (a squelch changed while stopped ran at its old level). Offers are made under the
+        # publish lock, and none once STOPPED.
+        with self._publish_lock:
+            self.state = DeviceState.STOPPED
+            for q in (self.control_queue, self.pipeline_control_queue):
+                try:
+                    while True:
+                        q.get_nowait()
+                except queue.Empty:
+                    pass
         logger.info("device_stopped device=%s", self.device_id)
 
     @traced("ctx.update_config")

@@ -426,7 +426,10 @@ class TunerWidget(Vertical):
     ) -> None:
         ts = get_tuning_state()
         step = ts.step_for(mode)
-        if step is None:
+        if search is not None:  # SEARCH's grid, which may be finer than the step
+            value = search.step_hz
+            label = "grid"
+        elif step is None:
             value = resolve_auto_step(mode, freq_hz)
             label = "auto"
         else:

@@ -205,3 +205,15 @@ def test_concurrent_updates_reach_the_worker_in_install_order(monkeypatch) -> No
     queued = [ctx.control_queue.get_nowait() for _ in range(ctx.control_queue.qsize())]
     assert ctx.config.rf_gain == 20.0
     assert queued[-1].rf_gain == 20.0
+
+
+def test_a_stop_leaves_no_config_for_the_next_start() -> None:
+    """A snapshot offered while the worker was busy, then the stop: the next start applies
+    the current configs at setup, and the queued one, applied after them, won (a squelch
+    changed while stopped ran at its old level)."""
+    engine = _engine_with_idle_running_device()
+    context = engine.devices["m"]
+    context.update_config(tuned_frequency=101e6)
+    assert not context.pipeline_control_queue.empty()
+    context.stop(engine.worker_runner)
+    assert context.control_queue.empty() and context.pipeline_control_queue.empty()

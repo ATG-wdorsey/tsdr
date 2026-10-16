@@ -158,10 +158,17 @@ class Command(ABC):
         if consumed < len(positional_actions):
             current = positional_actions[consumed]
             if current.choices:
-                return _choice_completions(current.choices, prefix)
+                completions = _choice_completions(current.choices, prefix)
+                if current.nargs in ("?", "*"):  # optional: a flag may come instead
+                    completions += self._unused_flags(parser, tokens, prefix)
+                return completions
             return self.complete(tokens, prefix, subcommand=subcommand)
 
         # All positionals consumed - suggest unused flags (fish-style)
+        return self._unused_flags(parser, tokens, prefix)
+
+    @staticmethod
+    def _unused_flags(parser: ArgumentParser, tokens: list[str], prefix: str) -> list[Completion]:
         flag_completions: list[Completion] = []
         used_flags = {t for t in tokens if t.startswith("-")}
         for action in parser._actions:

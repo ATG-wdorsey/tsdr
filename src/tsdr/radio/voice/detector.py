@@ -18,7 +18,9 @@ last WIN_S of frames every HOP_S from FIRST_S on; before WIN_S of audio, the
 frames so far are repeated to fill the window, as in training.
 """
 
+import tokenize
 import zipfile
+import zlib
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -52,14 +54,31 @@ class Classification:
 
 def load_model(path: Path = MODEL) -> VoiceNet:
     """The network of `path`; ValueError if it was trained on another front end, or the
-    file is damaged or lacks an array (a truncated copy, another export's layout)."""
+    file is damaged or lacks an array (a truncated copy, another export's layout), or its
+    network no longer gives the scores saved with it (a weight of the wrong shape)."""
     try:
         with np.load(path) as m:
             for name in _CONSTANTS:
                 if name not in m.files or float(m[name]) != float(getattr(frontend, name.upper())):
                     raise ValueError(f"{path} was trained on another front end ({name})")
-        return VoiceNet(path)
-    except (zipfile.BadZipFile, EOFError, KeyError) as e:
+            check_x, check_logit = m["check_x"], m["check_logit"]
+        net = VoiceNet(path)
+        scores = np.array([net.logit(win) for win in check_x])
+        if scores.shape != check_logit.shape or not np.allclose(scores, check_logit, atol=1e-3):
+            raise ValueError(f"{path} no longer gives the scores saved with it")
+        return net
+    except (
+        zipfile.BadZipFile,
+        EOFError,
+        KeyError,
+        zlib.error,
+        tokenize.TokenError,
+        NotImplementedError,
+        RuntimeError,
+    ) as e:
+        # A byte flipped in a compressed member (zlib), in an array's header (tokenize), or in
+        # a member's compression method or version (NotImplementedError) or flags ("encrypted":
+        # RuntimeError).
         raise ValueError(f"{path} is damaged or incomplete: {e}") from e
 
 

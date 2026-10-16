@@ -342,7 +342,7 @@ Reception:
   bandwidth, squelch and audio stay yours, and the tuner reads `FM + SSTV`.
   With no audio mode on, it starts in NFM above 30 MHz and USB below. `D o`
   then turns off only the decoder, and `d` keeps it across NFM, USB, LSB and AM
-  (`demod sstv` in the console does the same).
+  (in the console: `demod sstv`, `demod sstv off`, and `demod <mode>` keeps it).
 - `t` / `T`: in DMR, cycle the timeslot heard: auto (the first call), TS1,
   TS2, or both at once (TS1 left, TS2 right); `T` goes the other way.
   `demod dmr --slot auto|1|2|both` sets it from the console.

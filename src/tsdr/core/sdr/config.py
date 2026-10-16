@@ -13,6 +13,7 @@ from typing import Literal, TypedDict, Unpack, get_args
 from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.sdr.samples_batch import SampleFormat
 from tsdr.core.sdr.search import SearchConfig
+from tsdr.core.units import MAX_HZ
 
 TuningMode = Literal["center", "free"]
 # Where the LO sits relative to the dial while demodulating; auto = below
@@ -188,9 +189,10 @@ class DeviceConfig:
     def validate(self) -> None:
         if self.sample_rate <= 0:
             raise ValueError(f"sample_rate must be positive, got {self.sample_rate}")
-        if self.center_frequency <= 0:
+        # `not (0 < f <= MAX_HZ)`: NaN and infinity too (a hand-edited step of inf tuned to one).
+        if not 0 < self.center_frequency <= MAX_HZ:
             raise ValueError(f"center_frequency must be positive, got {self.center_frequency}")
-        if self.tuned_frequency <= 0:
+        if not 0 < self.tuned_frequency <= MAX_HZ:
             raise ValueError(f"tuned_frequency must be positive, got {self.tuned_frequency}")
         if self.tuning_mode not in get_args(TuningMode):
             raise ValueError(f"tuning_mode must be 'center' or 'free', got {self.tuning_mode}")

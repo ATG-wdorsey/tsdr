@@ -31,6 +31,12 @@ class SDRDemodCommand(Command):
         parser.add_argument(
             "mode", type=str.upper, choices=[*sorted(DEMODULATORS), *sorted(AUDIO_DECODERS), "OFF"]
         )
+        parser.add_argument(
+            "state",
+            nargs="?",
+            choices=["off"],
+            help="With a decoder (sstv): stop it and keep the mode it rides on",
+        )
         parser.add_argument("--device", dest="device_id")
         parser.add_argument(
             "--deviation",
@@ -68,6 +74,13 @@ class SDRDemodCommand(Command):
         )
         parser.add_argument("--framing", choices=_FSK_FRAMINGS, default=None, help="fsk mode only")
 
+    def get_completions(self, tokens: list[str], prefix: str) -> list[Completion]:
+        completions = super().get_completions(tokens, prefix)
+        if tokens and tokens[0].upper() not in AUDIO_DECODERS:
+            # `off` follows only a decoder (`demod sstv off`)
+            completions = [c for c in completions if c.value != "off"]
+        return completions
+
     def run(self, args: Namespace) -> str:
         manager = get_engine()
         did = args.device_id or get_focused_device_id()
@@ -91,6 +104,15 @@ class SDRDemodCommand(Command):
             return success(f"Disabled demodulation for {device_id(did)}")
 
         current = active_demod_spec(manager.get_device(did))
+        if args.state == "off":
+            if mode not in AUDIO_DECODERS:
+                raise ConfigurationError(f"'{args.mode.lower()} off': use 'demod off'")
+            if current is None or current.decoder != mode:
+                raise ConfigurationError(f"{mode} is not decoding on {did}")
+            manager.set_audio_demod(
+                did, current.model_copy(update={"decoder": None, "sstv_mode": None})
+            )
+            return success(f"{mode} off ({current.mode} stays) for {device_id(did)}")
         if mode in AUDIO_DECODERS:
             # A decoder rides on the current mode (or the band's usual one).
             spec = with_decoder(
@@ -131,6 +153,8 @@ class SDRDemodCommand(Command):
             if fsk["fsk_reverse"]:
                 extras["polarity"] = "[cyan]reverse[/]"
 
+        if decoder is not None:
+            extras["decoder"] = f"[cyan]{decoder} stays[/]"
         if extras:
             return f"{head} ({fields(extras)})"
         return head
