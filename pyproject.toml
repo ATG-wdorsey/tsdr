@@ -46,6 +46,8 @@ rtlsdr = [
 [tool.hatch.version]
 path = "src/tsdr/_version.py"
 
+[tool.hatch.build.hooks.custom]  # hatch_build.py: the commit a wheel was built from
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/tsdr"]
 

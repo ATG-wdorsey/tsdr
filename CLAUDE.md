@@ -575,7 +575,9 @@ event-name token across the tree.
 
 The version lives in `src/tsdr/_version.py` alone (hatch reads it for the wheel; `tsdr --version` and the Stats
 panel's title show it). A release bumps it, adds its entry to `CHANGELOG.md` (dated changes by category) and is tagged
-`v<version>`; `main` on GitHub holds the latest release.
+`v<version>`; `main` on GitHub holds the latest release. A wheel built anywhere but at a release tag carries the
+commit (`hatch_build.py` writes `tsdr/_build.py`): `0.2.0+106.ga767567`, 106 commits past v0.2.0, `.dirty` with
+uncommitted changes; a source checkout shows the version alone.
 
 ## Verification
 
