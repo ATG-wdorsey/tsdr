@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 
 class DenoiserStage:
     """Audio output stage: drains the batch's audio to the audio queue, applying
-    RNNoise speech denoising when the global ``SDRConfig.denoise`` flag is on.
+    RNNoise speech denoising when the global ``SDRConfig.denoise`` flag is on (not
+    to audio decoded from a digital codec, ``AudioBatch.codec``: DMR, TETRA, DAB).
 
     Always present in the audio pipeline (after DEMODULATOR); the global flag
     only flips it between denoise and passthrough, so toggling never changes the
@@ -44,7 +45,7 @@ class DenoiserStage:
                 vsq.feed(batch.samples, batch.sample_rate, squelch_open)
             if context.audio_queue is None:
                 continue
-            if self._denoiser is not None:
+            if self._denoiser is not None and not batch.codec:
                 batch = self._denoiser.process(batch)
                 if len(batch.samples) == 0:
                     continue

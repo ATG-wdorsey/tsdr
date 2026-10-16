@@ -19,7 +19,7 @@ from tsdr.radio.decoders.dmr.constants import BURST_DIBITS, SYMBOL_RATE, SYNC_ST
 from tsdr.radio.decoders.dmr.decoder import DMRDecoder
 from tsdr.radio.registry import make_demodulator
 
-from ._synth import RATE, to_iq, voice_burst
+from ._synth import RATE, noise, to_iq, voice_burst
 
 
 @pytest.mark.parametrize("phase", range(6))
@@ -153,3 +153,106 @@ def test_the_timeslot_heard_is_chosen() -> None:
     decoder._flush_selected_audio(now)
     (one,) = decoder.get_audio()
     assert not one.stereo and np.all(one.samples == 0.5)
+
+
+def _voice_heard(iq: np.ndarray, t_from: float) -> dict[int, int]:
+    """Voice bursts per slot that reach the vocoder from capture time `t_from` (the IQ
+    begins at 1000 s, in 20 ms chunks)."""
+    decoder = DMRDecoder(sample_rate=RATE)
+    heard = {0: 0, 1: 0}
+    process = decoder._process_voice_burst
+
+    def count(burst, sync_type, timeslot, timestamp):
+        ok = process(burst, sync_type, timeslot, timestamp)
+        if decoder._ts_state[timeslot].confirmed and timestamp >= t_from:
+            heard[timeslot] += 1
+        return ok
+
+    decoder._process_voice_burst = count  # type: ignore[method-assign]
+    chunk = int(RATE * 0.02)
+    for i in range(0, len(iq), chunk):
+        decoder.demodulate(iq[i : i + chunk], 1000.0 + i / RATE)
+    return heard
+
+
+def test_a_second_repeater_on_the_frequency_is_heard() -> None:
+    """Two repeaters on one frequency, color codes 1 and 2. The color code a burst taken
+    by timing must carry was the one heard most since the last retune: after 3.6 s of
+    repeater A, B's bursts B-F were refused and its calls were lost. It is the locked
+    signal's own."""
+    rng = np.random.default_rng(5)
+    a: list[int] = []
+    b: list[int] = []
+    for k in range(10 * 6):
+        a += voice_burst(0, k % 6, rng) + voice_burst(1, (k + 3) % 6, rng)
+    for k in range(6 * 6):
+        b += voice_burst(0, k % 6, rng, color_code=2)
+        b += voice_burst(1, (k + 3) % 6, rng, color_code=2)
+    first, gap = to_iq(a), noise(int(0.5 * RATE), rng, 0.0)
+    b_starts = 1000.0 + (len(first) + len(gap)) / RATE
+    heard = _voice_heard(np.concatenate([first, gap, to_iq(b)]), b_starts + 1.0)
+    burst_s = BURST_DIBITS / SYMBOL_RATE
+    per_slot = int((len(b) / BURST_DIBITS * burst_s - 1.0) / (2 * burst_s))  # B's after 1 s
+    assert min(heard.values()) >= per_slot - 2, (heard, per_slot)
+
+
+def test_a_radio_in_direct_mode_is_heard() -> None:
+    """A radio transmitting direct (simplex, or heard on a repeater's input) sends the MS
+    syncs, nothing where the CACH would be (here its carrier stays on with random symbols
+    there) and nothing in the other slot. The lock wanted a clean CACH to acquire, dropped
+    on one contradicting the slot alternation, and dropped after 12 bursts without a sync
+    (the radio's A syncs are 11 apart): 3-80 % of its voice was heard."""
+    rng = np.random.default_rng(11)
+    stream: list[int] = []
+    for k in range(3, 3 + 12 * 6):  # joined mid-call
+        stream += voice_burst(0, k % 6, rng, mobile=True)
+        stream += list(rng.integers(0, 4, BURST_DIBITS))
+    heard = _voice_heard(to_iq(stream), 1001.0)
+    burst_s = BURST_DIBITS / SYMBOL_RATE
+    per_slot = int((len(stream) / BURST_DIBITS * burst_s - 1.0) / (2 * burst_s))
+    assert heard[0] >= per_slot - 2 and heard[1] == 0, (heard, per_slot)
+
+
+def test_both_calls_go_on_when_both_slots_miss_their_a_sync() -> None:
+    """A fade that takes both slots' A syncs in one superframe: 22 bursts in a row carry no
+    sync, and the lock was dropped after 12, cutting 3-8 bursts from each call."""
+    rng = np.random.default_rng(13)
+    stream: list[int] = []
+    for k in range(14 * 6):  # slot 1's A three bursts after slot 0's
+        stream += voice_burst(0, k % 6, rng, bad_sync=k == 8 * 6)
+        stream += voice_burst(1, (k + 3) % 6, rng, bad_sync=k == 8 * 6 + 3)
+    heard = _voice_heard(to_iq(stream), 1001.0)
+    burst_s = BURST_DIBITS / SYMBOL_RATE
+    per_slot = int((len(stream) / BURST_DIBITS * burst_s - 1.0) / (2 * burst_s))
+    assert min(heard.values()) >= per_slot - 2, (heard, per_slot)
+
+
+def test_a_transmitter_at_low_deviation_is_read() -> None:
+    """At 75 % deviation the outer symbols sat 0.08 above the slicer's fixed 2/3 threshold,
+    and noise at 15 dB C/N pushed some of them over. The levels are measured from each
+    sync."""
+    rng = np.random.default_rng(17)
+    sent = [voice_burst(slot, letter, rng) for letter in [*range(6)] * 8 for slot in (0, 1)]
+    clean = to_iq([d for burst in sent for d in burst], deviation=0.75)
+    iq = clean + noise(len(clean), rng, 15.0)
+
+    decoder = DMRDecoder(sample_rate=RATE)
+    received: list[np.ndarray] = []
+    process = decoder._process_voice_burst
+
+    def keep(burst, sync_type, timeslot, timestamp):
+        if timestamp >= 1001.0:
+            received.append(burst.copy())
+        return process(burst, sync_type, timeslot, timestamp)
+
+    decoder._process_voice_burst = keep  # type: ignore[method-assign]
+    chunk = int(RATE * 0.02)
+    for i in range(0, len(iq), chunk):
+        decoder.demodulate(iq[i : i + chunk], 1000.0 + i / RATE)
+
+    # Each received burst against the sent one it is nearest to, outside the sync/EMB field.
+    payload = np.r_[0:SYNC_START, SYNC_START + 24 : BURST_DIBITS]
+    sent_payloads = np.array(sent)[:, payload]
+    errors = [int(np.min(np.count_nonzero(sent_payloads != b[payload], axis=1))) for b in received]
+    assert len(received) >= 40
+    assert sum(errors) / (len(received) * len(payload)) < 0.002

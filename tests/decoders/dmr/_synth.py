@@ -13,6 +13,7 @@ from tsdr.radio.decoders.dmr.constants import (
     CACH_INTERLEAVE,
     SYMBOL_RATE,
     SYNC_BS_VOICE,
+    SYNC_MS_VOICE,
     SYNC_START,
 )
 from tsdr.radio.decoders.dmr.fec import _QR_16_7_6_WORDS, hamming_7_4_decode
@@ -50,28 +51,38 @@ def _emb(color_code: int) -> list[int]:
 
 
 def voice_burst(
-    slot: int, letter: int, rng: np.random.Generator, *, bad_sync: bool = False
+    slot: int,
+    letter: int,
+    rng: np.random.Generator,
+    *,
+    bad_sync: bool = False,
+    color_code: int = 1,
+    mobile: bool = False,
 ) -> list[int]:
+    """Voice burst `letter` (0 = A) of a repeater's slot; `mobile`: as a radio sends it,
+    with the MS sync and no CACH (random symbols there)."""
     burst = list(rng.integers(0, 4, BURST_DIBITS))
-    burst[0:12] = _cach(slot)
+    if not mobile:
+        burst[0:12] = _cach(slot)
     if letter == 0:
-        sync = list(SYNC_BS_VOICE)
+        sync = list(SYNC_MS_VOICE if mobile else SYNC_BS_VOICE)
         if bad_sync:  # 3 of 24 sync symbols wrong: one more than the sync search allows
             for i in (3, 10, 17):
                 sync[i] = 1 if sync[i] == 3 else 3
         burst[SYNC_START : SYNC_START + 24] = sync
     else:  # EMB around the embedded signalling (anything but a sync)
-        emb = _emb(1)
+        emb = _emb(color_code)
         burst[SYNC_START : SYNC_START + 24] = [*emb[:4], *[0, 2] * 8, *emb[4:]]
     return burst
 
 
-def to_iq(dibits: list[int], offset_hz: float = 0.0) -> np.ndarray:
+def to_iq(dibits: list[int], offset_hz: float = 0.0, deviation: float = 1.0) -> np.ndarray:
     """4FSK as DMR transmitters send it: each symbol a root-raised-cosine frequency pulse
-    (alpha 0.2), scaled so the receiver's matching filter lands it on its level."""
+    (alpha 0.2), scaled so the receiver's matching filter lands it on its level (times
+    `deviation`)."""
     sps = int(RATE / SYMBOL_RATE)
     impulses = np.zeros(len(dibits) * sps)
-    impulses[sps // 2 :: sps] = [_LEVEL[d] * dmr.DEVIATION / 3.0 for d in dibits]
+    impulses[sps // 2 :: sps] = [_LEVEL[d] * dmr.DEVIATION / 3.0 * deviation for d in dibits]
     pulse = rrc_taps(sps, 0.2, 8)
     freq = np.convolve(impulses, pulse * (sps / pulse.sum()), mode="same")
     phase = 2 * np.pi * np.cumsum(freq + offset_hz) / RATE

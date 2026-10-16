@@ -78,6 +78,8 @@ class Demodulator(ABC):
     MESSAGE_TYPE: ClassVar[str | None] = None
     HAS_AUDIO: ClassVar[bool] = False
     HAS_TEXT: ClassVar[bool] = False
+    # Its audio is decoded from a digital codec (AudioBatch.codec): never denoised.
+    CODEC_AUDIO: ClassVar[bool] = False
     SIDEBAND: ClassVar[Literal["upper", "lower"] | None] = None
     FIXED_CHANNEL_BANDWIDTH: ClassVar[float | None] = None
     FIXED_SAMPLE_RATE: ClassVar[float | None] = None
@@ -183,8 +185,8 @@ class Demodulator(ABC):
         """Which TDMA timeslot is heard (DMR; DemodSpec.dmr_slot). Default no-op."""
         pass
 
-    def set_deviation(self, deviation: float) -> None:  # noqa: B027
-        """Update FM peak deviation. NFM-only; default no-op elsewhere."""
+    def set_deviation(self, deviation: float | None) -> None:  # noqa: B027
+        """Update FM peak deviation (None: the mode's own). NFM-only; default no-op elsewhere."""
         pass
 
     def set_de_emphasis(self, time_constant: float) -> None:  # noqa: B027
@@ -230,6 +232,7 @@ class Demodulator(ABC):
                 sample_rate=sample_rate,
                 stereo=stereo,
                 prebuffer_seconds=self.audio_prebuffer_seconds,
+                codec=self.CODEC_AUDIO,
             )
         )
 

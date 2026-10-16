@@ -109,6 +109,7 @@ class TETRADecoder(Demodulator):
     """TETRA digital trunked radio decoder."""
 
     HAS_AUDIO = True
+    CODEC_AUDIO = True
     LABEL = "TETRA"
     MODULATION = "pi/4-DQPSK"
     MESSAGE_TYPE = "tetra"
@@ -356,6 +357,7 @@ class TETRADecoder(Demodulator):
                 sample_rate=_TETRA_PCM_RATE,
                 stereo=False,
                 prebuffer_seconds=self.audio_prebuffer_seconds,
+                codec=True,
             )
         )
 

@@ -182,6 +182,7 @@ class DABDecoder(Demodulator):
     """
 
     HAS_AUDIO = True
+    CODEC_AUDIO = True
     LABEL = "DAB+ Mode I"
     MODULATION = "OFDM-DQPSK"
     MESSAGE_TYPE = "dab"
@@ -500,6 +501,7 @@ class DABDecoder(Demodulator):
                     samples=combined,
                     sample_rate=self._aac_decoder.output_rate,
                     prebuffer_seconds=self.audio_prebuffer_seconds,
+                    codec=True,
                 )
             )
 

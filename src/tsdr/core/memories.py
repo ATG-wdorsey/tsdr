@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from tsdr.core import storage
 from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.sdr.engine import get_engine
-from tsdr.core.tuning import save_previous_tune_state
+from tsdr.core.tuning import active_demod_spec, save_previous_tune_state
 from tsdr.radio.registry import DEMODULATORS
 
 logger = logging.getLogger(__name__)
@@ -171,7 +171,9 @@ def recall_memory(memory: Memory, device_id: str) -> None:
 
     save_previous_tune_state(context)
 
-    if memory.audio_spec.mode in DEMODULATORS and memory.audio_spec.mode != context.active_mode:
+    # All it stores applies, as a radio's memory does (the slot, deviation, decoder), also
+    # in the mode already in use.
+    if memory.audio_spec.mode in DEMODULATORS and memory.audio_spec != active_demod_spec(context):
         engine.set_audio_demod(device_id, memory.audio_spec)
 
     engine.update_device_config(

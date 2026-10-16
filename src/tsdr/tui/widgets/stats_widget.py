@@ -17,6 +17,7 @@ from tsdr.core.sdr.voice_squelch import VsqStatus
 from tsdr.core.units import format_hz
 from tsdr.devices import NetworkDeviceParams
 from tsdr.devices.base import HasJitterBuffer, SpectrumViewStatus
+from tsdr.radio.registry import DEMODULATOR_CLASSES
 from tsdr.tui.commands._format import format_rate
 from tsdr.tui.widgets.section_panel import Section, SectionPanel
 from tsdr.tui.widgets.snr_widget import VSQ_COLOR
@@ -338,7 +339,13 @@ class StatsWidget(SectionPanel):
             lines.append(_row("Drops:", f"[red]{self._audio_drops}[/red]"))
         if event.stereo:
             return lines
-        lines.append(_row("Denoise:", "[green]on[/green]" if self._denoise else "[dim]off[/dim]"))
+        demod_cls = DEMODULATOR_CLASSES.get(event.demod_mode.upper())
+        if demod_cls is not None and demod_cls.CODEC_AUDIO:
+            lines.append(_row("Denoise:", "[dim]off (digital)[/dim]"))
+        else:
+            lines.append(
+                _row("Denoise:", "[green]on[/green]" if self._denoise else "[dim]off[/dim]")
+            )
         lines.append(self._vsq_line())
         return lines
 

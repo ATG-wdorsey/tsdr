@@ -75,15 +75,17 @@ _BOTH_MAX_LAG_SEC = 0.25
 # embedded signalling instead. In lock, a slot in a voice call is decoded by
 # timing for up to 11 bursts since its own last sync: B-F, one missed A, B-F.
 _MAX_CONTINUATION_BURSTS = 11
-# Bursts in a row without a sync, both slots, before the lock is dropped. With
-# voice on both slots up to 10 carry none (11 with one missed A). Bounds what is
-# decoded after the signal is lost mid-call.
-_MAX_SYNCLESS_RUN = 12
+# Bursts in a row without a sync, both slots, before the lock is dropped: a superframe
+# and the next A missed, on each slot of a repeater (both in voice: 10 carry none, 22 with
+# one A missed on each) or in direct mode (an MS's A syncs are 11 apart: the other slot
+# is empty). The EMB check below drops the lock sooner when the signal is gone mid-call.
+_MAX_SYNCLESS_RUN = 23
 # A burst taken by timing must hold what its sync/EMB field should: at B-F a valid EMB
-# (within 2 bit errors of a QR(16,7,6) word, with the repeater's color code: noise
-# passes about 1 time in 60), at A (its sync missed) the voice sync within 6 of 24
-# symbols (noise: about 1 in 90). One that fails is not decoded; this many in a row
-# drop the lock (the signal is gone).
+# (within 2 bit errors of a QR(16,7,6) word, with the color code of the signal locked,
+# counted per lock since another repeater on the frequency has its own; noise passes
+# about 1 time in 60), at A (its sync missed) the voice sync within 6 of 24 symbols
+# (noise: about 1 in 90). One that fails is not decoded; this many in a row drop the
+# lock (the signal is gone).
 _MAX_BAD_TIMED = 2
 _MISSED_SYNC_MAX_ERRORS = 6
 # The reference harness's speech gain (DSD, mbelib's decode_ambe): starts at x25, at most x50.
@@ -92,6 +94,16 @@ _AGC_START_GAIN = 25.0
 # DSD's target: the 8 -> 48 kHz resampler overshoots full-scale 8 kHz peaks (clipped
 # 100 of 342,720 samples on the 443.7 MHz recording, by up to 0.45 dB).
 _AGC_PEAK = 30000 / 32768
+# The slicer's center and outer level, measured from each sync (24 outer symbols, half of
+# them high): a transmitter's deviation (at 80 % its outer symbols sat 0.13 above the fixed
+# 2/3 threshold) and an offset the high-pass has not yet taken off (key-up). Each sync
+# moves the running values this far toward its own; the first of a lock sets them.
+_LEVEL_WEIGHT = 0.3
+_OUTER_RANGE = (0.5, 1.5)
+_MS_SYNC_TYPES = frozenset({SyncType.MS_DATA, SyncType.MS_VOICE})
+# A mobile's sync acquires only this close (no CACH to check it; within 2 errors, noise
+# began ten times as many locks: 30 in 300 s).
+_MS_ACQUIRE_MAX_ERRORS = 1
 
 
 @dataclass
@@ -140,19 +152,21 @@ def _slice_dibit(symbol: float) -> int:
     return 1 if symbol > 0 else 3
 
 
-def _slice_4level(symbols: np.ndarray) -> np.ndarray:
+def _slice_4level(symbols: np.ndarray, center: float = 0.0, outer: float = 1.0) -> np.ndarray:
     """Map normalized FM symbols to 4-level dibits for data extraction.
 
-    4FSK levels (ETSI TS 102 361-1 S4.2.2), thresholds at the midpoints (0, +-2/3):
+    4FSK levels (ETSI TS 102 361-1 S4.2.2), thresholds at the midpoints (center,
+    center +-2/3 of the outer level):
         +3 (+1944 Hz, +1)   -> dibit 1
         +1  (+648 Hz, +1/3) -> dibit 0
         -1  (-648 Hz, -1/3) -> dibit 2
         -3 (-1944 Hz, -1)   -> dibit 3
     """
+    x = symbols - center
     dibits = np.full(len(symbols), 3, dtype=np.uint8)
-    dibits[symbols > -2 / 3] = 2
-    dibits[symbols > 0] = 0
-    dibits[symbols > 2 / 3] = 1
+    dibits[x > -2 / 3 * outer] = 2
+    dibits[x > 0] = 0
+    dibits[x > 2 / 3 * outer] = 1
     return dibits
 
 
@@ -191,6 +205,7 @@ class DMRDecoder(Demodulator):
     """
 
     HAS_AUDIO = True
+    CODEC_AUDIO = True
     LABEL = "DMR"
     MODULATION = "4FSK"
     MESSAGE_TYPE = "dmr"
@@ -243,6 +258,10 @@ class DMRDecoder(Demodulator):
         self._continuation = {0: 0, 1: 0}
         self._syncless_run = 0
         self._bad_timed_run = 0
+        # The slicer's center and outer level (_LEVEL_WEIGHT), from the syncs of this lock.
+        self._center = 0.0
+        self._outer = 1.0
+        self._levels_measured = False
         # The burst being collected: came with a sync; was framed by the lock.
         self._burst_synced = True
         self._burst_in_lock = False
@@ -282,6 +301,10 @@ class DMRDecoder(Demodulator):
         self._sync_type_counts: dict[SyncType, int] = {}
         self._dominant_cc: int | None = None
         self._dominant_cc_count: int = 0
+        # The same for the signal locked, which a timed burst's EMB must carry.
+        self._lock_cc_counts: dict[int, int] = {}
+        self._lock_cc: int | None = None
+        self._lock_cc_count: int = 0
 
         # Constellation
         self._constellation_points: np.ndarray | None = None
@@ -307,7 +330,7 @@ class DMRDecoder(Demodulator):
         for sym in symbols:
             sym_f = float(sym)
             pos = self._sync_pos % BURST_DIBITS
-            self._sync_buf[pos] = _slice_dibit(sym_f)
+            self._sync_buf[pos] = _slice_dibit(sym_f - self._center)
             self._sym_buf[pos] = sym_f
             self._sync_pos = (self._sync_pos + 1) % BURST_DIBITS
             self._dibit_count += 1
@@ -334,13 +357,16 @@ class DMRDecoder(Demodulator):
         if result is None:
             return
 
-        sync_type, _errors = result
+        sync_type, errors = result
+        if sync_type in _MS_SYNC_TYPES and errors > _MS_ACQUIRE_MAX_ERRORS:
+            return
         self._syncs_found += 1
         self._burst_sync_type = sync_type
 
         if self._dibit_count < FIRST_HALF_DIBITS + SYNC_DIBITS:
             return
 
+        self._measure_levels()
         self._begin_collecting(synced=True, in_lock=False)
 
     def _do_collect(self, timestamp: float) -> None:
@@ -348,7 +374,8 @@ class DMRDecoder(Demodulator):
 
         if self._burst_collect_pos >= SECOND_HALF_DIBITS:
             # The ring now holds exactly this burst, CACH first.
-            self._burst_buf[:] = _slice_4level(self._get_ring_history(self._sym_buf, BURST_DIBITS))
+            symbols = self._get_ring_history(self._sym_buf, BURST_DIBITS)
+            self._burst_buf[:] = _slice_4level(symbols, self._center, self._outer)
 
             valid = self._process_burst(self._burst_buf, self._burst_sync_type, timestamp)
             # A sync where the lock expected one holds the framing, whatever the
@@ -383,6 +410,7 @@ class DMRDecoder(Demodulator):
             self._syncs_found += 1
             self._syncless_run = 0
             self._burst_sync_type = sync_type
+            self._measure_levels()
             self._begin_collecting(synced=True, in_lock=True)
             return
 
@@ -407,6 +435,7 @@ class DMRDecoder(Demodulator):
         self._continuation = {0: 0, 1: 0}
         self._syncless_run = 0
         self._bad_timed_run = 0
+        self._clear_lock_measures()
         self._lock_hits = 0
         self._lock_misses = 0
         self._cach_ok = 0
@@ -418,6 +447,27 @@ class DMRDecoder(Demodulator):
             ts.confirmed = False
             ts.voice_burst_count = 0
         self._dirty = True
+
+    def _clear_lock_measures(self) -> None:
+        """What a lock learns of its signal: its levels, its color code."""
+        self._center = 0.0
+        self._outer = 1.0
+        self._levels_measured = False
+        self._lock_cc_counts.clear()
+        self._lock_cc = None
+        self._lock_cc_count = 0
+
+    def _measure_levels(self) -> None:
+        """Move the slicer's center and outer level toward the sync just matched."""
+        sync = self._get_ring_history(self._sym_buf, SYNC_DIBITS)
+        center = float(sync.mean())
+        outer = float(np.clip(np.abs(sync - center).mean(), *_OUTER_RANGE))
+        if not self._levels_measured:
+            self._center, self._outer = center, outer
+            self._levels_measured = True
+            return
+        self._center += _LEVEL_WEIGHT * (center - self._center)
+        self._outer += _LEVEL_WEIGHT * (outer - self._outer)
 
     def _in_voice_call(self, slot: int, timestamp: float) -> bool:
         ts = self._ts_state[slot]
@@ -450,26 +500,32 @@ class DMRDecoder(Demodulator):
         self._bursts_decoded += 1
         self._sync_type_counts[sync_type] = self._sync_type_counts.get(sync_type, 0) + 1
 
-        cach = decode_cach(burst[CACH_START : CACH_START + 12])
-        if cach.clean:
-            self._cach_ok += 1
-        else:
-            self._cach_fail += 1
-
         # The slot: in lock, the TDMA alternation, with a clean TACT as a check (a
         # synced burst's corrects it; a sync-less burst's contradicting it means the
         # framing is lost). Acquiring, a clean TACT: two bit errors "correct" to the
-        # wrong slot, and noise passes a clean TACT only 1 time in 8.
-        if self._burst_in_lock:
-            timeslot = 1 - self._last_slot
-            if cach.clean and cach.timeslot != timeslot:
-                if not self._burst_synced:
-                    return False
-                timeslot = cach.timeslot
-        elif cach.clean:
-            timeslot = cach.timeslot
+        # wrong slot, and noise passes a clean TACT only 1 time in 8. A mobile's burst
+        # (direct mode, or a repeater's input) has no CACH: guard time there, the carrier
+        # ramping; its slot is the alternation's, TS1 when acquiring.
+        if sync_type in _MS_SYNC_TYPES:
+            cach_clean = True  # none to be in error
+            timeslot = 1 - self._last_slot if self._burst_in_lock else 0
         else:
-            return False
+            cach = decode_cach(burst[CACH_START : CACH_START + 12])
+            cach_clean = cach.clean
+            if cach.clean:
+                self._cach_ok += 1
+            else:
+                self._cach_fail += 1
+            if self._burst_in_lock:
+                timeslot = 1 - self._last_slot
+                if cach.clean and cach.timeslot != timeslot:
+                    if not self._burst_synced:
+                        return False
+                    timeslot = cach.timeslot
+            elif cach.clean:
+                timeslot = cach.timeslot
+            else:
+                return False
         self._last_slot = timeslot
         if self._burst_synced:
             self._continuation[timeslot] = 0
@@ -482,7 +538,7 @@ class DMRDecoder(Demodulator):
 
         if sync_type in VOICE_SYNC_TYPES:
             return self._process_voice_burst(burst, sync_type, timeslot, timestamp)
-        return self._process_data_burst(burst, sync_type, timeslot, cach.clean, timestamp)
+        return self._process_data_burst(burst, sync_type, timeslot, cach_clean, timestamp)
 
     def _timed_burst_ok(self, burst: np.ndarray, slot: int) -> bool:
         """A burst taken by timing holds what its sync/EMB field should: the voice sync
@@ -496,16 +552,31 @@ class DMRDecoder(Demodulator):
         if emb is None:
             return False
         # Counted before the check: a noise EMB that decoded first must not lock out the
-        # repeater's own color code.
-        self._count_color_code(emb.color_code)
-        return emb.color_code == self._dominant_cc
+        # repeater's own color code. The session's count (shown when nothing is locked)
+        # takes only those that pass.
+        self._count_lock_color_code(emb.color_code)
+        if emb.color_code != self._lock_cc:
+            return False
+        self._count_session_color_code(emb.color_code)
+        return True
 
     def _count_color_code(self, cc: int) -> None:
+        self._count_lock_color_code(cc)
+        self._count_session_color_code(cc)
+
+    def _count_session_color_code(self, cc: int) -> None:
         count = self._color_code_counts.get(cc, 0) + 1
         self._color_code_counts[cc] = count
         if count > self._dominant_cc_count:
             self._dominant_cc = cc
             self._dominant_cc_count = count
+
+    def _count_lock_color_code(self, cc: int) -> None:
+        count = self._lock_cc_counts.get(cc, 0) + 1
+        self._lock_cc_counts[cc] = count
+        if count > self._lock_cc_count:
+            self._lock_cc = cc
+            self._lock_cc_count = count
 
     def _process_voice_burst(
         self, burst: np.ndarray, sync_type: SyncType, timeslot: int, timestamp: float
@@ -517,10 +588,11 @@ class DMRDecoder(Demodulator):
         prevents false VOICE sync matches on noise from producing audio.
         """
         ts = self._ts_state[timeslot]
+        if self._burst_synced:
+            ts.voice_sync_type = sync_type  # what a missed A is checked against
         if not ts.in_voice_call:
             ts.in_voice_call = True
             ts.voice_burst_count = 0
-            ts.voice_sync_type = sync_type
             self._agc[timeslot].reset()  # a new talker: not the last call's level
             self._dirty = True
             logger.debug("dmr_voice_call_started slot=%d sync_type=%s", timeslot, sync_type)
@@ -580,6 +652,9 @@ class DMRDecoder(Demodulator):
         ts = self._ts_state[timeslot]
         if slot_type.data_type == DataType.VOICE_LC_HEADER:
             ts.in_voice_call = True
+            ts.voice_sync_type = (
+                SyncType.MS_VOICE if sync_type in _MS_SYNC_TYPES else SyncType.BS_VOICE
+            )
             ts.confirmed = True  # header from Slot Type = high confidence
             self._agc[timeslot].reset()
             ts.voice_burst_count = 0
@@ -629,8 +704,12 @@ class DMRDecoder(Demodulator):
         snap = self._to_snapshot()
         self._pending_messages.append(DecodedMessage(text="", timestamp=timestamp, data=snap))
 
+    def _shown_color_code(self) -> int | None:
+        """The signal locked's color code, else the one heard most this session."""
+        return self._lock_cc if self._lock_cc is not None else self._dominant_cc
+
     def _to_snapshot(self) -> DMRSnapshot:
-        cc = self._dominant_cc
+        cc = self._shown_color_code()
 
         slots = tuple(
             SlotSnapshot(
@@ -737,6 +816,7 @@ class DMRDecoder(Demodulator):
                 sample_rate=_DMR_PCM_RATE,
                 stereo=False,
                 prebuffer_seconds=self.audio_prebuffer_seconds,
+                codec=True,
             )
         )
 
@@ -770,6 +850,7 @@ class DMRDecoder(Demodulator):
                 sample_rate=_DMR_PCM_RATE,
                 stereo=True,
                 prebuffer_seconds=self.audio_prebuffer_seconds,
+                codec=True,
             )
         )
 
@@ -801,7 +882,7 @@ class DMRDecoder(Demodulator):
             quality = self._lock_hits / total_lock
             quality_label = f"Lock {quality * 100:.0f}%"
         description = None
-        cc = self._dominant_cc
+        cc = self._shown_color_code()
         if cc is not None:
             description = f"CC{cc}"
 
@@ -855,4 +936,5 @@ class DMRDecoder(Demodulator):
         self._sync_type_counts.clear()
         self._dominant_cc = None
         self._dominant_cc_count = 0
+        self._clear_lock_measures()
         self._pending_messages.clear()

@@ -412,7 +412,9 @@ Available stages: `agc`, `demodulator`, `event_emitter`, `fft`, `frequency_shift
 - **AM**: Envelope detection with DC blocker, AGC, audio LPF, squelch
 - **USB/LSB**: Single sideband via shift-LPF-unshift (rejects opposite sideband)
 - **CW**: Morse code with explicit BFO; Morse text decoder runs alongside audio output
-- **DMR**: both timeslots decoded; `DemodSpec.dmr_slot` picks what is heard (auto: the first call keeps the audio; TS1; TS2; both, TS1 left and TS2 right), `t` / `T` or `demod dmr --slot`
+- **DMR**: both timeslots decoded; `DemodSpec.dmr_slot` picks what is heard (auto: the first call keeps the audio; TS1; TS2; both, TS1 left and TS2 right), `t` / `T` or `demod dmr --slot`. Bursts taken by timing must carry the locked signal's color code (counted per lock: co-channel repeaters); a radio's own bursts (MS syncs: direct mode, a repeater's input) have no CACH and take the slot alternation; the slicer's center and outer level are measured from each sync
+
+Audio decoded from a digital codec (DMR, TETRA, DAB: `Demodulator.CODEC_AUDIO`, `AudioBatch.codec`) is never denoised: it holds no receiver noise for RNNoise (trained on speech under additive noise) to take off, and a codec's artifacts are not what it learned.
 
 Audio decoders (`radio/audio_decoders.py`: SSTV) ride on a mode instead of replacing it (the
 owner's rule: picking a decoder doesn't change the mode; only decoders that define their own

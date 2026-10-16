@@ -127,9 +127,13 @@ class NarrowbandFMDemodulator(Demodulator):
         self._setup_ctcss_filter()
         self._squelch = SquelchGate(audio_rate=self.decimated_rate)
 
-    def set_deviation(self, deviation: float) -> None:
-        self.deviation = float(deviation)
-        self._deviation_override = self.deviation
+    def set_deviation(self, deviation: float | None) -> None:
+        """Peak deviation; None follows the channel (half its width)."""
+        self._deviation_override = None if deviation is None else float(deviation)
+        if self._deviation_override is None:
+            self.deviation = self.channel_bandwidth / 2.0
+        else:
+            self.deviation = self._deviation_override
         self._fm_discrim.set_deviation(self.decimated_rate, self.deviation)
 
     def status(self) -> DemodStatus:

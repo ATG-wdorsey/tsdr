@@ -362,7 +362,7 @@ class TuningMixin(MixinBase):
         ts.previous = captured
 
         engine = get_engine()
-        if prev.spec.mode and prev.spec.mode != device.active_mode and prev.spec.mode != "RAW":
+        if prev.spec.mode and prev.spec.mode != "RAW" and prev.spec != cur_spec:
             try:
                 engine.set_audio_demod(device.device_id, prev.spec)
             except SDRException as e:
@@ -421,7 +421,9 @@ class TuningMixin(MixinBase):
 
         engine = get_engine()
         with suspended_writeback():
-            if reg.audio_spec.mode != device.active_mode and reg.audio_spec.mode in DEMODULATORS:
+            # All the register stores applies, also in the mode already in use.
+            current = current_spec_or_default(device)
+            if reg.audio_spec.mode in DEMODULATORS and reg.audio_spec != current:
                 try:
                     engine.set_audio_demod(device.device_id, reg.audio_spec)
                 except SDRException as e:

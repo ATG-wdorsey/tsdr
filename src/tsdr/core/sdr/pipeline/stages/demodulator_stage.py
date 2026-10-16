@@ -162,8 +162,7 @@ class DemodulatorStage:
             self.reset()
         if pipeline_config is None or spec is None:
             return
-        if spec.fm_deviation_hz is not None:
-            self._demodulator.set_deviation(spec.fm_deviation_hz)
+        self._demodulator.set_deviation(spec.fm_deviation_hz)
         self._follow_decoder(spec)
         if spec.sstv_mode != self._last_sstv_mode:
             self._last_sstv_mode = spec.sstv_mode

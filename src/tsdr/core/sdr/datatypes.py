@@ -16,6 +16,9 @@ class AudioBatch:
     sample_rate: float  # Sample rate (e.g., 48000)
     stereo: bool = False  # Whether audio is stereo
     prebuffer_seconds: float = 0.15  # Desired prebuffer before playback starts
+    # Decoded from a digital codec (a voice codec, DAB): it holds no receiver noise for a
+    # speech denoiser to take off, so it is never denoised.
+    codec: bool = False
 
     @property
     def duration_seconds(self) -> float:
