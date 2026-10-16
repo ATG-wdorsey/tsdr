@@ -1,10 +1,10 @@
 # TSDR
 
 This is a fork of [floens/tsdr](https://github.com/floens/tsdr) by floens, maintained by
-[ATG-wdorsey](https://github.com/ATG-wdorsey). **Version 0.2.0** (2026-10-15) adds fixes and enhancements made while
-using TSDR with a PlutoSDR and an Airspy on Linux: what changed and when is in [CHANGELOG.md](CHANGELOG.md), and the
-same changes as offered upstream ([floens/tsdr#2-#11](https://github.com/floens/tsdr/pulls)) in [PRs.md](PRs.md).
-Branch `main` holds the latest release; each release is also a tag (`v0.2.0`). Branch `master` mirrors upstream.
+[ATG-wdorsey](https://github.com/ATG-wdorsey). The current release is **0.3.0** (2026-10-16): what changed in each
+release, and when, is in [CHANGELOG.md](CHANGELOG.md). The changes in 0.2.0 were also offered upstream
+([floens/tsdr#2-#11](https://github.com/floens/tsdr/pulls)); their full descriptions are in [PRs.md](PRs.md).
+Branch `main` holds the latest release; each release is also a tag (`v0.3.0`). Branch `master` mirrors upstream.
 
 TSDR is a terminal user interface for software-defined radio. It provides a
 real-time spectrum display, a waterfall, audio demodulation, and a set of
@@ -34,36 +34,51 @@ interactive radio and as a general SDR toolkit.
   also connects to remote devices, such as KiwiSDR and spyserver.
 - A command console with history, tab-completion, and argparse-style help.
 - Frequency memories, bandplan overlays, IQ recording, and squelch.
+- SEARCH for active channels within the captured band, with a voice squelch
+  (VSQ) that skips transmissions without speech.
 - Runs on Linux, macOS, and Windows.
 
-### New in 0.2.0
+### New in 0.3.0
 
-Measured on a PlutoSDR and an Airspy under Linux; the details are in [CHANGELOG.md](CHANGELOG.md).
+The highlights; the details and the smaller changes are in [CHANGELOG.md](CHANGELOG.md).
 
-- **No phantom signals from strong stations.** Demodulators and decoders now decimate in stages, so a strong station
-  anywhere else in the capture can no longer fold onto the channel you are tuned to: it is held at least 81 dB down
-  (as little as 0.4 dB before, at 10 MS/s). FT8/FT4 decode the upper sideband only.
-- **Zero-IF radios without the center spike.** On a PlutoSDR, HackRF, LimeSDR, USRP or bladeRF the LO now sits just
-  beside the channel you listen to instead of on it, keeping the DC spike, LO leakage and near-DC intermod out of the
-  audio (on a Pluto+ on UHF the channel at the LO was 7.5-9.7 dB noisier). `o` / `O` put it below or above the dial.
-- **No overload from signals outside the span.** The Pluto's analog filter now follows the sample rate instead of
-  staying at 18 MHz: a tone a few MHz outside a 2 MS/s span overloaded the ADC from -35 dBm and lifted the noise floor
-  16 dB; now there is no overload up to -20 dBm, and what aliases into the span is 24 dB lower.
-- **Gap-free audio on Linux.** About 385 audio dropouts a minute with the TUI running, down to none (tested to
-  10 MS/s): tsdr writes as much as PulseAudio or WASAPI reports room for.
-- **Every sample, even at 10 MS/s.** SoapySDR streams are read on a native thread that Python can't pause, and the
-  ~120 ms garbage-collection pauses are gone: a PlutoSDR at 10 MS/s delivers the full 10.00 MS/s inside the TUI
-  (9.4-9.8 before), and holding a tuning key loses nothing.
-- **Your radio's real limits.** SoapySDR radios use their actual frequency range, sample rates (such as the Airspy's
-  two fixed rates) and gain step. Lost samples are never silent: driver overflows are logged, and the screen says when
-  a radio delivers less than its rate and suggests a lower one.
-- **A true spectrum when zoomed.** Each column averages the FFT bins it covers: one zoom step showed 7.4 dB of
-  column-to-column jitter and read up to 9.5 dB high; now the jitter is 2.0 dB.
-- **Polish.** Kitty image mode no longer crashes (SIGBUS) or leaves frames in `/dev/shm`; the radio always matches the
-  dial after a held tuning key; a shortcut can't exit the app; click-to-tune snaps to the channel raster; modes are
-  accepted in any case; the console takes keys after a panel click. The version shows in the Stats panel's title, and
-  `tsdr --version` prints it.
+- **SEARCH** (`/`): tsdr finds activity within the captured band and stops on it, holding while the squelch is open
+  and for 2 s after, so replies are heard. It judges each channel on its averaged power: with the noise just under the
+  squelch line it spends no time on silent NFM channels (95 % with a single-frame check), and finds a signal 10 dB up
+  in 0.03-0.04 s. Edges at the dial (`{` / `}`), session lockouts (`x`; `Ctrl+X` unlocks), `[` / `]` to move it on,
+  and a level squelch for decoder modes such as DMR and APRS.
+- **VSQ, a voice squelch for SEARCH** (`v`): a small neural network trained on real over-the-air audio lets SEARCH
+  leave a transmission with no speech within 3 s, so data, tones, dead carriers and open mics are skipped and talkers
+  are held.
+- **DMR on both timeslots:** hear TS1, TS2, the first call, or both at once (TS1 left, TS2 right): `t` / `T`. Calls
+  are followed through a late entry or a missed sync in every way the two slots can align (before, both could go
+  silent for the rest of the call); a repeater about 450 Hz off frequency decodes 351 of 357 frames without a bit
+  error (53 before); the speech level is set per call, as the reference decoders do, without clipping; a symbol
+  constellation shows the signal's quality.
+- **SSTV on any mode's audio:** SSTV decodes NFM on 2 m or USB on HF without switching modes, joins a picture already
+  under way from its line syncs, takes the mistune off, ends each picture with its sender and rides through fades (the
+  next picture starts from its VIS 24 of 24 times at 6 and 12 dB SNR, against 6-8 before).
+- **Faster at the keyboard:** `f` types a frequency on the status line (line editing, history, k/M/G); `D` picks a
+  decoder; `?` lists the keys; Space pauses and resumes; `[` / `]` jump between signals and memories in the band; each
+  mode keeps its own tuning step.
+- **A spectrum you can read:** a dB grid with labels, the squelch (`SQ`), hysteresis (`HY`) and trigger (`TR`) lines,
+  a color key for the waterfall and a cold-to-hot colormap.
+- **Cleaner audio:** NFM filters CTCSS tones out (they carried 85-98 % of the audio's power on local repeaters; now
+  57 dB down); WFM stereo plays at the mono level (it was 6 dB quieter) with a better pilot detector; the squelch
+  opens at its line, closes 3 dB under it, and stays set across mode changes.
+- **And more:** ADS-B and DAB decode at the radio's own capture rate; crashes fixed (a huge typed frequency, an LO at
+  0 Hz, a damaged voice model, non-UTF-8 history files); settings made while stopped reach the radio at start; the
+  Airspy starts streaming reliably.
 
+### Known issues in 0.3.0
+
+- SSTV: a picture joined while tuned more than about 100 Hz low can lock on its black porches; APRS, RTTY or PSK31
+  can start a false picture.
+- DMR: a second repeater on the same frequency goes unheard; a radio in direct mode is heard only part of the time;
+  a memory recalled while in DMR keeps the current timeslot.
+- FT8/FT4 decode nothing after a pause until the mode is picked again.
+- ADS-B and DAB keep their capture rate after a sample-rate change.
+- The first use of a mode after an install pauses for 1-4 s while its code compiles.
 
 ## Requirements
 
@@ -82,7 +97,7 @@ SoapySDR-compatible device), `iq-file`.
 ## Installation
 
 TSDR is not published on PyPI. Install this fork directly from GitHub with
-[uv](https://docs.astral.sh/uv/), either the latest release (`main`) or a given one (`@v0.2.0`):
+[uv](https://docs.astral.sh/uv/), either the latest release (`main`) or a given one (`@v0.3.0`):
 
 ```
 uv tool install --from git+https://github.com/ATG-wdorsey/tsdr@main tsdr
@@ -208,6 +223,9 @@ decoder), `squelch`, `denoise`, and `audio` (audio); `search` (find active
 channels); `memory` and `bandplan` (frequency presets); `record` (IQ capture); and `pipeline` (inspect or modify
 processing stages). See `help` for the full list.
 
+Broadcast FM (WFM) uses 50 µs de-emphasis, as most of the world does; in the Americas and South Korea, set 75 µs
+with `config --deemphasis 75` (remembered).
+
 ### Keyboard controls
 
 When the console is unfocused, the spectrum responds to the keyboard directly.
@@ -249,9 +267,9 @@ Tuning:
 Search (find activity within the captured band):
 
 - `/`: start / stop SEARCH. It switches to free tuning and turns the squelch on,
-  then puts the dial on the strongest channel that stays above the trigger for
-  100 ms (channels on the tuning-step grid, within the captured band; the
-  range is shaded on the spectrum). Its grid is never finer than 1 kHz, or than
+  then puts the dial on the strongest channel whose power, averaged over 0.1 s,
+  is above the trigger (channels on the tuning-step grid, within the captured
+  band; the range is shaded on the spectrum). Its grid is never finer than 1 kHz, or than
   the FFT resolves: with the tuning step at 10 Hz it searches 1 kHz steps. Nor
   is it coarser than the channel, which would leave stations between grid
   points unseen: a 100 kHz step gives way to the mode's automatic step (12.5 kHz
@@ -263,7 +281,9 @@ Search (find activity within the captured band):
   (skipping locked-out channels) without stopping it, so you can leave a channel
   before its hold ends; other tuning by hand, turning the squelch off (`Ctrl+U`)
   or stopping the radio stops it.
-  For narrowband modes only (not WFM).
+  For narrowband modes only (not WFM, DAB or ADS-B). Decoder modes such as DMR
+  and APRS have no squelch; there SEARCH holds a channel on its level averaged
+  over 0.15 s, which opens at the squelch line and closes 1 dB under it.
 - `{` / `}`: put SEARCH's lower / upper edge at the dial (without edges it
   searches the whole captured band; an edge outside the band is ignored, and
   one on the wrong side of the other edge is refused).
@@ -323,6 +343,9 @@ Reception:
   With no audio mode on, it starts in NFM above 30 MHz and USB below. `D o`
   then turns off only the decoder, and `d` keeps it across NFM, USB, LSB and AM
   (`demod sstv` in the console does the same).
+- `t` / `T`: in DMR, cycle the timeslot heard: auto (the first call), TS1,
+  TS2, or both at once (TS1 left, TS2 right); `T` goes the other way.
+  `demod dmr --slot auto|1|2|both` sets it from the console.
 
 Display:
 
@@ -376,7 +399,8 @@ Logs and preferences are stored in a per-user directory managed by
 
 The `paths` command prints the exact location and its contents. Some
 configuration (such as the last device and demodulator) is persisted there and
-restored on startup.
+restored on startup. Each start begins a new `tsdr.log` there and keeps the four
+before it (`tsdr.log.1`, the last session, to `tsdr.log.4`).
 
 ## Design
 
