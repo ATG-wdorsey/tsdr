@@ -183,6 +183,14 @@ class SDRDeviceContext:
         self.decoder_history_protocol: str | None = None
         self._history_lock = threading.Lock()
 
+        # The pipeline worker that owns the stages, and the stages the config dropped
+        # meanwhile, for it to close. A worker claims them when it is made, before its
+        # thread starts, and only that worker's own teardown gives them up, whatever a
+        # stop's join timeout says (an abandoned worker still runs its current batch).
+        self._stage_owner: object | None = None
+        self._retired_stages: list[object] = []
+        self._retired_lock = threading.Lock()
+
         # Initial materialization
         self._materialize_pipelines()
 
@@ -261,6 +269,9 @@ class SDRDeviceContext:
         """Start I/O and processing workers for this device."""
         if self.state != DeviceState.STOPPED:
             raise RuntimeError(f"Cannot start device in state {self.state}")
+        if self.worker_owns_stages:
+            # A second worker would run the stages beside the abandoned one.
+            raise RuntimeError("Cannot start device while its last pipeline worker still runs")
 
         logger.info("device_starting device=%s type=%s", self.device_id, self.device_type)
         with self._state_lock:
@@ -278,12 +289,16 @@ class SDRDeviceContext:
 
         if self.pipelines:
             logger.debug("pipeline_worker_launching device=%s", self.device_id)
-            pipeline_worker_instance = PipelineWorker(device_context=self)
-            self.pipeline_worker = worker_runner.start_worker(
-                worker_id=f"pipeline_{self.device_id}",
-                worker=pipeline_worker_instance,
-                daemon=False,
-            )
+            pipeline_worker_instance = PipelineWorker(device_context=self)  # claims the stages
+            try:
+                self.pipeline_worker = worker_runner.start_worker(
+                    worker_id=f"pipeline_{self.device_id}",
+                    worker=pipeline_worker_instance,
+                    daemon=False,
+                )
+            except BaseException:
+                self.release_stages(pipeline_worker_instance)
+                raise
 
         with self._state_lock:
             # The I/O worker may already have failed to open the device.
@@ -360,6 +375,8 @@ class SDRDeviceContext:
                         q.get_nowait()
                 except queue.Empty:
                     pass
+        # Stages retired while the worker ran are closed by its teardown, even when the
+        # join above timed out and left it finishing its batch.
         logger.info("device_stopped device=%s", self.device_id)
 
     @traced("ctx.update_config")
@@ -434,11 +451,10 @@ class SDRDeviceContext:
 
             if old_pipeline is not None:
                 # Close any old stages that weren't reused in new_stages
-                for old_stage in old_stages:
-                    if old_stage in new_stages:
-                        continue
-                    _close_stage(old_stage)
+                dropped = [stage for stage in old_stages if stage not in new_stages]
                 old_pipeline.stages = new_stages
+                for old_stage in dropped:
+                    self._retire_stage(old_stage)
             else:
                 self.pipelines[name] = ProcessingPipeline(
                     pipeline_id=f"{self.device_id}_{name}",
@@ -449,9 +465,77 @@ class SDRDeviceContext:
         # Remove pipelines no longer in config
         for name in list(self.pipelines):
             if name not in pipeline_configs:
-                for stage in self.pipelines[name].stages:
-                    _close_stage(stage)
-                del self.pipelines[name]
+                removed = self.pipelines.pop(name)
+                for stage in removed.stages:
+                    self._retire_stage(stage)
+
+    def _retire_stage(self, stage: object) -> None:
+        """Close a stage the config no longer has: at once when no pipeline worker owns
+        the stages, else by the worker between batches or at its exit, since it may be
+        inside the stage's `process` now (a recording's compressor closed under a write
+        crashed tsdr)."""
+        with self._retired_lock:
+            if self._stage_owner is not None:
+                self._retired_stages.append(stage)
+                return
+        _close_stage(stage)
+
+    @property
+    def worker_owns_stages(self) -> bool:
+        """Whether a pipeline worker still owns this device's stages: from its making until
+        its teardown, past a stop whose join timed out."""
+        with self._retired_lock:
+            return self._stage_owner is not None
+
+    def claim_stages(self, worker: object) -> None:
+        """A pipeline worker being made (before its thread starts) takes the stages. Two
+        workers never run them: one already made and not yet torn down refuses this."""
+        with self._retired_lock:
+            if self._stage_owner is not None:
+                raise RuntimeError("Cannot start device while its last pipeline worker still runs")
+            self._stage_owner = worker
+
+    def release_stages(self, worker: object) -> None:
+        """`worker`'s teardown (its own thread, after its last batch), or a launch that
+        failed: it closes the stages retired meanwhile, then gives up the stages, if it
+        still owns them. It keeps them until nothing is left to close, so a restart
+        can't run a new worker beside those closes. From then on a retired stage is
+        closed by whoever retires it."""
+        while True:
+            with self._retired_lock:
+                if self._stage_owner is not worker:
+                    return
+                stages, self._retired_stages = self._retired_stages, []
+                if not stages:
+                    self._stage_owner = None
+                    return
+            for stage in stages:
+                _close_stage(stage)
+
+    def close_retired_stages(self) -> None:
+        """Close the stages retired while the worker runs: called by the pipeline worker
+        between batches, so none of them is in use."""
+        with self._retired_lock:
+            stages, self._retired_stages = self._retired_stages, []
+        for stage in stages:
+            _close_stage(stage)
+
+    def pipeline_holds(self, pipeline_name: str, stage: object) -> bool:
+        """Whether the materialized pipeline `pipeline_name` still runs this stage instance.
+        Exact under the publish lock, which every change of the pipelines holds."""
+        pipeline = self.pipelines.get(pipeline_name)
+        return pipeline is not None and any(s is stage for s in pipeline.stages)
+
+    def close_all_stages(self) -> None:
+        """Close every stage, for good: the device is being removed or the engine shut
+        down (a recording still running gets its file finalized). A plain stop keeps the
+        stages, and a recording carries on at the next start. Stages a worker still runs
+        (a stop that timed out) are closed by it at its exit."""
+        with self._publish_lock:
+            pipelines, self.pipelines = self.pipelines, {}
+            for pipeline in pipelines.values():
+                for stage in pipeline.stages:
+                    self._retire_stage(stage)
 
     def notify_global_config_change(self, config: SDRConfig) -> None:
         """Notify pipeline worker of a global config change."""

@@ -92,20 +92,26 @@ class SDRRecordCommand(Command):
         resample, out_rate = _compute_resample(device_rate, target_rate)
         max_samples = int(duration * out_rate) if duration is not None else None
 
-        write_format = _resolve_record_format(args.sample_format, device, args.output)
+        # An --output that is a directory gets an automatic name inside it.
+        out_dir = Path(args.output) if args.output and Path(args.output).is_dir() else None
+        explicit = args.output if args.output and out_dir is None else None
+        write_format = _resolve_record_format(args.sample_format, device, explicit)
         ext = _FORMAT_EXT[write_format]
 
         output_path = (
-            Path(args.output)
-            if args.output
+            Path(explicit)
+            if explicit
             else _autogenerate_path(
                 center_frequency=device.config.center_frequency,
                 out_rate=out_rate,
                 duration=int(duration) if duration is not None else None,
                 rf_gain=device.config.rf_gain,
                 ext=ext,
+                directory=out_dir,
             )
         )
+        # A finished recording never replaces a file: an existing --output gets the next free name.
+        taken = " [dim](exists: saved under the next free name)[/]" if output_path.exists() else ""
 
         pipeline_config = PipelineConfig(
             stages=(StageType.RECORD,),
@@ -120,9 +126,11 @@ class SDRRecordCommand(Command):
         path_md = safe(str(output_path))
         rate_md = f"[yellow]{int(out_rate)} Hz[/] [dim]{ext}[/]"
         if duration is not None:
-            return success(f"Recording {duration:g}s on {device_id(did)} @ {rate_md} → {path_md}")
+            return success(
+                f"Recording {duration:g}s on {device_id(did)} @ {rate_md} → {path_md}{taken}"
+            )
         return success(
-            f"Recording on {device_id(did)} @ {rate_md} → {path_md} "
+            f"Recording on {device_id(did)} @ {rate_md} → {path_md}{taken} "
             "[dim](stop with 'record stop')[/]"
         )
 
@@ -131,9 +139,10 @@ class SDRRecordCommand(Command):
         pipeline_config = device.config.pipelines.get(PIPELINE_NAME)
         if pipeline_config is None:
             raise SDRException(f"Not recording on '{did}'")
-        path = pipeline_config.record_path or "<unknown>"
         engine.remove_pipeline(did, PIPELINE_NAME)
-        return success(f"Stopped recording → {safe(path)}")
+        # The file is finished on the pipeline thread after its last batch, and may take the
+        # next free name: the "recording finished" notice reports where it went.
+        return success(f"Stopped recording on {device_id(did)}")
 
     def complete(
         self,
@@ -223,18 +232,30 @@ def _resolve_record_format(choice: str, device, output: str | None) -> SampleFor
 
 
 def _autogenerate_path(
-    center_frequency: float, out_rate: float, duration: int | None, rf_gain: float, ext: str
+    center_frequency: float,
+    out_rate: float,
+    duration: int | None,
+    rf_gain: float,
+    ext: str,
+    directory: Path | None = None,
 ) -> Path:
-    SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    folder = SAMPLES_DIR if directory is None else directory
+    folder.mkdir(parents=True, exist_ok=True)
     fmhz = f"{center_frequency / 1e6:g}"
     if "." not in fmhz and "e" not in fmhz:
         fmhz += ".0"
-    sr_khz = int(round(out_rate / 1000))
+    sr_khz = f"{out_rate / 1000:g}"  # 44.1, not 44: the iq-file device plays at this rate
     gain = int(round(rf_gain))
-    ts = datetime.now().strftime("%Y%m%dT%H%M")
+    ts = datetime.now().strftime("%Y%m%dT%H%M%S")
     dur_segment = f"_dur={int(round(duration))}s" if duration is not None else ""
-    name = f"freq={fmhz}M_sr={sr_khz}k{dur_segment}_gain={gain}_{ts}.{ext}.zst"
-    return SAMPLES_DIR / name
+    stem = f"freq={fmhz}M_sr={sr_khz}k{dur_segment}_gain={gain}_{ts}"
+    # A name taken by a finished recording is skipped. Two recordings may still pick one
+    # name (both started in the same second): each writes its own file, and the later to
+    # finish takes the next free -2, -3, ... (RecordStage), which its finished notice shows.
+    path, n = folder / f"{stem}.{ext}.zst", 2
+    while path.exists():
+        path, n = folder / f"{stem}-{n}.{ext}.zst", n + 1
+    return path
 
 
 def _sr_divisor_completions(prefix: str) -> list[Completion]:

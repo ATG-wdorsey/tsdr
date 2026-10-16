@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import uuid
 from pathlib import Path
 from typing import IO, Any
 
@@ -40,7 +42,9 @@ class RecordStage:
         sample_format: SampleFormat = SampleFormat.UINT8_IQ,
     ) -> None:
         self._path = Path(output_path)
-        self._partial_path = self._path.with_suffix(self._path.suffix + ".partial")
+        # This recording's own file while it is written (beside the final name, made at the
+        # first batch); renamed to the final name, never replacing another file, at close.
+        self._partial_path: Path | None = None
         self._pipeline_name = pipeline_name
         self._resample = resample
         self._max_samples = max_samples
@@ -53,11 +57,16 @@ class RecordStage:
         self._zwriter: Any = None
         self._samples_written = 0
         self._closed = False
-        self._finished_event_published = False
+        # Where close() reports the saved file (the first batch's context).
+        self._event_bus: Any = None
+        self._device_id = ""
 
     def process(self, data: SamplesBatch, context: PipelineContext) -> SamplesBatch | None:
         if self._closed or data.iq_samples is None:
             return data
+        if self._event_bus is None:
+            self._event_bus = context.event_bus
+            self._device_id = context.device_context.device_id
 
         self._ensure_open(data.sample_rate)
         samples = self._resample_chunk(data.iq_samples)
@@ -82,7 +91,19 @@ class RecordStage:
         if self._file is not None:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = open(self._partial_path, "wb")  # noqa: SIM115 - owned by stage, closed in close()
+        while True:  # a name no other recording has, made exclusively (permissions as open())
+            partial = self._path.with_name(f"{self._path.name}.{uuid.uuid4().hex[:8]}.partial")
+            try:
+                fd = os.open(
+                    partial,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+                    0o666,
+                )
+            except FileExistsError:
+                continue
+            break
+        self._partial_path = partial
+        self._file = os.fdopen(fd, "wb")  # owned by the stage, closed in close()
         self._zwriter = zstd.ZstdCompressor(level=_DEFAULT_LEVEL).stream_writer(self._file)
 
         if self._resample is None:
@@ -121,32 +142,41 @@ class RecordStage:
         self._zwriter.write(cu8.tobytes())
 
     def _finalize_duration_mode(self, context: PipelineContext) -> None:
-        if self._finished_event_published:
-            return
-        self._finished_event_published = True
         self.close()
-        context.event_bus.publish(
-            RecordingFinishedEvent(
-                source_id=f"record_{context.device_context.device_id}",
-                device_id=context.device_context.device_id,
-                pipeline_name=self._pipeline_name,
-                path=str(self._path),
-                samples_written=self._samples_written,
-            )
-        )
 
     def close(self) -> None:
+        """Finish the file and give it its name (the next free -2, -3, ... when the name is
+        taken), then report it: `RecordingFinishedEvent` with where the data is, which also
+        ends a `record for` pipeline. Reported even when finishing fails (a full disk, a
+        refused rename: the data stays in the partial file, and the error goes on up). A
+        recording that never got a batch wrote nothing."""
         if self._closed:
             return
         self._closed = True
-        if self._zwriter is not None:
-            self._zwriter.close()
-            self._zwriter = None
-        if self._file is not None:
-            self._file.close()
-            self._file = None
-        if self._partial_path.exists():
-            self._partial_path.rename(self._path)
+        saved = self._partial_path  # where the data is, until it has its name
+        try:
+            try:
+                if self._zwriter is not None:
+                    zwriter, self._zwriter = self._zwriter, None
+                    zwriter.close()
+            finally:  # the file is closed even when the last flush fails (a full disk)
+                if self._file is not None:
+                    file, self._file = self._file, None
+                    file.close()
+            if saved is not None:
+                saved = self._path = _promote(saved, self._path)
+        finally:
+            if saved is not None and self._event_bus is not None:
+                self._event_bus.publish(
+                    RecordingFinishedEvent(
+                        source_id=f"record_{self._device_id}",
+                        device_id=self._device_id,
+                        pipeline_name=self._pipeline_name,
+                        path=str(saved),
+                        samples_written=self._samples_written,
+                        recording=self,
+                    )
+                )
 
     def on_config_change(self, config: Any) -> None:
         pass
@@ -161,3 +191,39 @@ class RecordStage:
     @property
     def path(self) -> Path:
         return self._path
+
+
+# Extensions kept whole when a number goes before them ("x.cf32.zst" -> "x-2.cf32.zst").
+_RECORDING_EXTENSIONS = (".cu8.zst", ".cf32.zst")
+
+
+def _numbered(path: Path, n: int) -> Path:
+    name = path.name
+    ext = next((e for e in _RECORDING_EXTENSIONS if name.endswith(e)), path.suffix)
+    return path.with_name(f"{name[: len(name) - len(ext)]}-{n}{ext}")
+
+
+def _promote(partial: Path, final: Path) -> Path:
+    """Give a finished recording its name without replacing a file already there (another
+    recording, or one finished since the name was chosen): the next free -2, -3, ... then.
+    The name is claimed with an empty file made exclusively, which every recording here
+    respects, and the recording then replaces only that placeholder: atomic on any
+    filesystem, hard links or not. Returns the name it got (the partial's, if the rename
+    fails: the data is kept)."""
+    candidate, n = final, 2
+    while True:
+        try:
+            os.close(os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666))
+        except FileExistsError:
+            candidate, n = _numbered(final, n), n + 1
+            continue
+        break
+    try:
+        os.replace(partial, candidate)
+    except OSError as e:
+        logger.error("record_rename_failed partial=%s path=%s error=%r", partial, candidate, e)
+        candidate.unlink(missing_ok=True)
+        return partial
+    if candidate != final:
+        logger.warning("record_name_taken path=%s saved_as=%s", final, candidate)
+    return candidate

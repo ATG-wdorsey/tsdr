@@ -193,7 +193,11 @@ class WorkerRunner:
                 logger.error("worker_teardown_crashed worker=%s", context.worker_id, exc_info=True)
             context.lifecycle.mark_stopped()
             # Self-deregister so a future start_worker can reuse the slot
-            # even when nobody calls stop_worker (e.g. setup failed).
+            # even when nobody calls stop_worker (e.g. setup failed). Only its own
+            # handle: a worker abandoned by a timed-out stop may exit after a successor
+            # has taken the id.
             with self._lock:
-                self._workers.pop(context.worker_id, None)
+                handle = self._workers.get(context.worker_id)
+                if handle is not None and handle.lifecycle is context.lifecycle:
+                    del self._workers[context.worker_id]
             logger.debug("worker_thread_exiting worker=%s", context.worker_id)

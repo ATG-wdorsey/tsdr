@@ -12,6 +12,7 @@ from tsdr.core.directory.model import PublicDevice, Source
 from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import get_engine
+from tsdr.core.sdr.exceptions import SDRException
 from tsdr.devices import DeviceParams, KiwiSDRParams, SpyServerParams
 from tsdr.devices.base import NetworkDeviceParams
 
@@ -58,7 +59,10 @@ def add_directory_device(device: PublicDevice) -> ConnectResult:
         engine = get_engine()
         starting = engine.devices[existing].state != DeviceState.RUNNING
         if starting:
-            engine.start_device(existing)
+            try:  # refused, e.g. while its last batch is still finishing
+                engine.start_device(existing)
+            except SDRException as e:
+                return ConnectResult(False, str(e))
         engine.set_focused_device(existing)
         return ConnectResult(True, f"{'Started' if starting else 'Focused'} {device.name}")
     if not device.usable:
@@ -78,7 +82,10 @@ def add_directory_device(device: PublicDevice) -> ConnectResult:
         ),
     )
     engine.set_focused_device(did)
-    engine.start_device(did)
+    try:
+        engine.start_device(did)
+    except SDRException as e:
+        return ConnectResult(False, str(e))
     return ConnectResult(True, f"Added {device.name} ({host}:{port})")
 
 
@@ -93,7 +100,10 @@ def start_directory_device(device: PublicDevice | FavoriteDevice) -> ConnectResu
     _stop_running_devices()
     engine.update_device_config(did, tuned_frequency=freq)
     engine.set_focused_device(did)
-    engine.start_device(did)
+    try:  # refused, e.g. while its last batch is still finishing (it was just stopped)
+        engine.start_device(did)
+    except SDRException as e:
+        return ConnectResult(False, str(e))
     return ConnectResult(True, f"Started {device.name}")
 
 

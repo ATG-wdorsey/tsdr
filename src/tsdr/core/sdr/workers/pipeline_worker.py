@@ -36,6 +36,9 @@ class PipelineWorker:
     def __init__(self, device_context: SDRDeviceContext) -> None:
         self.device_context = device_context
         self.pipeline_context: PipelineContext | None = None
+        # The stages are this worker's from now until its teardown: a stage the config
+        # drops is closed by it, between batches, even while its thread hasn't started.
+        device_context.claim_stages(self)
 
     def setup(self, context: WorkerContext) -> None:
         device_id = self.device_context.device_id
@@ -60,12 +63,18 @@ class PipelineWorker:
         device_id = self.device_context.device_id
         sample_queue = self.device_context.sample_queue
 
+        if not context.should_continue():
+            # Stopped before it ran (its thread was slow to start): the device may be
+            # gone, its stages closed for good.
+            return
         assert self.device_context.pipelines, "Pipelines must be configured"
         assert self.pipeline_context is not None, "Pipeline context must be initialized in setup()"
 
         while context.should_continue():
             with span("pipeline_worker"):
                 self._apply_pending_configs()
+                # Between batches, so no stage the config dropped is still in use.
+                self.device_context.close_retired_stages()
 
                 with span("queue_wait"):
                     try:
@@ -105,7 +114,8 @@ class PipelineWorker:
                             )
 
     def teardown(self, context: WorkerContext) -> None:
-        pass
+        # Runs on this thread after its last batch, also when a stop's join gave up on it.
+        self.device_context.release_stages(self)
 
     def _apply_pending_configs(self) -> None:
         """Drain the control queue and apply the newest snapshot of each type.

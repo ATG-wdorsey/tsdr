@@ -242,6 +242,10 @@ class RecordingFinishedEvent(Event):
     pipeline_name: str
     path: str
     samples_written: int
+    # The recording itself (its RecordStage): the engine removes the pipeline only while
+    # that stage still runs in it. A stopped recording can finish its last batch after a
+    # new one has started under the same name; an edit of the pipeline keeps the stage.
+    recording: object | None = None
 
 
 @dataclass(frozen=True)

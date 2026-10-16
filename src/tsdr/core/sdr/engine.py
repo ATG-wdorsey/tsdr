@@ -86,6 +86,9 @@ class SDREngine:
         with span("SDREngine init"):
             _active_engine = self
             self.config = SDRConfig()
+            # Shutdown is final: it closes every stage (finalizing recordings), and a
+            # device started after it would run without them.
+            self._shut_down = False
             self.devices: dict[str, SDRDeviceContext] = {}
             self.focused_device: str | None = None
             self._focus_history: list[str] = []
@@ -182,6 +185,7 @@ class SDREngine:
 
         # Clean up
         self.stop_audio_output(device_id)
+        context.close_all_stages()  # a recording still on gets its file finalized
         del self.devices[device_id]
 
         self._focus_history = [d for d in self._focus_history if d != device_id]
@@ -253,6 +257,13 @@ class SDREngine:
 
         if context.state != DeviceState.STOPPED:
             raise SDRException(f"Device {device_id} is not stopped")
+        if self._shut_down:
+            raise SDRException("The engine has shut down")
+        if context.worker_owns_stages:
+            raise SDRException(
+                f"Device {device_id} is still finishing its last batch (the stop timed out); "
+                "try again in a moment"
+            )
 
         # Start device workers (pipeline worker materializes pipelines in setup)
         context.start(worker_runner=self.worker_runner)
@@ -356,6 +367,8 @@ class SDREngine:
         from_search: bool = False,
         keep_lo: bool = False,
         while_search: SearchConfig | None = None,
+        while_stage: tuple[str, object] | None = None,
+        while_pipelines: Mapping[str, PipelineConfig] | None = None,
         **changes: Unpack[DeviceConfigChanges],
     ) -> bool:
         """Update per-device configuration. Returns whether it was applied.
@@ -367,12 +380,19 @@ class SDREngine:
         applies the update only while that SEARCH run is still the device's,
         checked with the change itself: a jump or lockout decided for a run
         that a manual tune, a stop or a restart has replaced can't land.
+        `while_stage` (pipeline name, stage) likewise applies it only while that
+        pipeline still runs that stage instance, and `while_pipelines` only while the
+        pipelines are still that mapping (a change built from them can't undo another).
         """
         if device_id not in self.devices:
             raise SDRException(f"Device {device_id} not found")
 
         context = self.devices[device_id]
         if while_search is not None and context.config.search is not while_search:
+            return False
+        if while_stage is not None and not context.pipeline_holds(*while_stage):
+            return False
+        if while_pipelines is not None and context.config.pipelines is not while_pipelines:
             return False
         old_pipelines = context.config.pipelines
 
@@ -451,13 +471,28 @@ class SDREngine:
                     f"Sample rate {new_rate / 1e6:.3f} MHz not supported (device supports: {valid})"
                 )
 
-        expect = None if while_search is None else (lambda cfg: cfg.search is while_search)
+        def expect(cfg: DeviceConfig) -> bool:
+            # Under the context's publish lock, which every change of the pipelines holds.
+            if while_search is not None and cfg.search is not while_search:
+                return False
+            if while_pipelines is not None and cfg.pipelines is not while_pipelines:
+                return False
+            return while_stage is None or context.pipeline_holds(*while_stage)
+
         try:
-            applied = context.update_config(expect=expect, **changes)
+            applied = context.update_config(
+                expect=None
+                if while_search is None and while_stage is None and while_pipelines is None
+                else expect,
+                **changes,
+            )
         except ValueError as e:  # DeviceConfig.validate(): refuse it like the checks above
             raise ConfigurationError(str(e)) from e
         if not applied:
-            logger.info("search_update_dropped device=%s reason=search_changed", device_id)
+            if while_stage is not None or while_pipelines is not None:
+                logger.info("pipeline_update_dropped device=%s reason=changed", device_id)
+            else:
+                logger.info("search_update_dropped device=%s reason=search_changed", device_id)
             return False
         logger.info("device_config_update device=%s changes=%r", device_id, changes)
 
@@ -653,26 +688,53 @@ class SDREngine:
 
         self._publish_pipeline_changed(device_id, pipeline_name, active=True)
 
-    def remove_pipeline(self, device_id: str, pipeline_name: str) -> None:
+    def remove_pipeline(
+        self, device_id: str, pipeline_name: str, *, only_stage: object | None = None
+    ) -> None:
         """Remove a pipeline from a device by updating its config.
 
         Args:
             device_id: Device identifier
             pipeline_name: Pipeline name to remove
+            only_stage: remove it only while it still runs this stage instance (checked
+                with the change)
         """
         if device_id not in self.devices:
             raise SDRException(f"Device {device_id} not found")
 
         context = self.devices[device_id]
-        if pipeline_name not in context.config.pipelines:
+        # Built from one reading of the pipelines and applied only while they are still
+        # that mapping: a change made meanwhile on another thread (this runs on the
+        # pipeline worker when a `record for` ends) would otherwise be undone. Retried
+        # when one was.
+        for _attempt in range(8):
+            pipelines = context.config.pipelines
+            removed = pipelines.get(pipeline_name)
+            if removed is None:
+                return
+            if only_stage is not None and not context.pipeline_holds(pipeline_name, only_stage):
+                logger.info(
+                    "pipeline_remove_skipped device=%s name=%s reason=replaced",
+                    device_id,
+                    pipeline_name,
+                )
+                return
+            kept_before = context.kept_squelch
+            if removed.audio_spec is not None:
+                # The squelch belongs to the receiver: the next demodulator gets it back.
+                context.kept_squelch = removed
+            new_pipelines = {k: v for k, v in pipelines.items() if k != pipeline_name}
+            if self.update_device_config(
+                device_id,
+                pipelines=MappingProxyType(new_pipelines),
+                while_stage=None if only_stage is None else (pipeline_name, only_stage),
+                while_pipelines=pipelines,
+            ):
+                break
+            context.kept_squelch = kept_before
+        else:
+            logger.warning("pipeline_remove_gave_up device=%s name=%s", device_id, pipeline_name)
             return
-
-        removed = context.config.pipelines[pipeline_name]
-        if removed.audio_spec is not None:
-            # The squelch belongs to the receiver: the next demodulator gets it back.
-            context.kept_squelch = removed
-        new_pipelines = {k: v for k, v in context.config.pipelines.items() if k != pipeline_name}
-        self.update_device_config(device_id, pipelines=MappingProxyType(new_pipelines))
 
         logger.info("pipeline_removed device=%s name=%s", device_id, pipeline_name)
 
@@ -918,7 +980,9 @@ class SDREngine:
     def _on_recording_finished(self, event: Event) -> None:
         assert isinstance(event, RecordingFinishedEvent)
         if event.device_id in self.devices:
-            self.remove_pipeline(event.device_id, event.pipeline_name)
+            # Only that recording: a stopped one can finish its last batch after a new
+            # recording has started under the same name.
+            self.remove_pipeline(event.device_id, event.pipeline_name, only_stage=event.recording)
 
     def _on_decoder_output(self, event: Event) -> None:
         assert isinstance(event, DecoderOutputEvent)
@@ -993,6 +1057,7 @@ class SDREngine:
             timeout: Maximum time to wait per worker for graceful shutdown
         """
         logger.info("engine_shutdown_starting")
+        self._shut_down = True
 
         # Stop all devices (this stops I/O and pipeline workers)
         device_ids = list(self.devices.keys())
@@ -1009,6 +1074,15 @@ class SDREngine:
                         e,
                         exc_info=True,
                     )
+
+        # Close every stage for good: a recording still on gets its file finalized.
+        for device_id, context in list(self.devices.items()):
+            try:
+                context.close_all_stages()
+            except Exception as e:  # noqa: BLE001 - shutdown must go on
+                logger.error(
+                    "engine_close_stages_failed device=%s error=%r", device_id, e, exc_info=True
+                )
 
         # Stop any remaining audio workers (devices may not have run stop_device)
         for source_id in list(self._audio_workers.keys()):

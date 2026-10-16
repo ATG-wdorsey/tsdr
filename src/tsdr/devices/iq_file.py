@@ -34,7 +34,7 @@ EXTENSION_FORMAT_MAP: dict[str, SampleFormat] = {
 }
 
 _SI_MULTIPLIER = {"": 1.0, "k": 1e3, "M": 1e6, "G": 1e9}
-_SR_PATTERN = re.compile(r"(?:^|[_/])sr=(\d+(?:\.\d+)?)([kMG]?)(?=[_.]|$)")
+_SR_PATTERN = re.compile(r"(?:^|[_/])sr=(\d+(?:\.\d+)?)([kMG]?)(?=[_.\-]|$)")  # -: a numbered name
 
 
 def parse_sample_rate_from_filename(name: str) -> float | None:

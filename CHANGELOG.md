@@ -34,6 +34,8 @@ Work on the trunk since 0.3.0, for the next release.
 - Starting SEARCH keeps the mode's saved tuning step, and the tuner shows SEARCH's grid while it runs; the squelch kept
   while demodulation is off is saved across restarts. Console completion offers an optional argument's choices beside
   the flags, and `demod` offers `off` only after a decoder.
+- `record --output` no longer replaces an existing file: the recording takes the next free name (`-2`, ...), as
+  automatic names do, and the start message says so. An `--output` that is a directory gets an automatic name in it.
 
 ### Fixed
 
@@ -48,6 +50,13 @@ Work on the trunk since 0.3.0, for the next release.
   to its headers gets through); a hand-edited infinite or out-of-range step or frequency is refused; memories and
   preferences saved in another encoding read, keeping their other entries; a setting left queued when a device stops
   no longer overrides the current ones at the next start.
+- Stopping a recording could crash tsdr: the recording was closed from the console while it was still being
+  written. A stage the configuration drops is now closed by the processing thread between batches, also when a stop
+  gives up waiting for that thread. Two recordings started within the same minute got one name, and the one that
+  finished last replaced the other. Names now carry the second (and a rate like 44.1 kHz whole), each recording
+  writes its own file, and a finished recording never replaces a file already there: it takes the next free name,
+  which the "recording finished" notice shows (also after `record stop`, and when finishing fails). Quitting, or
+  removing the device, finalizes a recording still running (it was left as a `.partial` file).
 
 ## [0.3.0] - 2026-10-16
 

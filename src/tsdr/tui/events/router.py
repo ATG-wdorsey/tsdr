@@ -19,6 +19,7 @@ from tsdr.core.sdr.engine import SDREngine
 from tsdr.core.search_control import SearchStepFollower
 from tsdr.core.tracing import span
 from tsdr.tui._mixin_base import MixinBase
+from tsdr.tui.commands._format import safe
 from tsdr.tui.events.engine_prefs_sync import EnginePrefsSync
 from tsdr.tui.messages import (
     AudioOutputError,
@@ -205,7 +206,7 @@ class EventRouter(MixinBase):
     @on(RecordingFinished)
     def handle_recording_finished(self, message: RecordingFinished) -> None:
         event = message.event
-        notice = f"recording finished → {event.path} ({event.samples_written} samples)"
+        notice = f"recording finished → {safe(event.path)} ({event.samples_written} samples)"
         self.show_status(notice)
         console = self._reconciler.get("console")
         if console is not None:
