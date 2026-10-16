@@ -30,7 +30,7 @@ except ImportError as exc:
     print("\n".join(_lines), file=sys.stderr)
     sys.exit(1)
 
+from tsdr._version import __version__  # noqa: E402
 from tsdr.tui import TSDRApp  # noqa: E402
 
-__version__ = "0.1.0"
 __all__ = ["__version__", "TSDRApp"]

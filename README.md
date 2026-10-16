@@ -1,56 +1,10 @@
 # TSDR
 
-> **About this fork.** This fork of [floens/tsdr](https://github.com/floens/tsdr)
-> carries fixes and enhancements made while using TSDR with a PlutoSDR and an
-> Airspy on Linux, all offered upstream as pull requests. What you'll notice:
->
-> **Fixes**
-> - **No phantom signals while tuning.** Strong stations elsewhere in the
->   capture no longer fold onto the channel you are tuned to (at 10 MS/s they
->   were rejected by 0.4 dB; now by at least 81 dB). WSJT modes decode the
->   upper sideband only.
->   ([floens/tsdr#7](https://github.com/floens/tsdr/pull/7))
-> - **Clean audio on Linux with the TUI running.** No more dropouts several
->   times a second, and the underrun counter counts real underruns.
->   ([#3](https://github.com/floens/tsdr/pull/3))
-> - **Smooth capture at high sample rates.** Garbage-collection pauses that
->   stopped every thread for ~120 ms, dropping radio samples, are kept short.
->   ([#5](https://github.com/floens/tsdr/pull/5))
-> - **Kitty no longer crashes** (SIGBUS) in image mode, and frames no longer
->   pile up in `/dev/shm`. ([#4](https://github.com/floens/tsdr/pull/4))
-> - **Everyday glitches.** After holding a tuning key the radio could stay on
->   a different frequency than the dial showed; an out-of-range shortcut
->   exited the app; a radio that failed to open showed as running;
->   click-to-tune landed on whole megahertz with coarse steps; `demod wfm`
->   was rejected (modes were case-sensitive).
->   ([#2](https://github.com/floens/tsdr/pull/2))
-> - **A steady spectrum when zoomed or offset.** Zooming in, or an LO offset,
->   no longer makes the trace noisy and several dB too high: each column
->   averages the FFT bins it covers instead of showing just one.
->   ([#10](https://github.com/floens/tsdr/pull/10))
->
-> **Enhancements**
-> - **SoapySDR radios use their real limits:** frequency range, fixed sample
->   rates (such as the Airspy's) and gain step. Lost samples are reported:
->   driver overflows are logged, and a warning suggests a lower rate when a
->   radio can't deliver the one asked for.
->   ([#6](https://github.com/floens/tsdr/pull/6))
-> - **Capture outside Python.** SoapySDR streams are read on a native thread,
->   so pauses in Python can't drop radio samples, and holding a tuning key
->   loses nothing. ([#8](https://github.com/floens/tsdr/pull/8))
-> - **Zero-IF radios (PlutoSDR, HackRF and similar).** While you demodulate,
->   the LO sits beside the channel instead of on it, keeping the DC spike, LO
->   leakage and near-DC intermod out of what you hear: `o`/`O` put it below or
->   above the dial (again: no offset), or `config --lo-offset` and
->   `--lo-offset-size`. The Pluto's analog filter follows the sample rate
->   (0.8x) instead of staying at 18 MHz, so strong signals outside the span no
->   longer overload the ADC: `config --analog-filter`.
->   ([#9](https://github.com/floens/tsdr/pull/9))
->
-> Install this fork with
-> `uv tool install --from git+https://github.com/ATG-wdorsey/tsdr@main tsdr`.
-> Branch `main` is this fork; `master` mirrors upstream. The git log records
-> who changed what, and when.
+This is a fork of [floens/tsdr](https://github.com/floens/tsdr) by floens, maintained by
+[ATG-wdorsey](https://github.com/ATG-wdorsey). **Version 0.2.0** (2026-10-15) adds fixes and enhancements made while
+using TSDR with a PlutoSDR and an Airspy on Linux: what changed and when is in [CHANGELOG.md](CHANGELOG.md), and the
+same changes as offered upstream ([floens/tsdr#2-#11](https://github.com/floens/tsdr/pulls)) in [PRs.md](PRs.md).
+Branch `main` holds the latest release; each release is also a tag (`v0.2.0`). Branch `master` mirrors upstream.
 
 TSDR is a terminal user interface for software-defined radio. It provides a
 real-time spectrum display, a waterfall, audio demodulation, and a set of
@@ -71,7 +25,7 @@ interactive radio and as a general SDR toolkit.
   high-frame-rate image rendering if your terminal supports it (recommended!
   see also the recommended terminals in the requirements section)
 - Audio demodulators: all you can expect. WFM (with stereo and RDS), NFM, AM,
-- SSB (USB/LSB), CW (Morse).
+  SSB (USB/LSB), CW (Morse).
 - Protocol decoders: this list is always expanding. FLEX paging (2-FSK),
   ADS-B (1090 MHz Mode S), DAB+ (AAC), DMR (with AMBE+2), TETRA (with ACELP),
   FT8/FT4 (WSJT-X), APRS (AFSK1200/AX.25), SSTV (Martin/Scottie/Robot),
@@ -81,6 +35,35 @@ interactive radio and as a general SDR toolkit.
 - A command console with history, tab-completion, and argparse-style help.
 - Frequency memories, bandplan overlays, IQ recording, and squelch.
 - Runs on Linux, macOS, and Windows.
+
+### New in 0.2.0
+
+Measured on a PlutoSDR and an Airspy under Linux; the details are in [CHANGELOG.md](CHANGELOG.md).
+
+- **No phantom signals from strong stations.** Demodulators and decoders now decimate in stages, so a strong station
+  anywhere else in the capture can no longer fold onto the channel you are tuned to: it is held at least 81 dB down
+  (as little as 0.4 dB before, at 10 MS/s). FT8/FT4 decode the upper sideband only.
+- **Zero-IF radios without the center spike.** On a PlutoSDR, HackRF, LimeSDR, USRP or bladeRF the LO now sits just
+  beside the channel you listen to instead of on it, keeping the DC spike, LO leakage and near-DC intermod out of the
+  audio (on a Pluto+ on UHF the channel at the LO was 7.5-9.7 dB noisier). `o` / `O` put it below or above the dial.
+- **No overload from signals outside the span.** The Pluto's analog filter now follows the sample rate instead of
+  staying at 18 MHz: a tone a few MHz outside a 2 MS/s span overloaded the ADC from -35 dBm and lifted the noise floor
+  16 dB; now there is no overload up to -20 dBm, and what aliases into the span is 24 dB lower.
+- **Gap-free audio on Linux.** About 385 audio dropouts a minute with the TUI running, down to none (tested to
+  10 MS/s): tsdr writes as much as PulseAudio or WASAPI reports room for.
+- **Every sample, even at 10 MS/s.** SoapySDR streams are read on a native thread that Python can't pause, and the
+  ~120 ms garbage-collection pauses are gone: a PlutoSDR at 10 MS/s delivers the full 10.00 MS/s inside the TUI
+  (9.4-9.8 before), and holding a tuning key loses nothing.
+- **Your radio's real limits.** SoapySDR radios use their actual frequency range, sample rates (such as the Airspy's
+  two fixed rates) and gain step. Lost samples are never silent: driver overflows are logged, and the screen says when
+  a radio delivers less than its rate and suggests a lower one.
+- **A true spectrum when zoomed.** Each column averages the FFT bins it covers: one zoom step showed 7.4 dB of
+  column-to-column jitter and read up to 9.5 dB high; now the jitter is 2.0 dB.
+- **Polish.** Kitty image mode no longer crashes (SIGBUS) or leaves frames in `/dev/shm`; the radio always matches the
+  dial after a held tuning key; a shortcut can't exit the app; click-to-tune snaps to the channel raster; modes are
+  accepted in any case; the console takes keys after a panel click. The version shows in the Stats panel's title, and
+  `tsdr --version` prints it.
+
 
 ## Requirements
 
@@ -98,19 +81,22 @@ SoapySDR-compatible device), `iq-file`.
 
 ## Installation
 
-TSDR is not published on PyPI (yet). Commended to install it directly from
-GitHub with [uv](https://docs.astral.sh/uv/):
+TSDR is not published on PyPI. Install this fork directly from GitHub with
+[uv](https://docs.astral.sh/uv/), either the latest release (`main`) or a given one (`@v0.2.0`):
 
 ```
-uv tool install --from git+https://github.com/floens/tsdr tsdr
+uv tool install --from git+https://github.com/ATG-wdorsey/tsdr@main tsdr
 ```
 
 The RTL-SDR USB support (the `rtlsdr` device type) requires the optional
 `rtlsdr` extra:
 
 ```
-uv tool install --from git+https://github.com/floens/tsdr "tsdr[rtlsdr]"
+uv tool install --from git+https://github.com/ATG-wdorsey/tsdr@main "tsdr[rtlsdr]"
 ```
+
+To update, run the same command with `--reinstall`. The original project installs with
+`git+https://github.com/floens/tsdr`.
 
 ### SoapySDR support
 
@@ -182,6 +168,7 @@ Other entrypoint flags:
 - `--headless`: run without the TUI; logs go to stdout and commands are read
   from stdin.
 - `-v`, `--verbose`: enable debug logging.
+- `--version`: print the version and exit.
 
 ### The console
 
@@ -257,7 +244,7 @@ Tuning:
   least 50 kHz, so their center spike and intermod products stay out of the
   channel. In center mode the spectrum is trimmed by twice the offset to keep
   the dial centered. `config --lo-offset` and `--lo-offset-size` set it from the
-  console.
+  console, and the Stats panel shows where the LO is.
 
 Search (find activity within the captured band):
 
@@ -366,7 +353,7 @@ Memories and panels:
 - `Ctrl+M`: delete the nearest memory (press `y` to confirm).
 - `1` to `9`: toggle the dockable panel mapped to that key.
 - `?`: show / hide the list of keys (a panel, like the numbered ones).
-- `Ctrl+S`: toggle the stats panel; `Ctrl+P`: toggle the performance panel.
+- `Alt+1` to `Alt+9`: move the mapped panel to the next edge (left, bottom, right).
 - `Ctrl+1` to `Ctrl+9`: recall a band-stack slot; `Ctrl+0`: swap the A/B band stack.
 
 When the console is focused:
@@ -395,13 +382,13 @@ restored on startup.
 
 The architecture, goals, and non-goals are described in [DESIGN.md](DESIGN.md).
 At a high level, a `core` layer owns all SDR logic (devices, workers, pipelines,
-the event bus), and a `tui` layer renders it. s written in Python so it is easy
+the event bus), and a `tui` layer renders it. It is written in Python so it is easy
 to read, modify, and experiment with, with hot DSP paths accelerated by NumPy
 and Numba.
 
 ## Development
 
-Parts of TSDR were written with the help of LLMs. The development and porting of
+From floens, the original author: Parts of TSDR were written with the help of LLMs. The development and porting of
 complicated, digital decoders is aided with LLMs, building on top of the work of
 many authors and programs in this space. This program is therefore licensed
 under the GPL (as is most of my software).
@@ -414,4 +401,4 @@ TSDR includes code derived from or inspired by several other projects. See
 ## License
 
 TSDR is licensed under the GNU General Public License, version 2 or later. See
-[COPYING](COPYING).
+[COPYING](COPYING). TSDR is by floens; this fork's changes are by their authors as the git log records.

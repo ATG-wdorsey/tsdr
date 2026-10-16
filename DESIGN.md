@@ -156,7 +156,9 @@ Each worker owns a thread. The worker abstraction revolves around this. Workers 
 
 #### I/O Worker
 
-The IO worker gets samples from and sets config on the SDR hardware, and has exclusive access to it.
+The IO worker gets samples from and sets config on the SDR hardware, and has exclusive access to it. A SoapySDR
+stream is read on a native thread into a ring buffer that the IO worker drains, so a pause in Python (a garbage
+collection, a long GIL hold) cannot drop samples.
 
 It also sets the radio's analog (anti-alias) filter after every sample-rate change on drivers that leave the filter
 where it is, so strong signals outside the captured band stay off the converter.
@@ -168,7 +170,9 @@ intensive part of the program.
 
 #### Audio Worker
 
-The audio worker manages the sound device for playing audio samples as produced by the processing parts.
+The audio worker manages the sound device for playing audio samples as produced by the processing parts. It
+writes as much as the device reports room for (PulseAudio's writable size, WASAPI's padding), never by a clock
+estimate.
 Detail: when there are multiple active device contexts, only one audio worker can be actively playing.
 
 #### Lifecycle & Health

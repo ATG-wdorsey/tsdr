@@ -83,6 +83,7 @@ uv run tsdr -e "add rtl0 --type rtltcp --host localhost --port 1234 --frequency 
         metavar="COMMAND",
         help="Execute command on startup (can be specified multiple times)",
     )
+    parser.add_argument("--version", action="version", version=f"tsdr {__version__}")
     parser.add_argument(
         "--headless",
         action="store_true",
