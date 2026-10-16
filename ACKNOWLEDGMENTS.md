@@ -1,6 +1,7 @@
 # Acknowledgments
 
-TSDR includes code derived from or inspired by the following projects:
+TSDR includes code derived from or inspired by the following projects, and a model trained in part on the data
+credited at the end:
 
 ## DAB/DAB+ Decoder
 
@@ -67,3 +68,11 @@ TSDR includes code derived from or inspired by the following projects:
   https://github.com/TLeconte/acarsdec
 - **acars-message-documentation** by airframes.io (label reference)
   https://github.com/airframesio/acars-message-documentation
+
+## Voice Detector (VSQ) Training Data
+
+- **MUSAN: A Music, Speech, and Noise Corpus** by David Snyder, Guoguo Chen and Daniel Povey (2015),
+  https://www.openslr.org/17/, licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+  Its noise recordings were mixed into synthetic training examples without speech (open and quiet
+  microphones, key-ups) for the voice detector's model (`src/tsdr/radio/voice/voice.npz`). No MUSAN
+  audio is included in TSDR.
