@@ -31,6 +31,7 @@ from tsdr.radio.decoders.sstv import (
     StreamingSSTV,
     decode_line,
     decode_offline,
+    find_sync_train,
     find_vis,
     hilbert_fft,
     instantaneous_freq,
@@ -258,19 +259,29 @@ def _picture_start(audio: np.ndarray, fs: int) -> int:
     return vis[1]
 
 
-@pytest.mark.parametrize("filename", ["Robot_36.mp3", "Scottie_1.mp3"])
+@pytest.mark.parametrize(
+    ("filename", "mistune"),
+    [
+        ("Robot_36.mp3", 120.0),
+        ("Scottie_1.mp3", 120.0),
+        ("Robot_36.mp3", -150.0),
+        ("Scottie_1.mp3", -150.0),
+    ],
+)
 def test_a_picture_under_way_is_joined_from_its_line_syncs(
-    _samples: dict[str, tuple[np.ndarray, int]], _decoded: Decoded, filename: str
+    _samples: dict[str, tuple[np.ndarray, int]], _decoded: Decoded, filename: str, mistune: float
 ) -> None:
     """Tuned in after the VIS (or with it lost), the decoder waited for the next
     picture. Its line syncs name the mode (Robot 36's period is half Robot 72's;
-    Scottie's sync sits mid-line) and give the mistune (here 120 Hz)."""
+    Scottie's sync sits mid-line) and give the mistune. Tuned low, black falls in the
+    syncs' band (porches and dark pixels repeat at the line period too): the syncs are
+    the lowest tone."""
     audio, fs = _samples[filename]
     mode, reference = _decoded[filename]
     joined_at, lines = int(mode.scan_lines * 0.4), 30
     line_n = mode.line_ms * fs / 1000.0
     cut = _picture_start(audio, fs) + int((joined_at + 0.1) * line_n)
-    heard = _mistuned(audio[cut - fs : cut + int(lines * line_n)], 120.0, fs)[fs:]
+    heard = _mistuned(audio[cut - fs : cut + int(lines * line_n)], mistune, fs)[fs:]
 
     got: dict[str, object] = {}
     events = StreamingEvents(
@@ -288,6 +299,49 @@ def test_a_picture_under_way_is_joined_from_its_line_syncs(
     rows = lines - 6  # the picture's own rows, from the top (the train's lines included)
     later = reference[joined_at + 1 : joined_at + 1 + rows].astype(int)
     assert np.abs(image[:rows].astype(int) - later).mean() < 3.0
+
+
+def _tones(parts: list[tuple[float, float]], fs: int) -> np.ndarray:
+    """The frequency track of (tone Hz, ms) segments, one value per sample."""
+    return np.concatenate([np.full(round(ms * fs / 1000), hz) for hz, ms in parts]).astype(
+        np.float32
+    )
+
+
+def test_a_dark_picture_tuned_low_is_joined() -> None:
+    """Tuned 50 Hz low, black (1450 Hz) lies in the syncs' band: a black picture is one
+    long run there, which the syncs' step down splits."""
+    fs = 12_000
+    mode = MODES_BY_NAME["martin_m1"]
+    line = [(1200.0 - 50 if seg.kind == "sync" else 1500.0 - 50, seg.ms) for seg in mode.segments]
+    tones = _tones(line * 12, fs)
+    audio = (0.5 * np.sin(2 * np.pi * np.cumsum(tones.astype(np.float64)) / fs)).astype(np.float32)
+    joined: list[Mode] = []
+    decoder = StreamingSSTV(fs, events=StreamingEvents(on_mode=lambda m, _v: joined.append(m)))
+    for i in range(0, len(audio), 600):
+        decoder.process(audio[i : i + 600])
+    assert joined == [mode]
+
+
+def test_a_train_is_found_past_two_disturbed_syncs() -> None:
+    """Robot 36 heard 38 Hz high, its first two syncs disturbed (1190, 1142 Hz): the
+    syncs after them still make the train, at Robot 36's line period, not Robot 72's."""
+    fs = 12_000
+    parts: list[tuple[float, float]] = []
+    for tone in [1190.0, 1142.0] + [1238.0] * 38:
+        parts += [(tone, 9.0), (1538.0, 3.0), (1938.0, 138.0)]
+    train = find_sync_train(_tones(parts, fs), fs, list(MODES.values()))
+    assert train is not None and train.mode is MODES_BY_NAME["robot_36"]
+
+
+def test_an_aprs_preamble_does_not_begin_a_picture() -> None:
+    """APRS opens with HDLC flags, which NRZI turns into one tone held 7 bits of every 8:
+    with 1200 Hz held, a steady sync-like run every 6.7 ms, and every tenth on Robot 8
+    BW's line period. Between those runs a picture would be at black or above."""
+    fs = 12_000
+    tones = np.repeat(np.tile([1200.0] * 7 + [2200.0], 75), 10)  # 500 ms of flags at 1200 Bd
+    audio = np.sin(2 * np.pi * np.cumsum(tones) / fs).astype(np.float32)
+    assert find_sync_train(instantaneous_freq(audio, fs), fs, list(MODES.values())) is None
 
 
 def _through_the_decoder(audio: np.ndarray, fs: int) -> list[SSTVData]:

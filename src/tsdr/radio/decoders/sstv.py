@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from numpy.typing import NDArray
 
 from tsdr.radio.dsp import StreamingFilter
@@ -385,21 +386,26 @@ class StreamingHilbert:
 
 
 def _smooth(x: np.ndarray, n: int) -> np.ndarray:
-    """Centered boxcar smoothing of length n."""
+    """Centered boxcar smoothing of length n (edges held), from a running sum."""
     if n <= 1:
         return x.astype(np.float32, copy=False)
-    kernel = np.ones(n, dtype=np.float32) / n
     pad = n // 2
-    padded = np.pad(x.astype(np.float32, copy=False), (pad, pad), mode="edge")
-    return np.convolve(padded, kernel, mode="valid")[: len(x)]
+    padded = np.pad(x.astype(np.float64), (pad, pad), mode="edge")
+    csum = np.concatenate([[0.0], np.cumsum(padded)])
+    out: np.ndarray = ((csum[n:] - csum[:-n]) / n)[: len(x)].astype(np.float32)
+    return out
 
 
 def _close_gaps(mask: np.ndarray, gap_n: int) -> np.ndarray:
     """Morphological closing: flip any False-run shorter than gap_n to True."""
-    out = mask.copy()
-    for rs, re in _runs(~mask):
-        if re - rs < gap_n:
-            out[rs:re] = True
+    edges = np.diff(np.concatenate(([1], mask.astype(np.int8), [1])))
+    starts = np.flatnonzero(edges == -1)
+    ends = np.flatnonzero(edges == 1)
+    short = ends - starts < gap_n
+    fill = np.zeros(len(mask) + 1, dtype=np.int32)
+    fill[starts[short]] += 1
+    fill[ends[short]] -= 1
+    out: np.ndarray = mask | (np.cumsum(fill[:-1]) > 0)
     return out
 
 
@@ -625,15 +631,25 @@ def find_sync(
 # A picture joined without its VIS: this many line syncs in a row, each the mode's sync
 # length (0.6-1.5x) and one line period after the last (within 0.5 % + 1 ms: the
 # sender's clock), name the mode. A sync's tone may be mistuned (SSB) by up to 200 Hz,
-# as the VIS detector allows; black (1500 Hz, also Martin's separators) stays out of
-# reach, though in noise it breaks into short runs. A sync is a steady tone: the middle
-# of a recording's syncs varies by 6-22 Hz (standard deviation), a run of white noise
-# through the band by 139 Hz or more; and the train's syncs share one tone.
+# as the VIS detector allows (225 Hz: the tone a train measures). Tuned 75 Hz or more
+# low, black (porches, separators, dark pixels) falls in the band too: a run is cut
+# where it climbs from its lowest tone toward black's (300 Hz up), and the train with
+# the lowest tone is the syncs (black and the picture lie above them in every mode). A
+# sync is a steady tone: the middle of a recording's syncs varies by 6-22 Hz (standard
+# deviation), a run of white noise through the band by 139 Hz or more; and the train's
+# syncs share one tone. Between its syncs a picture is at black or above, so little of
+# that audio is near their tone; APRS (1200 Hz held 5.8 ms in every 6.7 ms of its
+# preamble), RTTY and PSK31 repeat at some modes' line periods too, but spend a third of
+# their time or more there.
 _TRAIN_SYNCS = 5
-_TRAIN_MAX_OFFSET_HZ = 200.0
-_TRAIN_BAND_HZ = (FREQ_SYNC - _TRAIN_MAX_OFFSET_HZ - 25.0, FREQ_SYNC + _TRAIN_MAX_OFFSET_HZ + 25.0)
+_TRAIN_MAX_OFFSET_HZ = 225.0
+_TRAIN_BAND_HZ = (FREQ_SYNC - _TRAIN_MAX_OFFSET_HZ - 50.0, FREQ_SYNC + _TRAIN_MAX_OFFSET_HZ + 50.0)
+_TRAIN_STEP_HZ = 200.0
 _TRAIN_MAX_STD_HZ = 60.0
 _TRAIN_TONE_SPREAD_HZ = 50.0
+_TRAIN_LOWEST_HZ = 150.0  # trains this close to the lowest tone are the syncs
+_TRAIN_NEAR_SYNC_HZ = 100.0
+_TRAIN_MAX_NEAR_SYNC = 0.2  # share of the audio between syncs that may be near their tone
 
 
 @dataclass(frozen=True)
@@ -645,12 +661,34 @@ class SyncTrain:
 
 
 def find_sync_train(freq: np.ndarray, fs: int, modes: list[Mode]) -> SyncTrain | None:
-    """Join a picture under way from its line syncs: the mode with the shortest line
-    period whose syncs repeat ``_TRAIN_SYNCS`` times (a train of period P also repeats
-    at 2P, never at P/2). Modes with the same timing (Robot 12 / 24 BW) give the taller
-    picture."""
+    """Join a picture under way from its line syncs: of the trains with the lowest tone,
+    the mode with the shortest line period whose syncs repeat ``_TRAIN_SYNCS`` times (a
+    train of period P also repeats at 2P, never at P/2). Modes with the same timing
+    (Robot 12 / 24 BW) give the taller picture."""
     smooth = _smooth(freq, _ms_to_samples(2.0, fs))
-    mask = (smooth > _TRAIN_BAND_HZ[0]) & (smooth < _TRAIN_BAND_HZ[1])
+    in_band = (smooth > _TRAIN_BAND_HZ[0]) & (smooth < _TRAIN_BAND_HZ[1])
+    mask = _close_gaps(in_band, _ms_to_samples(1.0, fs))
+    runs = _runs(mask)
+    if not runs:  # one run may still hold every sync: a dark picture tuned low
+        return None
+    sm = smooth.astype(np.float64)
+    csum = np.concatenate([[0.0], np.cumsum(sm)])
+    # A run is cut where it climbs _TRAIN_STEP_HZ above the lowest tone near it (over
+    # 3 ms, so a noise dip doesn't set it; within 7 ms, in 1 ms blocks: a dark picture
+    # tuned low is one long run), noise spikes under 1 ms bridged again.
+    k = min(_ms_to_samples(3.0, fs), len(sm))
+    window = (csum[k:] - csum[:-k]) / k
+    level = np.concatenate(
+        [np.full(k // 2, window[0]), window, np.full(k - 1 - k // 2, window[-1])]
+    )
+    block = _ms_to_samples(1.0, fs)
+    n_blocks = -(-len(level) // block)
+    lows = np.full(n_blocks * block, np.inf)
+    lows[: len(level)] = np.where(in_band, level, np.inf)
+    lows = lows.reshape(n_blocks, block).min(axis=1)
+    near = 7
+    lows = sliding_window_view(np.pad(lows, near, constant_values=np.inf), 2 * near + 1).min(axis=1)
+    mask &= smooth < np.repeat(lows, block)[: len(level)] + _TRAIN_STEP_HZ
     runs = _runs(_close_gaps(mask, _ms_to_samples(1.0, fs)))
     if len(runs) < _TRAIN_SYNCS:
         return None
@@ -659,12 +697,12 @@ def find_sync_train(freq: np.ndarray, fs: int, modes: list[Mode]) -> SyncTrain |
     # The middle 60 % of each run: its mean tone and steadiness.
     core_lo = starts + widths // 5
     core_n = np.maximum(widths - 2 * (widths // 5), 1)
-    sm = smooth.astype(np.float64)
-    csum = np.concatenate([[0.0], np.cumsum(sm)])
     csq = np.concatenate([[0.0], np.cumsum(sm * sm)])
     tone = (csum[core_lo + core_n] - csum[core_lo]) / core_n
     std = np.sqrt(np.maximum((csq[core_lo + core_n] - csq[core_lo]) / core_n - tone * tone, 0.0))
     steady = (std <= _TRAIN_MAX_STD_HZ) & (np.abs(tone - FREQ_SYNC) <= _TRAIN_MAX_OFFSET_HZ)
+    found: list[tuple[float, SyncTrain]] = []
+    lower: list[float] = []  # offsets of trains one sync short
     for mode in sorted(modes, key=lambda m: (m.line_ms, -m.height)):
         sync = next((seg for seg in mode.segments if seg.kind == "sync"), None)
         sync_at_ms = _segment_offset(mode, "sync")
@@ -673,30 +711,56 @@ def find_sync_train(freq: np.ndarray, fs: int, modes: list[Mode]) -> SyncTrain |
         sync_n = _ms_to_samples(sync.ms, fs)
         period = mode.line_ms * fs / 1000.0
         tol = 0.005 * period + _ms_to_samples(1.0, fs)
-        fits = steady & (widths >= 0.6 * sync_n) & (widths <= 1.5 * sync_n)
+        fits = np.flatnonzero(steady & (widths >= 0.6 * sync_n) & (widths <= 1.5 * sync_n))
         cand = starts[fits]
         cand_tone = tone[fits]
+        taken = np.zeros(len(cand), dtype=bool)
         for i in range(len(cand)):
+            if taken[i]:
+                continue
             chain = [i]
             while True:
                 nxt = cand[chain[-1]] + period
-                j = int(np.searchsorted(cand, nxt - tol))
-                if j < len(cand) and abs(cand[j] - nxt) <= tol:
-                    chain.append(j)
-                else:
+                lo = int(np.searchsorted(cand, nxt - tol))
+                hi = int(np.searchsorted(cand, nxt + tol, side="right"))
+                near = np.abs(cand_tone[lo:hi] - cand_tone[i]) <= _TRAIN_TONE_SPREAD_HZ
+                if not near.any():
                     break
-            if len(chain) < _TRAIN_SYNCS:
+                chain.append(lo + int(np.argmax(near)))
+            if len(chain) < _TRAIN_SYNCS - 1:
                 continue
             tones = cand_tone[chain]
             offset = float(np.median(tones)) - FREQ_SYNC
             if np.max(np.abs(tones - (offset + FREQ_SYNC))) > _TRAIN_TONE_SPREAD_HZ:
                 continue
+            if _near_sync_share(smooth, starts, widths, fits[chain], offset) > _TRAIN_MAX_NEAR_SYNC:
+                continue  # its later syncs may still start a train
+            taken[chain] = True
+            if len(chain) < _TRAIN_SYNCS:
+                # Dark pixels in the line cut short can complete a train a line before
+                # the syncs do: a lower train one sync short is waited for.
+                lower.append(offset)
+                continue
             sync_at = _ms_to_samples(sync_at_ms, fs)
             first = next((int(cand[c]) for c in chain if cand[c] - sync_at >= 0), None)
             if first is None:
                 continue
-            return SyncTrain(mode, first - sync_at, offset, len(chain))
-    return None
+            found.append((offset, SyncTrain(mode, first - sync_at, offset, len(chain))))
+    if not found:
+        return None
+    lowest_offset = min([offset for offset, _ in found] + lower)
+    return next((t for offset, t in found if offset <= lowest_offset + _TRAIN_LOWEST_HZ), None)
+
+
+def _near_sync_share(
+    smooth: np.ndarray, starts: np.ndarray, widths: np.ndarray, syncs: np.ndarray, offset: float
+) -> float:
+    """The share of the audio between a train's syncs that is near their tone."""
+    a, b = int(starts[syncs[0]]), int(starts[syncs[-1]])
+    near = np.abs(smooth[a:b] - (FREQ_SYNC + offset)) < _TRAIN_NEAR_SYNC_HZ
+    inside = int(widths[syncs[:-1]].sum())
+    between = max(b - a - inside, 1)
+    return max(int(np.count_nonzero(near)) - inside, 0) / between
 
 
 # How far a sender's clock may run off, as a share of the line per line: how far a sync may

@@ -72,6 +72,9 @@ class SSTVAudioDecoder(AudioDecoder):
     # 30 KB×30 copies/s.
     _LINE_EMIT_MIN_INTERVAL_S = 0.1
     _LOOKING_EMIT_MIN_INTERVAL_S = 1.0
+    # A picture joined from its syncs replaces the one shown once it has this many lines
+    # (with fewer it is dropped: begun on noise or data).
+    _JOINED_SHOWN_FROM_LINE = 10
 
     def __init__(self, sstv_mode: str | None = None) -> None:
         self.sstv_mode_name: str | None = None
@@ -192,11 +195,16 @@ class SSTVAudioDecoder(AudioDecoder):
         self._push(f"SSTV {mode.name} (start)", data)
 
     def _on_line(self, mode: Mode, idx: int, _row: np.ndarray) -> None:
+        assert self._decoder is not None
+        if (
+            self._decoder.vis_code is None
+            and self._decoder.line_index < self._JOINED_SHOWN_FROM_LINE
+        ):
+            return
         now = time.monotonic()
         if now - self._last_line_emit_mono < self._LINE_EMIT_MIN_INTERVAL_S:
             return
         self._last_line_emit_mono = now
-        assert self._decoder is not None
         dstate = self._decoder.dstate
         snapshot = dstate.image.copy() if dstate is not None else None
         data = self._make_data(StreamerState.DECODING, mode, line_index=idx, image=snapshot)

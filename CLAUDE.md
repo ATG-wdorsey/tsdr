@@ -421,9 +421,12 @@ signal, like ADS-B, DAB and TETRA, are modes). `DemodSpec.decoder` names one; th
 USB/LSB and AM: `CARRIER_MODES`) and feeds it the audio; `with_decoder` /
 `carried_decoder` keep it across mode changes. A spec saved with mode SSTV loads as USB +
 SSTV. SSTV starts a picture on its VIS or, joined under way, on its line syncs
-(`find_sync_train`: their period names the mode); the leader's or the syncs' measured tone
-gives the mistune, taken off every tone. The line timing is a straight line through the syncs
-taken (`SlantTracker`: Theil-Sen over the latest 32, the line length weighed against the
+(`find_sync_train`: their period names the mode; of the trains found, the lowest tone's,
+since tuned low, porches and dark pixels at black repeat at the line period too; and only
+with little of the audio between the syncs near their tone, which data such as APRS has);
+the leader's or the syncs' measured tone gives the mistune, taken off every tone. A joined
+picture replaces the one on the panel once it has ten lines. The line timing is a straight
+line through the syncs taken (`SlantTracker`: Theil-Sen over the latest 32, the line length weighed against the
 mode's by how sure each is); every line is placed on it, so one sync's jitter doesn't move a
 line, and a fade is crossed on it. A sync after a miss counts once another near the line
 confirms it within four lines; until two syncs agree, two off the line that a sender's clock
