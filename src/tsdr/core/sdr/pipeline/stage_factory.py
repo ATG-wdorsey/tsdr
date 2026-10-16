@@ -85,4 +85,5 @@ def create_stage(
                 resample=pipeline_config.record_resample,
                 max_samples=pipeline_config.record_max_samples,
                 sample_format=pipeline_config.record_sample_format,
+                center_hz=pipeline_config.record_center_hz,
             )

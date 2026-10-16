@@ -4,7 +4,7 @@ from dataclasses import replace
 from types import MappingProxyType
 from typing import Any
 
-from tsdr.core.sdr.config import WFM_DE_EMPHASIS_US, DeviceConfig, SDRConfig
+from tsdr.core.sdr.config import FLAC_LEVELS, WFM_DE_EMPHASIS_US, DeviceConfig, SDRConfig
 from tsdr.core.sdr.device_context import DeviceState
 from tsdr.core.sdr.engine import SDREngine, get_engine
 from tsdr.core.sdr.exceptions import SDRException
@@ -163,6 +163,13 @@ class SDRConfigCommand(Command):
             "remembered (global)",
         )
         parser.add_argument(
+            "--flac-level",
+            type=int,
+            choices=FLAC_LEVELS,
+            help="Recordings' FLAC compression, 0-8 (default 1): higher saves a little space "
+            "for much more CPU; remembered (global)",
+        )
+        parser.add_argument(
             "--network-buffer",
             dest="network_buffer_seconds",
             type=float,
@@ -270,6 +277,8 @@ class SDRConfigCommand(Command):
             changes["target_fps"] = args.fps
         if args.deemphasis is not None:
             changes["wfm_de_emphasis_us"] = args.deemphasis
+        if args.flac_level is not None:
+            changes["flac_level"] = args.flac_level
         if args.network_buffer_seconds is not None:
             context = manager.get_device(did)
             if not isinstance(context.params, NetworkDeviceParams):
@@ -324,6 +333,8 @@ class SDRConfigCommand(Command):
                 summary["analog-filter-fraction"] = _format_field(key, value)
             elif key == "wfm_de_emphasis_us":
                 summary["deemphasis"] = f"[yellow]{value} µs[/]"
+            elif key == "flac_level":
+                summary["flac-level"] = f"[yellow]{value}[/]"
             else:
                 summary[key] = str(value)
 

@@ -240,7 +240,7 @@ class RecordingFinishedEvent(Event):
 
     device_id: str
     pipeline_name: str
-    path: str
+    path: str  # where the data is; "" when the recording saved nothing (it couldn't start)
     samples_written: int
     # The recording itself (its RecordStage): the engine removes the pipeline only while
     # that stage still runs in it. A stopped recording can finish its last batch after a

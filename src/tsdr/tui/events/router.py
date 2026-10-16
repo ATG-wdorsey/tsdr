@@ -206,6 +206,8 @@ class EventRouter(MixinBase):
     @on(RecordingFinished)
     def handle_recording_finished(self, message: RecordingFinished) -> None:
         event = message.event
+        if not event.path:  # it couldn't start: the pipeline error said why
+            return
         notice = f"recording finished → {safe(event.path)} ({event.samples_written} samples)"
         self.show_status(notice)
         console = self._reconciler.get("console")

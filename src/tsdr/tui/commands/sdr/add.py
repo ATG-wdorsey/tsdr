@@ -1,6 +1,7 @@
 from argparse import Namespace
 from pathlib import Path
 
+from tsdr.core.sdr import flac
 from tsdr.core.sdr.config import DeviceConfig
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import ConfigurationError
@@ -135,7 +136,7 @@ class SDRAddCommand(Command):
                 fmt = format_map.get(args.sample_format)
             params = IQFileParams(path=args.path, sample_format=fmt)
             if args.sample_rate is None:
-                parsed_rate = parse_sample_rate_from_filename(Path(args.path).name)
+                parsed_rate = _recorded_rate(Path(args.path))
                 if parsed_rate is not None:
                     config_overrides["sample_rate"] = parsed_rate
         elif args.device_type == "soapy":
@@ -171,3 +172,23 @@ class SDRAddCommand(Command):
         return success(
             f"Added {device_id(args.device_id)} [dim]({args.device_type}){range_text}[/]"
         )
+
+
+def _recorded_rate(path: Path) -> float | None:
+    """A recording's rate: a FLAC file's tag (its header holds most radio rates only in
+    kS/s), else the name's `sr=`, else a FLAC header's rate."""
+    info = None
+    if path.name.lower().endswith(".flac"):
+        try:
+            info = flac.read_info(path)
+        except OSError, ValueError:
+            pass
+    if info is not None:
+        try:
+            return float(info.tags[flac.TAG_SAMPLE_RATE])
+        except KeyError, ValueError:
+            pass
+    named = parse_sample_rate_from_filename(path.name)
+    if named is None and info is not None:
+        return info.sample_rate
+    return named

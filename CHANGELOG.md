@@ -16,6 +16,8 @@ Work on the trunk since 0.3.0, for the next release.
 - `demod sstv off` stops the SSTV decoder and keeps the mode it rides on; `demod <mode>` says when SSTV stays on.
 - A wheel built past a release says which commit it is, in the Stats panel's title and `tsdr --version`
   (`0.3.0+N.gHASH`: N commits past v0.3.0; `.dirty` with uncommitted changes).
+- `config --flac-level 0-8` sets the recordings' FLAC compression (1 by default; remembered). Higher levels save a
+  little space for much more CPU (level 5: 9 % smaller, twice the CPU).
 
 ### Changed
 
@@ -36,9 +38,22 @@ Work on the trunk since 0.3.0, for the next release.
   the flags, and `demod` offers `off` only after a decoder.
 - `record --output` no longer replaces an existing file: the recording takes the next free name (`-2`, ...), as
   automatic names do, and the start message says so. An `--output` that is a directory gets an automatic name in it.
+- **Recordings are FLAC files** (`.flac`, 16-bit I and Q), written by the system's libFLAC (Ubuntu: `sudo apt install
+  libflac12t64`; macOS: `brew install flac`). The true sample rate, center frequency, gain and device are tags in the
+  file. An 8-bit radio's samples are kept exactly, in about the space the 8-bit files took. `record --format` is gone,
+  and an `--output` without `.flac` gets it. `add --type iq-file` plays a FLAC recording as it decodes it, at the
+  rate in its tags; the older `.cu8.zst` and `.cf32.zst` recordings still play.
 
 ### Fixed
 
+- Recording at high sample rates fell behind: zstd took more than a whole core at 16 MS/s, on the thread that also
+  feeds the audio and the spectrum, and saved 8 % of the space on float samples. FLAC runs on a thread of its own and
+  takes about a quarter of a core at 16 MS/s, with files about 30 % smaller than zstd's (21 bits per complex sample on
+  a 12-bit radio's signals, against 31).
+- `record --sr` below the capture's rate recorded the band around the LO, so with an LO offset or in free tuning it
+  left out the channel being listened to. It records the band centered on the dial (where the dial was at the
+  start), and the file name's `freq=` is that center. A rate that doesn't divide the capture's barely filtered: from
+  2.4 MS/s to 44.1 kS/s, a signal 100 kHz off the dial came through at full strength and half the samples were zero.
 - SSTV: a picture joined while tuned low locks on its syncs instead of its black porches (six recordings joined 40 % in
   at -200 to +200 Hz: 72 of 72 right, 38 before; 22 modes at 10 mistunes: 220 of 220, 185 before), and APRS, RTTY and
   PSK31 no longer start false pictures; looking for a picture takes about half the CPU, its buffer held near 5.5 s.

@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import zstandard as zstd
 
+from tsdr.core.sdr import flac
 from tsdr.core.sdr.samples_batch import SampleFormat
 from tsdr.devices import EXTENSION_FORMAT_MAP
 from tsdr.radio.dsp._kernels import _uint8_iq_to_complex64
@@ -12,9 +13,12 @@ from tsdr.radio.dsp._kernels import _uint8_iq_to_complex64
 def load_iq(path: str | Path) -> np.ndarray:
     """Load IQ samples from a file, returning complex64 numpy array.
 
-    Supports: .cu8, .iq, .cf32, .raw (optionally .zst or .gz compressed).
+    Supports: .flac (tsdr's recordings), .cu8, .iq, .cf32, .raw (optionally .zst or .gz
+    compressed: recordings before FLAC, and the test samples).
     """
     path = Path(path)
+    if path.name.lower().endswith(".flac"):
+        return flac.load(path)[0]
 
     # Detect compression and strip to get the format extension
     name = path.name

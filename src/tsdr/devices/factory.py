@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from tsdr.core.sdr.samples_batch import SampleFormat
 from tsdr.devices.base import DeviceParams, SDRDevice
 from tsdr.devices.iq_file import EXTENSION_FORMAT_MAP, IQFileDevice, IQFileParams
 from tsdr.devices.kiwisdr import KiwiSDRDevice, KiwiSDRParams
@@ -37,6 +38,8 @@ def create_device(params: DeviceParams) -> SDRDevice:
 
         case IQFileParams(path=path_str, sample_format=fmt):
             path = Path(path_str)
+            if path.name.lower().endswith(".flac"):  # decoded to complex64, whatever --format says
+                return IQFileDevice(path=path, sample_format=SampleFormat.COMPLEX64)
             if fmt is None:
                 # Strip compression extension to find the format extension
                 name = path.name

@@ -9,7 +9,7 @@ from tsdr.core import storage
 from tsdr.core.bandplans import get_bandplan_store
 from tsdr.core.demod_spec import PreviousTuneState
 from tsdr.core.devices import PersistedDevice, get_device_store
-from tsdr.core.sdr.config import WFM_DE_EMPHASIS_US, DeviceConfig, PipelineConfig
+from tsdr.core.sdr.config import FLAC_LEVELS, WFM_DE_EMPHASIS_US, DeviceConfig, PipelineConfig
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.samples_batch import SampleFormat
 from tsdr.devices import DeviceParams, IQFileParams
@@ -61,6 +61,7 @@ def save_engine_config(engine: SDREngine) -> None:
         "audio_volume": engine.config.audio_volume,
         "denoise": engine.config.denoise,
         "wfm_de_emphasis_us": engine.config.wfm_de_emphasis_us,
+        "flac_level": engine.config.flac_level,
     }
     save_preferences(prefs)
 
@@ -75,6 +76,8 @@ def restore_engine_config(prefs: dict[str, Any]) -> None:
         get_engine().update_global_config(
             wfm_de_emphasis_us=int(engine_prefs["wfm_de_emphasis_us"])
         )
+    if engine_prefs.get("flac_level") in FLAC_LEVELS:
+        get_engine().update_global_config(flac_level=int(engine_prefs["flac_level"]))
 
 
 def _persist_params(params: DeviceParams) -> dict[str, Any]:

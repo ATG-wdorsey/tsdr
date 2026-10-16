@@ -5,8 +5,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import zstandard as zstd
 
+from tsdr.core.sdr import flac
 from tsdr.core.sdr.exceptions import DeviceError
 from tsdr.core.sdr.samples_batch import SampleFormat
 from tsdr.devices.base import DeviceCapabilities, DeviceIdentity, DeviceParams
@@ -63,13 +65,15 @@ class IQFileDevice:
     """IQ file playback device.
 
     Reads raw IQ samples from a file, looping at EOF. Throttles reads
-    to simulate real-time playback at the configured sample rate.
+    to simulate real-time playback at the configured sample rate. A FLAC
+    recording is decoded as it plays (complex64); a .zst file is read whole.
     """
 
     def __init__(self, path: Path, sample_format: SampleFormat):
         self._path = path
         self._sample_format = sample_format
         self._file: io.BufferedReader | io.BytesIO | None = None
+        self._flac: flac.FlacReader | None = None
         self._file_size = 0
         self._sample_rate = 2.4e6
         self._playback_time = 0.0
@@ -81,7 +85,13 @@ class IQFileDevice:
             raise DeviceError(f"File not found: {self._path}")
         if self._path.stat().st_size == 0:
             raise DeviceError(f"File is empty: {self._path}")
-        if self._path.name.endswith(".zst"):
+        if self._path.name.lower().endswith(".flac"):
+            try:
+                self._flac = flac.FlacReader(self._path)
+            except (OSError, ValueError) as e:
+                raise DeviceError(f"Can't play {self._path.name}: {e}") from e
+            self._file_size = self._flac.info.total_samples * self._sample_format.bytes_per_sample
+        elif self._path.name.endswith(".zst"):
             dctx = zstd.ZstdDecompressor()
             with open(self._path, "rb") as f:
                 raw = dctx.stream_reader(f).read()
@@ -108,9 +118,12 @@ class IQFileDevice:
         if self._file:
             self._file.close()
             self._file = None
+        if self._flac is not None:
+            self._flac.close()
+            self._flac = None
 
     def read_samples(self, count: int) -> bytes:
-        if not self._file:
+        if not self._file and self._flac is None:
             raise DeviceError("Device not open")
 
         # Throttle to simulate real-time playback using absolute timing.
@@ -126,6 +139,48 @@ class IQFileDevice:
             # Fell too far behind (e.g. queue backpressure), reset to avoid burst
             self._playback_time = time.monotonic()
 
+        if self._flac is not None:
+            data = self._read_flac(self._flac, count // self._sample_format.bytes_per_sample)
+        else:
+            data = self._read_file(count)
+
+        self._read_count += 1
+        if self._read_count <= 3 or self._read_count % 100 == 0:
+            logger.debug(
+                "iqfile_read read=%d bytes=%d sleep=%.4f rate=%s",
+                self._read_count,
+                count,
+                sleep_time,
+                self._sample_rate,
+            )
+        return data
+
+    def _read_flac(self, reader: flac.FlacReader, n: int) -> bytes:
+        parts: list[np.ndarray] = []
+        got, rewound_empty = 0, False
+        try:
+            while got < n:
+                pairs = reader.read(n - got)
+                if len(pairs) == 0:
+                    if rewound_empty:
+                        raise DeviceError(f"No samples in {self._path.name}")
+                    rewound_empty = got == 0
+                    self._loop_count += 1
+                    logger.debug(
+                        "iqfile_eof_loop loop=%d read=%d", self._loop_count, self._read_count
+                    )
+                    reader.rewind()
+                    continue
+                rewound_empty = False
+                parts.append(pairs)
+                got += len(pairs)
+        except (OSError, MemoryError) as e:  # damaged, or a read error: libFLAC stopped
+            raise DeviceError(f"Can't play {self._path.name}: {e}") from e
+        pairs = parts[0] if len(parts) == 1 else np.concatenate(parts)
+        return flac.to_complex64(pairs, reader.info.bits_per_sample).tobytes()
+
+    def _read_file(self, count: int) -> bytes:
+        assert self._file is not None
         # Read with EOF looping
         data = b""
         remaining = count
@@ -140,16 +195,6 @@ class IQFileDevice:
                     raise DeviceError("Failed to read from file after seek")
             data += chunk
             remaining -= len(chunk)
-
-        self._read_count += 1
-        if self._read_count <= 3 or self._read_count % 100 == 0:
-            logger.debug(
-                "iqfile_read read=%d bytes=%d sleep=%.4f rate=%s",
-                self._read_count,
-                count,
-                sleep_time,
-                self._sample_rate,
-            )
         return data
 
     def set_frequency(self, freq: float) -> None:

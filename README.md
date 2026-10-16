@@ -226,6 +226,13 @@ processing stages). See `help` for the full list.
 Broadcast FM (WFM) uses 50 µs de-emphasis, as most of the world does; in the Americas and South Korea, set 75 µs
 with `config --deemphasis 75` (remembered).
 
+`record` saves IQ to `samples/` as FLAC: 16-bit I and Q, with the true sample rate, frequency and gain as tags in the
+file. `record for 10` records 10 s; `record start` and `record stop` record until stopped. It records the whole
+capture, or with `--sr` (for example `--sr 25k`) the band centered on the dial. Recording needs the system's libFLAC
+(Ubuntu: `sudo apt install libflac12t64`; macOS: `brew install flac`). `config --flac-level` sets the compression from
+0 to 8 (default 1, about a quarter of a core at 16 MS/s; remembered). `add --type iq-file --path <file>` plays a
+recording back, including the older `.cu8.zst` and `.cf32.zst` files.
+
 ### Keyboard controls
 
 When the console is unfocused, the spectrum responds to the keyboard directly.

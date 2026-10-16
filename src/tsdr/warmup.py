@@ -38,6 +38,7 @@ from tsdr.radio.dsp._kernels import (
     add_power_c64,
     apply_freq_shift_c64,
     iq_sums_c64,
+    iq_to_int_pairs,
     window_corrected_into,
 )
 from tsdr.radio.registry import DEMODULATOR_CLASSES, make_demodulator
@@ -71,6 +72,7 @@ def _device_input() -> None:
     for segment in _forms(np.zeros(1024, dtype=np.complex64)):
         _iq_metrics_c64(segment)
         apply_freq_shift_c64(segment, 1000.0, _RATE, 0.0)  # tuned off the capture's center
+        iq_to_int_pairs(segment, 32768.0, -32768, 32767)  # a recording's samples
         # SEARCH's frames (fft_stage._search_spectrum)
         iq_sums_c64(segment)
         window_corrected_into(segment, window, 0.0, 0.0, 1.0, out)

@@ -6,12 +6,12 @@ from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
 
+from tsdr.core.sdr import flac
 from tsdr.core.sdr.config import PipelineConfig, StageType
 from tsdr.core.sdr.engine import SDREngine, get_engine
 from tsdr.core.sdr.exceptions import ConfigurationError, SDRException
-from tsdr.core.sdr.samples_batch import SampleFormat
 from tsdr.core.units import parse_hz
-from tsdr.tui.commands._format import device_id, safe, success
+from tsdr.tui.commands._format import device_id, freq_mhz, safe, success
 from tsdr.tui.commands.base import Command, CommandParser, Completion
 from tsdr.tui.commands.sdr._utils import device_id_completions, get_focused_device_id
 
@@ -24,9 +24,10 @@ _RATIONAL_DENOM_LIMIT = 10_000
 
 
 class SDRRecordCommand(Command):
-    """Record IQ from the focused device to samples/.
+    """Record IQ from the focused device to samples/, as FLAC (16-bit I/Q).
 
-    Three call patterns:
+    The whole capture by default; a lower ``--sr`` records the band around the dial
+    (centered on it, fixed at the start). Three call patterns:
       * ``record for SECONDS`` - record for N seconds, then auto-stop.
       * ``record start [--sr H] [--device D] [--output P]`` - begin background
         recording. Runs until ``record stop`` is called.
@@ -78,6 +79,11 @@ class SDRRecordCommand(Command):
         device = engine.get_device(did)
         if PIPELINE_NAME in device.config.pipelines:
             raise SDRException(f"Already recording on {did} - stop it first with 'record stop'.")
+        if not flac.available():
+            raise SDRException(
+                "Recording needs libFLAC: install it (Ubuntu: sudo apt install libflac12t64, "
+                "macOS: brew install flac)"
+            )
 
         device_rate = device.config.sample_rate
         target_rate = (
@@ -91,22 +97,29 @@ class SDRRecordCommand(Command):
 
         resample, out_rate = _compute_resample(device_rate, target_rate)
         max_samples = int(duration * out_rate) if duration is not None else None
+        # A lower rate records the band around the dial, not the one around the LO.
+        center = device.config.center_frequency
+        record_center = device.config.tuned_frequency if resample is not None else None
+        edge = ""
+        if record_center is not None:
+            if abs(record_center - center) + out_rate / 2 > device_rate / 2:
+                edge = " [dim](partly past the capture's edge)[/]"
+            center = record_center
 
         # An --output that is a directory gets an automatic name inside it.
         out_dir = Path(args.output) if args.output and Path(args.output).is_dir() else None
         explicit = args.output if args.output and out_dir is None else None
-        write_format = _resolve_record_format(args.sample_format, device, explicit)
-        ext = _FORMAT_EXT[write_format]
+        if explicit and not explicit.lower().endswith(_EXT):
+            explicit += _EXT
 
         output_path = (
             Path(explicit)
             if explicit
             else _autogenerate_path(
-                center_frequency=device.config.center_frequency,
+                center_frequency=center,
                 out_rate=out_rate,
                 duration=int(duration) if duration is not None else None,
                 rf_gain=device.config.rf_gain,
-                ext=ext,
                 directory=out_dir,
             )
         )
@@ -118,13 +131,16 @@ class SDRRecordCommand(Command):
             record_path=str(output_path),
             record_resample=resample,
             record_max_samples=max_samples,
-            record_sample_format=write_format,
+            record_sample_format=device.device.get_sample_format(),
+            record_center_hz=record_center,
         )
 
         engine.add_pipeline(did, PIPELINE_NAME, pipeline_config)
 
         path_md = safe(str(output_path))
-        rate_md = f"[yellow]{int(out_rate)} Hz[/] [dim]{ext}[/]"
+        rate_md = f"[yellow]{int(out_rate)} Hz[/]"
+        if record_center is not None:
+            rate_md += f" around {freq_mhz(record_center, precision=4)}{edge}"
         if duration is not None:
             return success(
                 f"Recording {duration:g}s on {device_id(did)} @ {rate_md} → {path_md}{taken}"
@@ -172,7 +188,8 @@ def _add_common(parser: CommandParser) -> None:
         "--sr",
         dest="sample_rate",
         default=None,
-        help="Target output sample rate with SI suffix (e.g. 250k, 1.2M; default: device rate)",
+        help="Sample rate with SI suffix (e.g. 25k, 1.2M; default: the whole capture); "
+        "a lower rate records the band centered on the dial",
     )
     parser.add_argument(
         "--device",
@@ -184,15 +201,7 @@ def _add_common(parser: CommandParser) -> None:
         "--output",
         dest="output",
         default=None,
-        help="Output file path (default: samples/<auto>.<fmt>.zst)",
-    )
-    parser.add_argument(
-        "--format",
-        dest="sample_format",
-        choices=["auto", "cu8", "cf32"],
-        default="auto",
-        help="On-disk IQ format: auto (match device bit depth), cu8 (8-bit, compact), "
-        "cf32 (float32, full precision for Airspy/SpyServer). Default: auto",
+        help="Output file or directory (default: samples/<auto>.flac; .flac is added)",
     )
 
 
@@ -208,27 +217,13 @@ def _compute_resample(device_rate: float, target_rate: int) -> tuple[tuple[int, 
     if device_int % target_rate == 0:
         return (1, device_int // target_rate), float(target_rate)
     frac = Fraction(target_rate, device_int).limit_denominator(_RATIONAL_DENOM_LIMIT)
+    if frac == 1:  # within a hair of the capture's rate: the capture as it is
+        return None, device_rate
     out_rate = device_rate * frac.numerator / frac.denominator
     return (frac.numerator, frac.denominator), out_rate
 
 
-_FORMAT_EXT = {SampleFormat.UINT8_IQ: "cu8", SampleFormat.COMPLEX64: "cf32"}
-_EXT_FORMAT = {ext: fmt for fmt, ext in _FORMAT_EXT.items()}
-
-
-def _resolve_record_format(choice: str, device, output: str | None) -> SampleFormat:
-    """Pick on-disk format. ``auto`` infers from an explicit output extension,
-    else from the device's native bit depth (cf32 for high-bit-depth devices)."""
-    if choice in _EXT_FORMAT:
-        return _EXT_FORMAT[choice]
-    if output:
-        low = output.lower()
-        for ext, fmt in _EXT_FORMAT.items():
-            if f".{ext}" in low:
-                return fmt
-    if device.device.get_sample_format() is SampleFormat.COMPLEX64:
-        return SampleFormat.COMPLEX64
-    return SampleFormat.UINT8_IQ
+_EXT = ".flac"
 
 
 def _autogenerate_path(
@@ -236,7 +231,6 @@ def _autogenerate_path(
     out_rate: float,
     duration: int | None,
     rf_gain: float,
-    ext: str,
     directory: Path | None = None,
 ) -> Path:
     folder = SAMPLES_DIR if directory is None else directory
@@ -252,9 +246,9 @@ def _autogenerate_path(
     # A name taken by a finished recording is skipped. Two recordings may still pick one
     # name (both started in the same second): each writes its own file, and the later to
     # finish takes the next free -2, -3, ... (RecordStage), which its finished notice shows.
-    path, n = folder / f"{stem}.{ext}.zst", 2
+    path, n = folder / f"{stem}{_EXT}", 2
     while path.exists():
-        path, n = folder / f"{stem}-{n}.{ext}.zst", n + 1
+        path, n = folder / f"{stem}-{n}{_EXT}", n + 1
     return path
 
 

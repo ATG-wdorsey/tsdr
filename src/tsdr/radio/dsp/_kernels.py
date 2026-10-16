@@ -500,6 +500,30 @@ def _sint8_iq_to_complex64(raw: np.ndarray) -> np.ndarray:
     return out
 
 
+@nb.njit(cache=True, nogil=True)
+def iq_to_int_pairs(x: np.ndarray, scale: float, lo: int, hi: int) -> np.ndarray:
+    """complex64 IQ as interleaved int32 I/Q values, `round(v * scale)` clipped to
+    [lo, hi] (NaN as lo). Clipped as floats, before the conversion (a huge value or an
+    infinity would wrap). Not fastmath: that would drop the NaN test."""
+    n = x.shape[0]
+    out = np.empty((n, 2), dtype=np.int32)
+    for i in range(n):
+        v = x[i]
+        re = np.floor(np.float64(v.real) * scale + 0.5)
+        im = np.floor(np.float64(v.imag) * scale + 0.5)
+        if not re >= lo:
+            re = lo
+        elif re > hi:
+            re = hi
+        if not im >= lo:
+            im = lo
+        elif im > hi:
+            im = hi
+        out[i, 0] = np.int32(re)
+        out[i, 1] = np.int32(im)
+    return out.reshape(2 * n)
+
+
 @nb.njit(cache=True, fastmath=True)
 def fir_decim_c64_into(
     x: np.ndarray,

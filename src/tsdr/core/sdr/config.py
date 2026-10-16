@@ -54,11 +54,14 @@ class PipelineConfig:
     stages: tuple[StageType, ...]
     audio_spec: DemodSpec | None = None
     # RecordStage config: output path, optional (up, down) rational resample,
-    # optional max sample count at which the stage self-terminates.
+    # optional max sample count at which the stage self-terminates, the radio's
+    # sample format (an 8-bit radio's samples are kept exactly), and the frequency a
+    # resampled recording is centered on (the dial at its start; None: the capture's).
     record_path: str | None = None
     record_resample: tuple[int, int] | None = None
     record_max_samples: int | None = None
-    record_sample_format: SampleFormat = SampleFormat.UINT8_IQ
+    record_sample_format: SampleFormat = SampleFormat.COMPLEX64
+    record_center_hz: float | None = None
     squelch_enabled: bool = False
     squelch_threshold_db: float = -50.0
     squelch_hang_ms: float = 100.0
@@ -105,6 +108,9 @@ class DeviceConfigChanges(TypedDict, total=False):
 
 # Broadcast FM de-emphasis time constants, in microseconds
 WFM_DE_EMPHASIS_US = (50, 75)
+# libFLAC's compression levels for recordings: 1 takes a quarter of a core at 16 MS/s
+FLAC_LEVELS = range(9)
+FLAC_DEFAULT_LEVEL = 1
 
 
 class GlobalConfigChanges(TypedDict, total=False):
@@ -117,6 +123,7 @@ class GlobalConfigChanges(TypedDict, total=False):
     audio_volume: float
     denoise: bool
     wfm_de_emphasis_us: int
+    flac_level: int
 
 
 @dataclass(frozen=True)
@@ -252,6 +259,7 @@ class SDRConfig:
     iq_imbalance_correction: bool = True  # Correct IQ imbalance
     denoise: bool = False
     wfm_de_emphasis_us: int = 50  # broadcast FM: 75 in the Americas and South Korea, 50 elsewhere
+    flac_level: int = FLAC_DEFAULT_LEVEL  # recordings: libFLAC's compression level, 0-8
 
     def with_changes(self, **kwargs: Unpack[GlobalConfigChanges]) -> SDRConfig:
         return replace(self, **kwargs)
@@ -261,3 +269,5 @@ class SDRConfig:
             raise ValueError(f"update_rate_fps must be positive, got {self.update_rate_fps}")
         if self.wfm_de_emphasis_us not in WFM_DE_EMPHASIS_US:
             raise ValueError(f"wfm_de_emphasis_us must be 50 or 75, got {self.wfm_de_emphasis_us}")
+        if self.flac_level not in FLAC_LEVELS:
+            raise ValueError(f"flac_level must be 0-8, got {self.flac_level}")
