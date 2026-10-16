@@ -56,6 +56,7 @@ class SamplesBatch:
     audio_samples: np.ndarray | None = None
     spectrum: np.ndarray | None = None
     instant_spectrum: np.ndarray | None = None  # `spectrum` before averaging
+    instant_frames: int = 1  # FFT frames whose power `instant_spectrum` averages
     frequencies: np.ndarray | None = None
     constellation_points: np.ndarray | None = None
     constellation_modulation: str = ""  # e.g. "BPSK", "QPSK"

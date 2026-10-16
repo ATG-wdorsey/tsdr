@@ -1,10 +1,10 @@
-"""Unit tests for compute_statistics and find_peaks on synthetic spectra."""
+"""Unit tests for find_peaks on synthetic spectra, and the meter's C/N on synthetic IQ."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from tsdr.core.sdr.processing import find_peaks
+from tsdr.core.sdr.processing import BandFloor, channel_cn_db, compute_fft, find_peaks
 
 
 def _make_spectrum(
@@ -78,3 +78,39 @@ def test_find_peaks_tiny_spectrum() -> None:
     # Spectrum too small to have interior bins → return empty.
     assert find_peaks(np.array([1.0, 2.0], dtype=np.float32), 100e6, 2.4e6) == ()
     assert find_peaks(np.array([], dtype=np.float32), 100e6, 2.4e6) == ()
+
+
+def _band_noise(n: int, fs: float, center: float, width: float, power: float, rng) -> np.ndarray:
+    """Complex noise of `power` filling `width` Hz around `center` (a stand-in for a signal)."""
+    spectrum = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+    spectrum[np.abs(np.fft.fftfreq(n, 1 / fs) - center) > width / 2] = 0
+    x = np.fft.ifft(spectrum)
+    return x * np.sqrt(power / np.mean(np.abs(x) ** 2))
+
+
+def test_the_meter_reads_a_channels_c_n_whatever_its_neighbors() -> None:
+    """A 150 kHz signal at 30 dB C/N in its 200 kHz channel, a station 20 dB stronger 220 kHz
+    away. The meter read the strongest bin over the channel either side, where the neighbor,
+    a strong signal's own skirts or an FM station's HD Radio sidebands sit. Its noise is now
+    the band's floor (its quietest tenth), its signal the channel's whole power."""
+    rng = np.random.default_rng(1)
+    fs, n, frames = 2.4e6, 8192, 80
+    noise = 1e-6
+    signal = noise * 200e3 / fs * 10**3.0
+    x = (rng.standard_normal(n * frames) + 1j * rng.standard_normal(n * frames)) * np.sqrt(
+        noise / 2
+    )
+    x += _band_noise(n * frames, fs, 300e3, 150e3, signal, rng)
+    x += _band_noise(n * frames, fs, 520e3, 150e3, 100 * signal, rng)
+    window = np.hanning(n).astype(np.float32)
+    inv_norm_sq = 1.0 / (float(window.mean()) * n) ** 2
+    floor = BandFloor()
+    readings = []
+    for k in range(frames):
+        spectrum = compute_fft(x[k * n : (k + 1) * n].astype(np.complex64), window, inv_norm_sq)
+        floor.update(spectrum, 1, 0.0, fs, 0.05)
+        cn = channel_cn_db(spectrum, fs, 300e3, 200e3, floor)
+        if k >= 40 and cn is not None:  # the floor averaged over 2 s
+            readings.append(cn)
+    assert len(readings) == frames - 40
+    assert abs(float(np.median(readings)) - 30.0) < 1.0

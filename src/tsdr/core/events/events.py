@@ -85,6 +85,8 @@ class StatsUpdateEvent(Event):
     fft_window: str
     spectrum_bins: int
     demod_mode: str
+    # The tuned channel's C/N in dB (its power over the noise in its bandwidth), held by
+    # the meter's peak detector; None when it can't be measured.
     channel_snr: float | None = None
     stereo: bool | None = None
     iq_rms: float | None = None

@@ -380,6 +380,14 @@ it, which releases a held channel) and a trigger set by hand (`TR`) are drawn at
 per-bin trace. The squelch logs each change (`squelch_change`, with the level, the
 threshold and the capture's peak), and while it stays open every 10 s.
 
+The meter (the tuner's bar, the DMR and TETRA panels; `StatsUpdateEvent.channel_snr`) shows
+the tuned channel's C/N: the channel's power, the signal's area, over the noise in its bandwidth
+(`channel_cn_db`). The noise per bin is the band's floor by the owner's 10 % rule (`BandFloor`:
+the 10th percentile of the band's power averaged over a second, the outer tenth of each side
+and the channel left out, brought to its mean), so neighbors, a strong signal's skirts and HD
+Radio sidebands don't count as noise. The reading has peak-detector ballistics (instant attack,
+`CN_RELEASE_S` leaky release).
+
 The view is client state: `spectrum_center` / `spectrum_span` on `DeviceConfig`
 (None = track dial / full band). `spectrum_center` (panning) applies only in
 free tuning mode — in center mode the view always centers on the dial. `core/sdr/spectrum_view.py` (`resolve_view`,

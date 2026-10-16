@@ -85,7 +85,6 @@ class SignalStatistics:
         peak_bin: Bin index of peak power
         noise_floor: Estimated noise floor (dB)
         dynamic_range: Dynamic range (peak - noise floor, dB)
-        channel_snr: Channel SNR in dB (mean power in channel vs noise outside)
     """
 
     peak_power: float
@@ -94,4 +93,3 @@ class SignalStatistics:
     peak_bin: int
     noise_floor: float
     dynamic_range: float
-    channel_snr: float | None = None

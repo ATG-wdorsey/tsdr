@@ -1,3 +1,4 @@
+import math
 import time
 
 import numpy as np
@@ -12,7 +13,7 @@ from tsdr.core.events.events import (
 from tsdr.core.sdr.config import SDRConfig
 from tsdr.core.sdr.datatypes import DemodStatus
 from tsdr.core.sdr.pipeline.pipeline import PipelineContext
-from tsdr.core.sdr.processing import compute_statistics
+from tsdr.core.sdr.processing import BandFloor, channel_cn_db, compute_statistics
 from tsdr.core.sdr.samples_batch import SamplesBatch
 from tsdr.core.tracing import get_smoothed_stats, traced
 from tsdr.devices.base import as_spectrum_source
@@ -42,6 +43,18 @@ class RateLimiter:
         self.min_interval = 1.0 / fps
 
 
+# The C/N meter's ballistics (the owner's peak detector): a higher reading is taken at once,
+# a lower one approached as a leaky integrator with this time constant.
+CN_RELEASE_S = 0.5
+
+
+def cn_peak_hold(held: float | None, cn: float | None, dt: float) -> float | None:
+    """The meter's C/N after a reading `cn`, `dt` seconds after the last."""
+    if cn is None or held is None or cn >= held:
+        return cn
+    return held + (cn - held) * (1.0 - math.exp(-max(dt, 0.0) / CN_RELEASE_S))
+
+
 class EventEmitterStage:
     """Terminal stage that publishes TUI-bound events.
 
@@ -56,6 +69,9 @@ class EventEmitterStage:
         self.stats_rate_limiter = RateLimiter(target_fps=config.update_rate_fps)
         self.constellation_rate_limiter = RateLimiter(target_fps=20)
         self._last_demod_status: DemodStatus | None = None
+        self._floor = BandFloor()
+        self._cn_held: float | None = None
+        self._cn_time = 0.0
 
     @traced("event_emitter")
     def process(self, data: SamplesBatch, context: PipelineContext) -> SamplesBatch | None:
@@ -101,13 +117,19 @@ class EventEmitterStage:
         dc = context.device_context
         profile = dc.demod_profile if dc else None
         channel_bw = profile.channel_bandwidth if profile else None
-        signal_stats = compute_statistics(
-            data.spectrum,
-            data.center_frequency,
-            data.sample_rate,
-            channel_bandwidth=channel_bw,
-            channel_offset_hz=dc.config.tuned_frequency - data.center_frequency if dc else 0.0,
-        )
+        signal_stats = compute_statistics(data.spectrum, data.center_frequency, data.sample_rate)
+        # The meter's C/N from the spectrum before the display's averaging (its power
+        # averaged over instant_frames frames), the band's floor following it.
+        measured = data.instant_spectrum if data.instant_spectrum is not None else data.spectrum
+        frames = data.instant_frames if data.instant_spectrum is not None else 1
+        dt = data.capture_utc_s - self._cn_time
+        self._cn_time = data.capture_utc_s
+        self._floor.update(measured, frames, data.center_frequency, data.sample_rate, dt)
+        cn = None
+        if channel_bw is not None:
+            offset = dc.config.tuned_frequency - data.center_frequency if dc else 0.0
+            cn = channel_cn_db(measured, data.sample_rate, offset, channel_bw, self._floor)
+        self._cn_held = cn_peak_hold(self._cn_held, cn, dt)
 
         sample_queue = dc.sample_queue
         queue_size = sample_queue.qsize() if sample_queue else 0
@@ -146,7 +168,7 @@ class EventEmitterStage:
                 fft_window=dc.config.fft_window,
                 spectrum_bins=len(data.spectrum),
                 demod_mode=dc.active_mode,
-                channel_snr=signal_stats.channel_snr,
+                channel_snr=self._cn_held,
                 stereo=dc.stereo,
                 iq_rms=iq_rms,
                 iq_peak=iq_peak,

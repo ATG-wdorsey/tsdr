@@ -83,14 +83,14 @@ class FFTStage:
 
     def _search_spectrum(
         self, iq: np.ndarray, config: SDRConfig | None, latest: np.ndarray
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, int]:
         """SEARCH's spectrum: the power of SEARCH_FRAMES frames spread over the batch,
         averaged (one frame of noise reads about 1 dB either side of its mean in a 12.5 kHz
         channel at 32768 points). The newest frame is the display's. The others get the
         display's corrections, fused with the window into the FFT's input in one pass."""
         n = self.fft_size
         if len(iq) < 2 * n:
-            return latest
+            return latest, 1
         window, inv_norm_sq = self._get_or_create_window()
         frames = min(SEARCH_FRAMES, len(iq) // n)
         starts = np.linspace(0, len(iq) - n, frames).astype(np.intp)[:-1]
@@ -119,7 +119,7 @@ class FFTStage:
         total += np.float32(1e-20)
         np.log(total, out=total)
         total *= np.float32(10.0 / np.log(10.0))
-        return total
+        return total, frames
 
     @traced("fft")
     def process(self, data: SamplesBatch, context: PipelineContext) -> SamplesBatch | None:
@@ -157,11 +157,13 @@ class FFTStage:
         with span("compute_fft"):
             window, inv_norm_sq = self._get_or_create_window()
             spectrum = compute_fft(iq_window, window, inv_norm_sq, self._fft_plan)
-        instant_spectrum = spectrum
+        instant_spectrum, instant_frames = spectrum, 1
         device = context.device_context
         if SEARCH_FRAMES > 1 and device is not None and device.config.search is not None:
             with span("search_frames"):
-                instant_spectrum = self._search_spectrum(data.iq_samples, config, spectrum)
+                instant_spectrum, instant_frames = self._search_spectrum(
+                    data.iq_samples, config, spectrum
+                )
 
         # Apply exponential moving average for spectrum smoothing
         # alpha = 1/N where N is spectrum_averaging: N=1 means no averaging, higher = more smoothing
@@ -192,6 +194,7 @@ class FFTStage:
         return data.with_changes(
             spectrum=spectrum,
             instant_spectrum=instant_spectrum,
+            instant_frames=instant_frames,
             frequencies=frequencies,
             stage_name="fft",
         )
