@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from tsdr._version import __version__
 from tsdr.tui.model import focused_device
 
 if TYPE_CHECKING:
@@ -29,6 +30,7 @@ class PanelDef:
     # Resolved from the UIModel only — keeps the bar a pure function of it
     # (derive_tree never reads widgets).
     title_of: Callable[[UIModel], str | None] | None = None
+    border_title: str | None = None  # the panel's border only, when it says more than the bar
 
 
 _DEMOD_TITLES: Final[dict[str, str]] = {
@@ -52,7 +54,7 @@ def _demod_title(m: UIModel) -> str | None:
 PANELS: Final[dict[str, PanelDef]] = {
     "demod": PanelDef("demod", "Demod", "_demod_placeholder", title_of=_demod_title),
     "decoder-output": PanelDef("decoder-output", "Decoder", "decoder_text"),
-    "stats": PanelDef("stats", "Stats", "stats"),
+    "stats": PanelDef("stats", "Stats", "stats", border_title=f"Stats (TSDR v{__version__})"),
     "performance": PanelDef("performance", "Performance", "performance"),
     "directory": PanelDef("directory", "Directory", "directory"),
     "memories": PanelDef("memories", "Memories", "memories"),

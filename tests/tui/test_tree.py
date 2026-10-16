@@ -190,12 +190,13 @@ def test_performance_panel_wrapper_does_not_include_constellation() -> None:
 
 def test_panel_content_wrapper_carries_registry_title() -> None:
     """The wrapper's spec carries the registry-resolved title (same source as the
-    launcher bar), so PanelContent shows it on the border."""
-    layout = UILayout(right=EdgePanels(panels=("stats",), active="stats"))
+    launcher bar, unless the panel has a border-only title), so PanelContent shows
+    it on the border."""
+    layout = UILayout(right=EdgePanels(panels=("performance",), active="performance"))
     tree = derive_tree(UIModel(layout=layout))
     wrapper = _docks_row(tree).children[2].children[0]
     assert wrapper.key == "panel-content:right"
-    assert wrapper.props["panel_title"] == "Stats"
+    assert wrapper.props["panel_title"] == "Performance"
 
 
 # --- demod multiplexer ------------------------------------------------------

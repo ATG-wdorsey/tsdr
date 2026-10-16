@@ -114,7 +114,7 @@ def _panel_content_wrapper(m: UIModel, edge: Edge, active: str | None) -> tuple[
     children = _build_panel_children(m, panel_def, edge)
     if not children:
         return ()
-    props = {"panel_title": _panel_label(active, m)}
+    props = {"panel_title": panel_def.border_title or _panel_label(active, m)}
     return (WidgetSpec("panel_content", f"panel-content:{edge}", props, children),)
 
 
