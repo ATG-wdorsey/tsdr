@@ -6,88 +6,20 @@ its lock whenever the next burst was a sync-less burst of a slot it had not yet 
 call, and a lock drop cleared both slots' calls: joined mid-call, or after one missed
 sync, both slots stayed silent in 5 of the 6 ways their superframes can align. A missed
 A sync on one slot also needs 11 bursts in a row by timing on that slot.
-The signal here is synthesized: valid CACH, syncs and EMBs, RRC-shaped 4FSK at 4800 baud, as IQ.
+The signal here is synthesized (_synth): valid CACH, syncs and EMBs, RRC-shaped 4FSK, as IQ.
 """
 
 from __future__ import annotations
-
-import itertools
 
 import numpy as np
 import pytest
 
 from tsdr.core.demod_spec import DemodSpec
-from tsdr.radio.decoders.dmr import decoder as dmr
-from tsdr.radio.decoders.dmr.constants import (
-    BURST_DIBITS,
-    CACH_INTERLEAVE,
-    SYMBOL_RATE,
-    SYNC_BS_VOICE,
-    SYNC_START,
-)
+from tsdr.radio.decoders.dmr.constants import BURST_DIBITS, SYMBOL_RATE, SYNC_START
 from tsdr.radio.decoders.dmr.decoder import DMRDecoder
-from tsdr.radio.decoders.dmr.fec import _QR_16_7_6_WORDS, hamming_7_4_decode
-from tsdr.radio.dsp import rrc_taps
 from tsdr.radio.registry import make_demodulator
 
-RATE = 48_000.0
-_LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}  # dibit -> 4FSK symbol (ETSI TS 102 361-1)
-
-
-def _hamming_codeword(data: tuple[int, int, int, int]) -> list[int]:
-    for parity in itertools.product((0, 1), repeat=3):
-        word = np.array([*data, *parity], dtype=np.uint8)
-        if hamming_7_4_decode(word.copy()) and list(word[:4]) == list(data):
-            check = word.copy()
-            hamming_7_4_decode(check)
-            if np.array_equal(check, word):
-                return list(word)
-    raise AssertionError("no codeword")
-
-
-def _cach(slot: int) -> list[int]:
-    plain = np.zeros(24, dtype=np.uint8)
-    plain[0:7] = _hamming_codeword((1, slot, 0, 0))  # AT, TC (the slot), LCSS
-    plain[7:14] = _hamming_codeword((0, 0, 0, 0))
-    plain[14:21] = _hamming_codeword((0, 0, 0, 0))
-    bits = [int(plain[CACH_INTERLEAVE[i]]) for i in range(24)]
-    return [(bits[2 * k] << 1) | bits[2 * k + 1] for k in range(12)]
-
-
-def _emb(color_code: int) -> list[int]:
-    """The EMB's 8 dibits: color code, PI 0, LCSS 0, QR(16,7,6) parity."""
-    word = int(_QR_16_7_6_WORDS[color_code << 3])
-    bits = [(word >> (15 - i)) & 1 for i in range(16)]
-    return [(bits[2 * k] << 1) | bits[2 * k + 1] for k in range(8)]
-
-
-def _voice_burst(
-    slot: int, letter: int, rng: np.random.Generator, *, bad_sync: bool = False
-) -> list[int]:
-    burst = list(rng.integers(0, 4, BURST_DIBITS))
-    burst[0:12] = _cach(slot)
-    if letter == 0:
-        sync = list(SYNC_BS_VOICE)
-        if bad_sync:  # 3 of 24 sync symbols wrong: one more than the sync search allows
-            for i in (3, 10, 17):
-                sync[i] = 1 if sync[i] == 3 else 3
-        burst[SYNC_START : SYNC_START + 24] = sync
-    else:  # EMB around the embedded signalling (anything but a sync)
-        emb = _emb(1)
-        burst[SYNC_START : SYNC_START + 24] = [*emb[:4], *[0, 2] * 8, *emb[4:]]
-    return burst
-
-
-def _iq(dibits: list[int], offset_hz: float = 0.0) -> np.ndarray:
-    """4FSK as DMR transmitters send it: each symbol a root-raised-cosine frequency pulse
-    (alpha 0.2), scaled so the receiver's matching filter lands it on its level."""
-    sps = int(RATE / SYMBOL_RATE)
-    impulses = np.zeros(len(dibits) * sps)
-    impulses[sps // 2 :: sps] = [_LEVEL[d] * dmr.DEVIATION / 3.0 for d in dibits]
-    pulse = rrc_taps(sps, 0.2, 8)
-    freq = np.convolve(impulses, pulse * (sps / pulse.sum()), mode="same")
-    phase = 2 * np.pi * np.cumsum(freq + offset_hz) / RATE
-    return (0.5 * np.exp(1j * phase)).astype(np.complex64)
+from ._synth import RATE, to_iq, voice_burst
 
 
 @pytest.mark.parametrize("phase", range(6))
@@ -99,9 +31,9 @@ def test_both_slots_decoded_after_a_late_entry_and_a_missed_sync(phase: int) -> 
     superframes, missed, counted_from = 14, 8 * 6, 4 * 6
     stream: list[int] = []
     for k in range(3, 3 + superframes * 6):  # join at slot 0's burst D
-        stream += _voice_burst(0, k % 6, rng, bad_sync=k == missed)
-        stream += _voice_burst(1, (k + phase) % 6, rng)
-    iq = _iq(stream)
+        stream += voice_burst(0, k % 6, rng, bad_sync=k == missed)
+        stream += voice_burst(1, (k + phase) % 6, rng)
+    iq = to_iq(stream)
 
     decoder = DMRDecoder(sample_rate=RATE)
     burst_s = BURST_DIBITS / SYMBOL_RATE
@@ -133,8 +65,8 @@ def test_a_repeater_off_frequency_is_read_without_errors(offset_hz: float) -> No
     at all, and the 443.7 MHz recording (450 Hz off) had bit errors in most AMBE frames,
     7 % of them replaced."""
     rng = np.random.default_rng(7)
-    sent = [_voice_burst(slot, letter, rng) for letter in [*range(6)] * 6 for slot in (0, 1)]
-    iq = _iq([d for burst in sent for d in burst], offset_hz)
+    sent = [voice_burst(slot, letter, rng) for letter in [*range(6)] * 6 for slot in (0, 1)]
+    iq = to_iq([d for burst in sent for d in burst], offset_hz)
 
     decoder = DMRDecoder(sample_rate=RATE)
     received: list[np.ndarray] = []
@@ -166,9 +98,9 @@ def test_a_lost_signal_is_not_decoded_as_voice() -> None:
     rng = np.random.default_rng(3)
     stream: list[int] = []
     for k in range(4 * 6):  # slot 1's A follows slot 0's by 7 bursts
-        stream += _voice_burst(0, k % 6, rng)
-        stream += _voice_burst(1, (k + 3) % 6, rng)
-    signal = _iq(stream)
+        stream += voice_burst(0, k % 6, rng)
+        stream += voice_burst(1, (k + 3) % 6, rng)
+    signal = to_iq(stream)
     noise = (
         0.5 * (rng.standard_normal(int(RATE)) + 1j * rng.standard_normal(int(RATE))) / np.sqrt(2)
     )
