@@ -7,6 +7,16 @@ git tag (`v0.2.0`, ...); `main` on GitHub always holds the latest release. Versi
 The changes in 0.2.0 were also offered upstream as pull requests; their full descriptions (why, cause, change,
 testing) are in [PRs.md](PRs.md).
 
+## [Unreleased]
+
+Work on the trunk since 0.4.0, for the next release.
+
+### Added
+
+- **P25 control channels** (`demod p25`, `D 5`): decodes a Phase 1 trunking control channel at the dial, C4FM or
+  CQPSK (simulcast): the system and site, the adjacent sites, and the calls as they are granted (talkgroup, frequency
+  and slot, encryption and emergency flags), in a P25 panel. Following calls, voice and Phase 2 come later.
+
 ## [0.4.0] - 2026-10-19
 
 A C/N meter, FLAC recordings that keep up at the radio's full rate, DMR from co-channel repeaters and radios in direct
