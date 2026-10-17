@@ -431,12 +431,14 @@ TunerWidget {
 
 RDSWidget,
 DMRWidget,
+P25Widget,
 TETRAWidget {
     padding: 0 1;
 }
 
 RDSWidget { min-height: 8; }
 DMRWidget { min-height: 8; }
+P25Widget { min-height: 9; }
 TETRAWidget { min-height: 9; }
 
 DABWidget {

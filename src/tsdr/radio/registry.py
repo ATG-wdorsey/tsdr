@@ -101,6 +101,7 @@ from tsdr.radio.decoders.dab import DABDecoder  # noqa: E402
 from tsdr.radio.decoders.dmr import DMRDecoder  # noqa: E402
 from tsdr.radio.decoders.flex import FLEXDecoder  # noqa: E402
 from tsdr.radio.decoders.fsk import FSKGenericDecoder, NAVTEXDecoder, RTTYDecoder  # noqa: E402
+from tsdr.radio.decoders.p25.decoder import P25Decoder  # noqa: E402
 
 # Protocol decoders have fixed, spec-defined bandwidths; they ignore the
 # device's channel_bandwidth and any other audio-demod tuning kwargs.
@@ -117,6 +118,7 @@ register(
 )
 register("FLEX", FLEXDecoder, lambda sample_rate, **_: FLEXDecoder(sample_rate=sample_rate))
 register("NAVTEX", NAVTEXDecoder, lambda sample_rate, **_: NAVTEXDecoder(sample_rate=sample_rate))
+register("P25", P25Decoder, lambda sample_rate, **_: P25Decoder(sample_rate=sample_rate))
 register(
     "RTTY",
     RTTYDecoder,

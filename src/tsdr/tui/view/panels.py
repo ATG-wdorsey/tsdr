@@ -39,6 +39,7 @@ _DEMOD_TITLES: Final[dict[str, str]] = {
     "adsb": "ADSB",
     "tetra": "TETRA",
     "dmr": "DMR",
+    "p25": "P25",
     "sstv": "SSTV",
 }
 

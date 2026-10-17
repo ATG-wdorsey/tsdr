@@ -23,6 +23,7 @@ MODE_COLORS: dict[str, str] = {
     "CW": "#ffaf5f",
     "TETRA": "#56b6c2",
     "DMR": "#d19a66",
+    "P25": "#ff79c6",
     "DAB": "#be5046",
     "FLEX": "#e06c75",
     "ADSB": "#61afef",

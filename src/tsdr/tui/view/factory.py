@@ -23,6 +23,7 @@ from tsdr.tui.widgets.dmr_widget import DMRWidget
 from tsdr.tui.widgets.edge_strip import EdgeStrip
 from tsdr.tui.widgets.keys_widget import KeysWidget
 from tsdr.tui.widgets.memory_widget import MemoryWidget
+from tsdr.tui.widgets.p25_widget import P25Widget
 from tsdr.tui.widgets.panel import PanelContent
 from tsdr.tui.widgets.performance_widget import PerformanceWidget
 from tsdr.tui.widgets.rds_widget import RDSWidget
@@ -61,6 +62,7 @@ FACTORY: Final[dict[str, Callable[[], Widget]]] = {
     "decoder_adsb": ADSBWidget,
     "decoder_tetra": TETRAWidget,
     "decoder_dmr": DMRWidget,
+    "decoder_p25": P25Widget,
     "decoder_text": DecoderOutputWidget,
     "decoder_sstv": SSTVWidget,
 }

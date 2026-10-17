@@ -132,6 +132,7 @@ _DEMOD_FACTORY_KINDS: dict[str, str] = {
     "adsb": "decoder_adsb",
     "tetra": "decoder_tetra",
     "dmr": "decoder_dmr",
+    "p25": "decoder_p25",
     "sstv": "decoder_sstv",
 }
 

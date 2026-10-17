@@ -138,6 +138,7 @@ DECODER_CHORD_MODES = {
     "s": "SSTV",
     "t": "TETRA",
     "4": "FT4",
+    "5": "P25",
     "8": "FT8",
     "o": "OFF",
 }

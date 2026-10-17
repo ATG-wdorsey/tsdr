@@ -68,6 +68,7 @@ _MODE_LADDERS: dict[str, tuple[float | None, ...]] = {
     "NFM": _FM_LADDER,
     "APRS": _FM_LADDER,
     "DMR": _FM_LADDER,
+    "P25": _FM_LADDER,
     "FLEX": _FM_LADDER,
     "TETRA": _FM_LADDER,
     "WFM": (None, 50_000, 100_000, 200_000),

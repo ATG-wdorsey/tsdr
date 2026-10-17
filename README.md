@@ -337,7 +337,7 @@ Reception:
   `u` USB, `l` LSB, `c` CW, `o` off).
 - `D` then a second key: switch decoder (`a` ADS-B, `b` DAB, `c` ACARS, `d`
   DMR, `f` FLEX, `k` FSK, `n` NAVTEX, `p` APRS, `r` RTTY, `s` SSTV, `t` TETRA,
-  `4` FT4, `8` FT8, `o` off). Both prompts show each choice's key in place,
+  `4` FT4, `5` P25, `8` FT8, `o` off). Both prompts show each choice's key in place,
   bright and in upper case, on a second line when the window is narrow; a key
   that is not a choice cancels. SSTV decodes the mode you are in instead of
   switching it: NFM for SSTV on 2 m (145.600), USB on HF or 144 MHz SSB; the

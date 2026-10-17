@@ -58,7 +58,7 @@ def _decoder_kind(profile: DemodProfile | None) -> DecoderKind | None:
     if profile is None:
         return None
     kind = profile.message_type
-    if kind in ("rds", "dab", "adsb", "tetra", "dmr", "text", "sstv"):
+    if kind in ("rds", "dab", "adsb", "tetra", "dmr", "p25", "text", "sstv"):
         return kind  # type: ignore[return-value]
     return None
 
@@ -129,7 +129,7 @@ class EventRouter(MixinBase):
             w = self._reconciler.get(key)
             if w is not None:
                 w.update_stats(message.event)  # type: ignore[attr-defined]
-        for kind in ("tetra", "dmr"):
+        for kind in ("tetra", "dmr", "p25"):
             w = self._reconciler.get(f"panel:demod:{kind}")
             if w is not None:
                 w.update_stats(message.event)  # type: ignore[attr-defined]
