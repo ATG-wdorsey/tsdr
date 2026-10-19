@@ -8,8 +8,12 @@ HAMMING_GENERATOR = np.array(
     dtype=np.int32,
 )
 
+# The bit to flip for each syndrome of HAMMING_GENERATOR's code: a single error in bit b gives the
+# syndrome whose four bits say which generator rows cover b. (mbelib's table, 1 << (syndrome - 1),
+# assumes columns in binary order, which this generator doesn't have: it put single errors in bits
+# 2-7 on the wrong bit. IMBE's c4..c6 use this code; AMBE+2 doesn't.)
 HAMMING_MATRIX = np.array(
-    [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384],
+    [0, 1, 2, 16, 4, 32, 64, 128, 8, 256, 512, 1024, 2048, 4096, 8192, 16384],
     dtype=np.int32,
 )
 

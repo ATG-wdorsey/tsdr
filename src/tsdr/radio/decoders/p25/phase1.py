@@ -6,8 +6,9 @@ is a status symbol, not data. A TSDU carries one to three 98-dibit trunking sign
 (TSBKs), the last with its last-block flag set. A PDU carries a header block, which gives the number
 of data blocks after it, and those blocks; on a control channel, multi-block trunking (MBT) PDUs
 carry the messages too long for one TSBK, such as those naming the uplink and downlink channels
-separately (VHF and UHF systems). Other data units are recognized by their NID and passed over until
-the next frame sync.
+separately (VHF and UHF systems). Voice data units (HDU, LDU1, LDU2, TDULC, TDU) have fixed lengths:
+their data dibits are collected and handed on whole (`VoiceFrame`; `voice.py` parses them). Other
+data units are recognized by their NID and passed over until the next frame sync.
 
 Reference: TIA-102.BAAA.
 """
@@ -41,6 +42,18 @@ NID_KNOWN_NAC_MAX_ERRORS = 16
 _NAC_CONFIRM = 2
 # Data units carrying rate-1/2 blocks with a CRC (TSBKs, a PDU's header).
 _BLOCK_DUIDS = (fec.DUID_TSDU, fec.DUID_PDU)
+# Voice data units and their data dibits after the NID (the null dibits at their ends left out).
+VOICE_DIBITS = {
+    fec.DUID_HDU: 324,
+    fec.DUID_LDU1: 784,
+    fec.DUID_LDU2: 784,
+    fec.DUID_TDULC: 144,
+    fec.DUID_TDU: 0,
+}
+# Inside a voice data unit, whose length is known, a frame sync counts only this close: IMBE bits
+# would match within FS_MAX_ERRORS about once in 40 minutes of voice, within 2 never in practice,
+# while a frame cut short and followed by the next still shows its sync.
+VOICE_FS_MAX_ERRORS = 2
 
 
 def _data_count(raw: int) -> int:
@@ -123,7 +136,18 @@ class Tsbk:
         return self.data[1]
 
 
-Event = Nid | Tsbk | Mbt
+@dataclass(frozen=True)
+class VoiceFrame:
+    """A voice data unit: its data dibits after the NID, status symbols removed (VOICE_DIBITS), and
+    their symbols (for soft-decision decoding)."""
+
+    duid: int
+    nac: int
+    dibits: bytes  # one dibit per byte
+    symbols: bytes = b""  # float32 per dibit, in units of 45 degrees, the polarity corrected
+
+
+Event = Nid | Tsbk | Mbt | VoiceFrame
 
 
 class Phase1Framer:
@@ -165,6 +189,7 @@ class Phase1Framer:
         self.blocks_bad = 0
         self.mbts_ok = 0
         self.pdus_bad = 0  # header or packet CRC failed
+        self.voice_frames = 0
 
     @property
     def nac(self) -> int | None:
@@ -183,7 +208,11 @@ class Phase1Framer:
 
     def _step(self, d: int, s: float, events: list[Event]) -> None:
         self._window = ((self._window << 2) | d) & _MASK48
-        inverted = self._match_sync() if self._seen >= FS_DIBITS else None
+        inverted = None
+        if self._seen >= FS_DIBITS:
+            nid = self._nid if self._in_frame and self._held is None else None
+            voice = nid is not None and nid.duid in VOICE_DIBITS
+            inverted = self._match_sync(VOICE_FS_MAX_ERRORS if voice else FS_MAX_ERRORS)
         if inverted is not None and not (self._in_frame and self._nid is None):
             # A frame sync starts a new frame even inside one: after a block that failed its CRC
             # the frame's length is unknown, and its next frame may already have begun.
@@ -204,11 +233,11 @@ class Phase1Framer:
         if self._in_frame:
             self._frame_dibit(d, s, events)
 
-    def _match_sync(self) -> bool | None:
+    def _match_sync(self, max_errors: int) -> bool | None:
         """Whether the latest 24 dibits are a frame sync: None, or True when inverted."""
-        if bin(self._window ^ _FS_WORD).count("1") <= FS_MAX_ERRORS:
+        if bin(self._window ^ _FS_WORD).count("1") <= max_errors:
             return False
-        if bin(self._window ^ _FS_INVERTED).count("1") <= FS_MAX_ERRORS:
+        if bin(self._window ^ _FS_INVERTED).count("1") <= max_errors:
             return True
         return None
 
@@ -241,7 +270,10 @@ class Phase1Framer:
             return
         if self._held is not None:
             return  # the blocks wait until the frame is settled (_settle)
-        if len(self._data) == NID_DIBITS + fec.BLOCK_DIBITS * (self._blocks + 1):
+        if self._nid.duid in VOICE_DIBITS:
+            if len(self._data) == NID_DIBITS + VOICE_DIBITS[self._nid.duid]:
+                self._end_voice(events)
+        elif len(self._data) == NID_DIBITS + fec.BLOCK_DIBITS * (self._blocks + 1):
             self._end_frame_block(events)
 
     def _end_frame_block(self, events: list[Event]) -> None:
@@ -261,11 +293,13 @@ class Phase1Framer:
                 self._replay(*candidate, events)
             return
         self._nid = decoded[0]
-        if self._nid.duid not in _BLOCK_DUIDS:
-            # Other data units: not decoded yet (M3); look for the next frame sync.
+        if self._nid.duid not in _BLOCK_DUIDS and self._nid.duid not in VOICE_DIBITS:
+            # Other data units (packet data): not decoded; look for the next frame sync.
             self._in_frame = False
         if self._candidate is None:
             self._take(self._nid, events)
+            if self._in_frame and VOICE_DIBITS.get(self._nid.duid) == 0:
+                self._end_voice(events)  # a TDU: nothing after its NID
         else:
             self._held = decoded  # either may be the real frame (_settle)
 
@@ -317,6 +351,10 @@ class Phase1Framer:
         held = self._held[0]
         self._held = self._rival = self._candidate = None
         self._take(held, events)
+        if held.duid in VOICE_DIBITS:
+            if self._in_frame and len(self._data) >= NID_DIBITS + VOICE_DIBITS[held.duid]:
+                self._end_voice(events)
+            return
         while self._in_frame and len(self._data) >= NID_DIBITS + fec.BLOCK_DIBITS * (
             self._blocks + 1
         ):
@@ -360,6 +398,15 @@ class Phase1Framer:
         else:
             self._nac, self._nac_run = nid.nac, 1
         events.append(nid)
+
+    def _end_voice(self, events: list[Event]) -> None:
+        assert self._nid is not None
+        self._in_frame = False
+        self.voice_frames += 1
+        length = VOICE_DIBITS[self._nid.duid]
+        data = bytes(self._data[NID_DIBITS : NID_DIBITS + length])
+        symbols = np.asarray(self._soft[NID_DIBITS : NID_DIBITS + length], dtype=np.float32)
+        events.append(VoiceFrame(self._nid.duid, self._nid.nac, data, symbols.tobytes()))
 
     def _decode_next_block(self) -> tuple[bytes, int]:
         start = NID_DIBITS + fec.BLOCK_DIBITS * self._blocks

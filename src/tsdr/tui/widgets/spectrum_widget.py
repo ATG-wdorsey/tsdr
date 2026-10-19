@@ -225,7 +225,10 @@ class SpectrumWidget(ImageModeMixin, Widget):
         search = device.config.search
         self._search_range = None if search is None else (search.low_hz, search.high_hz)
         self._read_reference_lines(device.config)
-        if device.config.channel_bandwidth is not None:
+        if profile is not None and profile.fixed_bandwidth:
+            # A fixed-width decoder: its own width, not one kept from the mode before.
+            self._channel_bandwidth = profile.channel_bandwidth
+        elif device.config.channel_bandwidth is not None:
             self._channel_bandwidth = device.config.channel_bandwidth
         else:
             self._channel_bandwidth = profile.channel_bandwidth if profile else None

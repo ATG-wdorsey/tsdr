@@ -173,14 +173,17 @@ def default_bandwidth(mode: str) -> int:
 
 
 def current_channel_bandwidth(context: SDRDeviceContext) -> float:
-    """Effective channel bandwidth for the device: config → demod_profile → mode default.
+    """Effective channel bandwidth for the device: a fixed-width decoder's own → config →
+    demod_profile → mode default.
 
-    Config wins because it is the explicit user value; the profile falls back to
+    Config wins otherwise because it is the explicit user value; the profile falls back to
     the mode's default bandwidth when config leaves it unset.
     """
+    profile = context.demod_profile
+    if profile is not None and profile.fixed_bandwidth:
+        return float(profile.channel_bandwidth)
     if context.config.channel_bandwidth is not None:
         return float(context.config.channel_bandwidth)
-    profile = context.demod_profile
     if profile is not None and profile.channel_bandwidth:
         return float(profile.channel_bandwidth)
     return float(default_bandwidth(context.active_mode))

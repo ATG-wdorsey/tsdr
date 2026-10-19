@@ -150,6 +150,15 @@ def nid_decode(
     return best >> 4, duid, errors
 
 
+def nid_words() -> np.ndarray:
+    """Every NID with a defined DUID, as 64-bit words (each NAC's, DUIDs in increasing order)."""
+    duids = np.arange(1 << BCH_K) & 0xF
+    keep = np.isin(duids, list(_DUID_PARITY))
+    parity = np.array([_DUID_PARITY.get(d, 0) for d in range(16)], dtype=np.uint64)
+    words: np.ndarray = (_CODEBOOK[keep] << np.uint64(1)) | parity[duids[keep]]
+    return words
+
+
 # --- Data blocks: interleave, rate-1/2 trellis, CRC -----------------------------------------------
 
 BLOCK_BITS = 196

@@ -13,9 +13,12 @@ Work on the trunk since 0.4.0, for the next release.
 
 ### Added
 
-- **P25 control channels** (`demod p25`, `D 5`): decodes a Phase 1 trunking control channel at the dial, C4FM or
-  CQPSK (simulcast): the system and site, the adjacent sites, and the calls as they are granted (talkgroup, frequency
-  and slot, encryption and emergency flags), in a P25 panel. Following calls, voice and Phase 2 come later.
+- **P25 Phase 1** (`demod p25`, `D 5`), C4FM or CQPSK (simulcast), in a P25 panel:
+  - a trunking control channel at the dial: the system and site, the adjacent sites, and the calls as they are
+    granted (talkgroup, frequency and slot, encryption and emergency flags);
+  - voice at the dial (a trunked system's voice channel, or a conventional channel): IMBE speech, with the call's
+    talkgroup and talker; an encrypted call is muted. The bandwidth keys say the channel width is fixed.
+  - Following calls from the control channel and Phase 2 come later.
 
 ## [0.4.0] - 2026-10-19
 

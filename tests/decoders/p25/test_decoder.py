@@ -6,6 +6,7 @@ import pytest
 
 from tsdr.radio.decoders.p25 import fec, tsbk
 from tsdr.radio.decoders.p25.decoder import P25Decoder, P25Site, P25Snapshot
+from tsdr.radio.decoders.p25.demod import P25SymbolDemod
 from tsdr.radio.decoders.p25.phase1 import Nid, Phase1Framer, Tsbk
 
 from . import _synth as synth
@@ -274,6 +275,251 @@ def test_finds_a_receiver_far_off_frequency() -> None:
     decoder, _, snapshots = _decode(iq)
     assert decoder._framer.blocks_ok >= 11 * (CYCLES - 2)
     assert abs(snapshots[-1].frequency_offset_hz - 1700) < 30
+
+
+def _tsdus(nac: int, count: int, seed: int) -> list[int]:
+    rng = np.random.default_rng(seed)
+    dibits: list[int] = []
+    for _ in range(count):
+        args = [bytes(rng.integers(0, 256, 8, dtype=np.uint8)) for _ in range(3)]
+        blocks = [synth.tsbk(0x3A, a, last=k == 2) for k, a in enumerate(args)]
+        dibits += synth.frame(nac, fec.DUID_TSDU, blocks)
+    return dibits
+
+
+def test_the_search_comes_back_from_a_trial_shift() -> None:
+    # A carrier without frames sends the search through its trial shifts; at +2400 Hz this signal
+    # falls outside the narrow filter, which reads as no carrier. The search must still come back to
+    # the shift that decoded when the frames resume.
+    clean = synth.c4fm(_tsdus(NAC, 200, 9))
+    noise = synth.c4fm(list(np.random.default_rng(10).integers(0, 4, 6 * synth.SYMBOL_RATE)))
+    decoder = P25Decoder(sample_rate=synth.RATE)
+    blocks = []
+    t = 0.0
+    for k, part in enumerate(
+        [clean[: int(1.5 * synth.RATE)], noise, clean[: int(2.5 * synth.RATE)]]
+    ):
+        iq = synth.receive(part, np.random.default_rng(11 + k), snr_db=30, offset_hz=-450)
+        before = decoder._framer.blocks_ok
+        for start in range(0, len(iq), 12_000):
+            decoder.demodulate(iq[start : start + 12_000], t + start / synth.RATE)
+        t += len(iq) / synth.RATE
+        blocks.append(decoder._framer.blocks_ok - before)
+    assert blocks[0] >= 40
+    assert blocks[2] >= 50
+
+
+def test_the_search_takes_a_block_of_any_nac() -> None:
+    # 2700 Hz off, the search needs -2400. Held at 0 meanwhile, the signal gives false NIDs of NAC
+    # 0xFFF, which lock the channel's NAC; the blocks found at -2400 must still hold the search.
+    clean = synth.c4fm(_tsdus(NAC, 110, 1))[: int(8 * synth.RATE)]
+    iq = synth.receive(clean, np.random.default_rng(11), snr_db=30, offset_hz=-2700)
+    decoder, _, _ = _decode(iq)
+    assert decoder._demod.coarse_hz == -2400
+    assert decoder._tsbks >= 60
+
+
+@pytest.mark.parametrize(
+    ("offset", "tsdus", "drawn_s", "fed_s", "chunk"),
+    [(-2250, 296, 20, 8, 12_000), (-2100, 216, 12, 6, 1_200)],
+)
+def test_a_rare_block_at_a_wrong_shift_doesnt_end_the_search(
+    offset: int, tsdus: int, drawn_s: int, fed_s: int, chunk: int
+) -> None:
+    # After a retune from a channel found at +2400, a CQPSK control channel 2100-2250 Hz below: at
+    # +2400 the signal is 4500-4650 Hz off, close to a whole turn per symbol, and a block decodes there
+    # now and then. That must not hold the search: the channel is found at -2400 and decodes on.
+    # (The noise is drawn as in the reviews' runs, over `drawn_s`, the first `fed_s` fed.)
+    start = int(1.5 * synth.RATE)
+    clean = synth.cqpsk(_tsdus(0x293, tsdus, 51))[start : start + int(drawn_s * synth.RATE)]
+    noisy = synth.receive(clean, np.random.default_rng(501), snr_db=30, offset_hz=offset)
+    iq = noisy[: int(fed_s * synth.RATE)]
+    decoder = P25Decoder(sample_rate=synth.RATE)
+    decoder._good_coarse = 2400.0  # found on the channel before the retune
+    decoder.reset()
+    for k in range(0, len(iq), chunk):
+        decoder.demodulate(iq[k : k + chunk], k / synth.RATE)
+    assert decoder._demod.coarse_hz == -2400
+    assert decoder._tsbks >= 50
+
+
+def test_an_offset_on_the_edge_between_two_shifts() -> None:
+    # 600 Hz off, the fourth-power estimate sits on the end of its range: read plainly it jumps
+    # between +600 and -600 and most blocks are lost, at either whole step. Read on its side, it
+    # stays put.
+    clean = synth.c4fm(_tsdus(0x293, 70, 51))[: int(5 * synth.RATE)]
+    iq = synth.receive(clean, np.random.default_rng(701), snr_db=30, offset_hz=600)
+    decoder, _, _ = _decode(iq)
+    assert abs(decoder._demod.frequency_offset_hz - 600) < 50
+    assert decoder._tsbks >= 120
+
+
+def test_a_transmitter_on_the_other_side_of_the_edge() -> None:
+    # A transmission 580 Hz off has the offset read on that side of the range. The next, 0.15 s
+    # later, comes from a transmitter 580 Hz the other way: read on the first one's side it is 1160
+    # Hz off, and its missing frame syncs turn the side over (reviews 30 and 31: a half step taken
+    # for the first lost the second whole).
+    first = synth.c4fm(_tsdus(NAC, 14, 15))
+    second = synth.c4fm(_tsdus(NAC, 27, 16))
+    start = len(first) + int(0.15 * synth.RATE)
+    n = np.arange(start + len(second))
+    wanted = np.zeros(len(n), dtype=np.complex64)
+    wanted[: len(first)] = first * np.exp(2j * np.pi * 580 / synth.RATE * n[: len(first)])
+    wanted[start:] = second * np.exp(-2j * np.pi * 580 / synth.RATE * n[: len(second)])
+    iq = synth.receive(wanted, np.random.default_rng(17), snr_db=30, offset_hz=0)
+    decoder = P25Decoder(sample_rate=synth.RATE)
+    counts = []
+    for k in range(0, len(iq), 12_000):
+        decoder.demodulate(iq[k : k + 12_000], k / synth.RATE)
+        counts.append(decoder._tsbks)
+    assert counts[start // 12_000] >= 30  # the first transmission's 42
+    assert counts[-1] - counts[start // 12_000] >= 50  # of the second's 81
+
+
+def test_an_offset_on_the_edge_beside_a_neighbor() -> None:
+    # A CQPSK control channel 600 Hz off, a CQPSK neighbor 6.25 kHz below and 20 dB stronger. The
+    # neighbor hides the carrier and pulls the mean frequency: neither may decide the side (reviews
+    # 30 and 31: a half step taken on the mean's side lost the signal, one withheld left the edge's
+    # loss, 16 TSBKs).
+    clean = synth.cqpsk(_tsdus(0x293, 100, 51))
+    iq = synth.receive(clean, np.random.default_rng(501), snr_db=30, offset_hz=600)
+    n = np.arange(len(iq))
+    neighbor = synth.cqpsk(_tsdus(0x123, 103, 22))[: len(n)]
+    iq += (10 ** (20 / 20) * neighbor * np.exp(-2j * np.pi * 6_250 / synth.RATE * n)).astype(
+        np.complex64
+    )
+    decoder, _, _ = _decode(iq)
+    assert decoder._tsbks >= 150  # of 300
+
+
+def test_frequency_tracking_beside_a_strong_neighbor() -> None:
+    # A neighbor 12.5 kHz away and 55 dB stronger fills the wide filter, so the input reads as no
+    # carrier. Untracked, an offset near 600 Hz leaves no frame sync to find: the offset is tracked
+    # until the first sync, and the syncs keep it tracked.
+    wanted = synth.receive(
+        synth.c4fm(_tsdus(NAC, 60, 12)), np.random.default_rng(13), snr_db=30, offset_hz=580
+    )
+    neighbor = synth.c4fm(_tsdus(0x123, 60, 14))[: len(wanted)]
+    n = np.arange(len(wanted))
+    gain = 10 ** (55 / 20)
+    iq = (wanted + gain * neighbor * np.exp(2j * np.pi * 12_500 / synth.RATE * n)).astype(
+        np.complex64
+    )
+    demod = P25SymbolDemod(synth.RATE)
+    framer = Phase1Framer()
+    for start in range(0, len(iq), 12_000):
+        framer.process(demod.process(iq[start : start + 12_000]))
+    assert not demod.carrier
+    assert abs(demod.frequency_offset_hz - 580) < 75
+    assert framer.blocks_ok >= 120
+
+
+def test_a_fresh_start_beside_a_strong_neighbor() -> None:
+    # A neighbor 12.5 kHz away and 40 dB stronger. A new offset estimate swings over a transmission's
+    # first symbols (a plain mean while the timing pulls in): followed as wraps, it read -580 Hz two
+    # branches off (+1820 Hz), where no frame sync is looked for, until the search's trial shifts
+    # started it over (no block in the first second).
+    clean = synth.c4fm(_tsdus(0x293, 100, 51))
+    iq = synth.receive(clean, np.random.default_rng(501), snr_db=30, offset_hz=-580)
+    n = np.arange(len(iq))
+    neighbor = synth.c4fm(_tsdus(0x123, 103, 22))[: len(n)]
+    iq += (10 ** (40 / 20) * neighbor * np.exp(-2j * np.pi * 13_080 / synth.RATE * n)).astype(
+        np.complex64
+    )
+    decoder, _, _ = _decode(iq[: int(synth.RATE)])
+    assert decoder._tsbks >= 25  # of 30
+
+
+def test_a_block_like_a_sync_on_another_branch() -> None:
+    # A valid TSBK (a group voice channel grant update) whose coded bits match the frame sync a
+    # branch away, within the misses allowed: moved there at once, the reading turned its symbols and
+    # the block was lost each time it was sent (review 34). A move waits for the NID after the sync.
+    grant = bytes.fromhex("82000f4f52cfebce286b1392")
+    other = synth.tsbk(0x3A, bytes(range(8)), last=True)
+    dibits: list[int] = []
+    for k in range(60):
+        dibits += synth.frame(NAC, fec.DUID_TSDU, [grant if k >= 20 and k % 5 == 0 else other])
+    clean = np.concatenate([synth.c4fm(dibits), np.zeros(72_000, dtype=np.complex64)])
+    iq = synth.receive(clean, np.random.default_rng(1), snr_db=30, offset_hz=0)
+    demod, framer = P25SymbolDemod(synth.RATE), Phase1Framer()
+    blocks = []
+    for start in range(0, len(iq), 12_000):
+        events = framer.process(demod.process(iq[start : start + 12_000]))
+        blocks += [e.data for e in events if isinstance(e, Tsbk)]
+    assert blocks.count(grant) == 8
+
+
+def test_a_new_transmitter_beside_a_strong_neighbor() -> None:
+    # The neighbor hides the carrier. After a transmission at 0 Hz and a pause, the next comes from a
+    # transmitter 580 Hz off: the offset must follow it, though the last one's frames had synced.
+    first = synth.c4fm(_tsdus(NAC, 14, 15))
+    second = synth.c4fm(_tsdus(NAC, 27, 16))
+    start = len(first) + int(synth.RATE)
+    n = np.arange(start + len(second))
+    wanted = np.zeros(len(n), dtype=np.complex64)
+    wanted[: len(first)] = first
+    wanted[start:] = second * np.exp(2j * np.pi * 580 / synth.RATE * n[: len(second)])
+    iq = synth.receive(wanted, np.random.default_rng(17), snr_db=30, offset_hz=0)
+    neighbor = synth.c4fm(_tsdus(0x123, 70, 14))[: len(n)]
+    iq += (10 ** (55 / 20) * neighbor * np.exp(2j * np.pi * 12_500 / synth.RATE * n)).astype(
+        np.complex64
+    )
+    demod = P25SymbolDemod(synth.RATE)
+    framer = Phase1Framer()
+    blocks = []
+    for k in range(0, len(iq), 12_000):
+        framer.process(demod.process(iq[k : k + 12_000]))
+        blocks.append(framer.blocks_ok)
+    assert blocks[start // 12_000] >= 30  # the first transmission's 42
+    assert blocks[-1] - blocks[start // 12_000] >= 50  # of the second's 81
+
+
+def test_a_cqpsk_neighbor_leaves_the_offset_between_transmissions() -> None:
+    # A CQPSK signal 7.5 kHz away hides the carrier, and its edge comes through the wide filter
+    # agreeing in the fourth power; the offset must stay where the last transmission left it, for the
+    # next one (here 16 dB weaker) to find its frame syncs.
+    first = synth.c4fm(_tsdus(NAC, 14, 18))
+    second = synth.c4fm(_tsdus(NAC, 27, 19))
+    start = len(first) + 3 * int(synth.RATE)
+    n = np.arange(start + len(second))
+    wanted = np.zeros(len(n), dtype=np.complex64)
+    wanted[: len(first)] = first
+    wanted[start:] = 10 ** (-16 / 20) * second
+    wanted *= np.exp(2j * np.pi * 450 / synth.RATE * n).astype(np.complex64)
+    sigma = np.sqrt(10 ** (-30 / 10) * synth.RATE / 12_500 / 2)
+    rng = np.random.default_rng(20)
+    noise = rng.normal(0, sigma, len(n)) + 1j * rng.normal(0, sigma, len(n))
+    neighbor = synth.cqpsk(_tsdus(0x123, 85, 21))[: len(n)]
+    neighbor = 10 ** (10 / 20) * neighbor * np.exp(2j * np.pi * 7_500 / synth.RATE * n)
+    iq = (wanted + noise + neighbor).astype(np.complex64)
+    demod = P25SymbolDemod(synth.RATE)
+    framer = Phase1Framer()
+    blocks = []
+    kept = None
+    for k in range(0, len(iq), 12_000):
+        if kept is None and k >= start:
+            kept = demod.frequency_offset_hz
+        framer.process(demod.process(iq[k : k + 12_000]))
+        blocks.append(framer.blocks_ok)
+    assert blocks[len(first) // 12_000 + 2] >= 30  # the first transmission's 42
+    assert kept is not None and abs(kept - 450) < 60
+    assert blocks[-1] - blocks[start // 12_000] >= 45  # of the second's 81
+
+
+def test_a_strong_c4fm_signal_gives_clean_symbols() -> None:
+    # A channel filter narrower than C4FM leaks each symbol into its neighbors and pulls the outer
+    # levels in (RMS error 0.30, outer levels at 2.73 through a 3 kHz filter alone); a strong signal
+    # goes through the wide filter and the equalizer instead.
+    iq = synth.receive(
+        synth.c4fm(_control_channel()), np.random.default_rng(8), snr_db=40, offset_hz=150
+    )
+    demod = P25SymbolDemod(synth.RATE)
+    symbols = np.concatenate([demod.process(iq[i : i + 8192]) for i in range(0, len(iq), 8192)])
+    settled = symbols[len(symbols) // 2 :]
+    levels = np.clip(np.round((settled + 3) / 2) * 2 - 3, -3, 3)
+    assert np.sqrt(np.mean((settled - levels) ** 2)) < 0.15
+    assert abs(np.mean(np.abs(settled[np.abs(levels) == 3])) - 3) < 0.1
+    assert demod.wide
 
 
 def test_a_later_message_overrides_an_earlier_one() -> None:

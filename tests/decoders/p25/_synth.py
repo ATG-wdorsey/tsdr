@@ -1,11 +1,12 @@
-"""Synthesized P25 Phase 1 control channels for the tests: TSDU and MBT frames of a made-up system,
-as C4FM or CQPSK IQ, and receiver noise."""
+"""Synthesized P25 Phase 1 channels for the tests: TSDU and MBT frames of a made-up system, voice
+data units, as C4FM or CQPSK IQ, and receiver noise."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from tsdr.radio.decoders.p25 import fec
+from tsdr.radio.decoders.p25 import fec, voice
+from tsdr.radio.decoders.p25 import voice_fec as vf
 from tsdr.radio.decoders.p25.phase1 import _FS_WORD, FS_DIBITS, STATUS_PERIOD
 from tsdr.radio.dsp import rrc_taps
 
@@ -52,11 +53,17 @@ def mbt(opcode: int, address: bytes, octets: bytes, payload: bytes) -> list[byte
 def frame(nac: int, duid: int, blocks: list[bytes], status: int = _STATUS) -> list[int]:
     """A frame's dibits: frame sync, NID, the blocks coded and interleaved, status symbols every
     36th dibit."""
+    coded: list[int] = []
+    for block in blocks:
+        coded += [int(d) for d in fec.block_encode(block)]
+    return raw_frame(nac, duid, coded, status)
+
+
+def raw_frame(nac: int, duid: int, coded: list[int], status: int = _STATUS) -> list[int]:
+    """A frame of these data dibits after the NID."""
     data = [(_FS_WORD >> (46 - 2 * i)) & 3 for i in range(FS_DIBITS)]
     nid = fec.nid_encode(nac, duid)
-    data += [(nid >> (62 - 2 * i)) & 3 for i in range(32)]
-    for block in blocks:
-        data += [int(d) for d in fec.block_encode(block)]
+    data += [(nid >> (62 - 2 * i)) & 3 for i in range(32)] + coded
     out: list[int] = []
     for d in data:
         if (len(out) + 1) % STATUS_PERIOD == 0:
@@ -127,3 +134,60 @@ def receive(
     sigma = np.sqrt(power / 10 ** (snr_db / 10) * RATE / 12_500 / 2)
     noise = rng.normal(0, sigma, len(iq)) + 1j * rng.normal(0, sigma, len(iq))
     return (shifted + noise).astype(np.complex64)
+
+
+# --- Voice data units ----------------------------------------------------------------------------
+
+
+def _dibits(value: int, count: int) -> list[int]:
+    return [(value >> (2 * (count - 1 - i))) & 3 for i in range(count)]
+
+
+def _hex_words(data: bytes) -> list[int]:
+    value = int.from_bytes(data, "big")
+    n = len(data) * 8 // 6
+    return [(value >> (6 * (n - 1 - i))) & 0x3F for i in range(n)]
+
+
+def imbe_dibits(codewords: np.ndarray) -> list[int]:
+    """One IMBE frame's (8, 23) codewords interleaved into its 72 dibits."""
+    flat = np.asarray(codewords).reshape(-1)
+    return [
+        int(flat[a]) << 1 | int(flat[b]) for a, b in zip(voice._FIRST, voice._SECOND, strict=True)
+    ]
+
+
+def ldu(imbe: list[np.ndarray], info: bytes, second: bool, lsd: bytes = b"\0\0") -> list[int]:
+    """An LDU's 784 data dibits: nine IMBE frames, LDU1's link control (9 octets) or LDU2's
+    encryption sync (12) as Reed-Solomon coded Hamming words, the low-speed data."""
+    data = _hex_words(info)
+    words = data + vf.rs_encode(data, 8 if second else 12)
+    coded = [_dibits(vf.hamming_10_6_encode(w), 5) for w in words]
+    out: list[int] = []
+    for k in range(9):
+        out += imbe_dibits(imbe[k])
+        if 1 <= k <= 6:
+            for w in coded[4 * (k - 1) : 4 * k]:
+                out += w
+        if k == 7:
+            for octet in lsd:
+                out += _dibits(octet, 4) + [0, 0, 0, 0]  # the cyclic code's parity: not checked
+    return out
+
+
+def hdu(mi: bytes, mfid: int, algid: int, kid: int, talkgroup: int) -> list[int]:
+    raw = mi + bytes([mfid, algid]) + kid.to_bytes(2, "big") + talkgroup.to_bytes(2, "big")
+    data = _hex_words(raw)
+    out: list[int] = []
+    for w in data + vf.rs_encode(data, 16):
+        out += _dibits(vf.golay_18_6_encode(w), 9)
+    return out
+
+
+def tdulc(lc: bytes) -> list[int]:
+    data = _hex_words(lc)
+    words = data + vf.rs_encode(data, 12)
+    out: list[int] = []
+    for k in range(12):
+        out += _dibits(vf.golay_24_12_encode(words[2 * k] << 6 | words[2 * k + 1]), 12)
+    return out

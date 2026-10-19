@@ -1,13 +1,13 @@
 """P25 domain-specific display widget.
 
 Reads a P25Snapshot payload off DecoderOutputEvent and renders three columns: the system and
-site, the latest calls, and signal quality.
+site, the call heard at the dial and the latest calls granted, and signal quality.
 """
 
 from __future__ import annotations
 
 from tsdr.core.events.events import DecoderOutputEvent, StatsUpdateEvent
-from tsdr.radio.decoders.p25.decoder import P25Call, P25Snapshot
+from tsdr.radio.decoders.p25.decoder import P25Call, P25Snapshot, P25Voice
 from tsdr.tui.widgets.section_panel import Section, SectionPanel
 
 _CALL_ROWS = 5
@@ -76,7 +76,9 @@ class P25Widget(SectionPanel):
     @staticmethod
     def _render_calls(snap: P25Snapshot) -> str:
         lines = ["[bold]CALLS[/bold]"]
-        if not snap.calls:
+        if snap.voice is not None:
+            lines.append(_voice_line(snap.voice, snap.nac))
+        if not snap.calls and snap.voice is None:
             lines.append("[dim]none yet[/dim]")
         for call in snap.calls[:_CALL_ROWS]:
             lines.append(_call_line(call, snap.time))
@@ -84,8 +86,11 @@ class P25Widget(SectionPanel):
 
     def _render_quality(self, snap: P25Snapshot) -> str:
         lines = ["[green]●[/green] LOCKED" if snap.locked else "[red]○[/red] SEARCHING"]
-        color = "green" if snap.tsbk_pct >= 80 else "yellow" if snap.tsbk_pct >= 50 else "red"
-        lines.append(f"TSBK [{color}]{snap.tsbk_pct:.0f}%[/{color}]")
+        if snap.tsbks + snap.mbts == 0 and snap.voice_frames:
+            lines.append(f"LDU {snap.voice_frames}")  # a voice channel: no blocks to count
+        else:
+            color = "green" if snap.tsbk_pct >= 80 else "yellow" if snap.tsbk_pct >= 50 else "red"
+            lines.append(f"TSBK [{color}]{snap.tsbk_pct:.0f}%[/{color}]")
         if self._snr_db is not None:
             snr = self._snr_db
             snr_color = "green" if snr > 20 else "yellow" if snr > 10 else "red"
@@ -97,6 +102,19 @@ class P25Widget(SectionPanel):
 
 
 # render helpers
+
+
+def _voice_line(call: P25Voice, channel_nac: int | None) -> str:
+    """The call at the dial: heard now, muted if encrypted; its NAC when not the channel's."""
+    who = f"TG {call.group}" if call.group is not None else "voice"
+    if call.target is not None:
+        who = f"unit {call.target}"
+    if call.nac != channel_nac:
+        who += f" NAC {call.nac:03X}"
+    flags = (" [red]ENC muted[/red]" if call.encrypted else "") + (
+        " [bold red]EMERG[/bold red]" if call.emergency else ""
+    )
+    return f"[green bold]▶ {who}[/green bold]{flags}"
 
 
 def _call_line(call: P25Call, now: float) -> str:

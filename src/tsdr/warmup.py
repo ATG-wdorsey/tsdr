@@ -44,6 +44,8 @@ from tsdr.radio.dsp._kernels import (
 from tsdr.radio.registry import DEMODULATOR_CLASSES, make_demodulator
 from tsdr.radio.vocoder.acelp import TetraAcelpVocoder
 from tsdr.radio.vocoder.ambe import AmbePlus2Decoder
+from tsdr.radio.vocoder.imbe import ImbeDecoder
+from tsdr.radio.vocoder.imbe.decoder import encode_frame
 from tsdr.tui.widgets import constellation_widget, spectrum_widget
 from tsdr.tui.widgets.dsp_utils import render_spectrum_to_buf
 
@@ -117,12 +119,19 @@ def _modes(rng: np.random.Generator) -> None:
 
 
 def _vocoders(rng: np.random.Generator) -> None:
-    """DMR's AMBE+2 and TETRA's ACELP decode only frames that carry speech."""
+    """DMR's AMBE+2, P25's IMBE and TETRA's ACELP decode only frames that carry speech."""
     ambe = AmbePlus2Decoder()
     for _ in range(64):  # until frames decode as speech: the synthesis runs
         speech = ambe.decode_frame_float(rng.integers(0, 256, 9, dtype=np.uint8).tobytes())
         if np.any(speech):
             break
+    imbe = ImbeDecoder()
+    for _ in range(4):  # random parameters with a valid fundamental: decoded and synthesized
+        vector = rng.integers(0, 2, 88).astype(np.int8)
+        vector[:6] = [0, 1, 1, 0, 0, 1]  # b0 = 100
+        vector[85:87] = [0, 0]
+        imbe.decode_frame_float(encode_frame(vector))
+        imbe.decode_frame_float(encode_frame(vector), rng.random((8, 23)))  # soft decisions
     acelp = TetraAcelpVocoder()
     for _ in range(4):
         acelp.decode_frame(rng.integers(0, 256, 18, dtype=np.uint8).tobytes())

@@ -18,6 +18,8 @@ from tsdr.core.sdr.pipeline.stages.fft_stage import FFTStage
 from tsdr.core.sdr.pipeline.stages.frequency_shift_stage import FrequencyShiftStage
 from tsdr.core.sdr.samples_batch import SampleFormat, SamplesBatch
 from tsdr.radio.registry import DEMODULATOR_CLASSES, make_demodulator
+from tsdr.radio.vocoder.imbe import ImbeDecoder
+from tsdr.radio.vocoder.imbe.decoder import encode_frame
 from tsdr.warmup import warm_up
 
 
@@ -50,5 +52,9 @@ def test_the_warm_up_compiles_what_a_device_s_samples_meet() -> None:
         for mode, cls in DEMODULATOR_CLASSES.items():
             if cls.FIXED_SAMPLE_RATE is None:  # tuned to the capture's center: iq as it came
                 make_demodulator(DemodSpec(mode=mode), rate).demodulate(iq, 1.7e9)
+    # P25's voice: noise never reaches the vocoder, a frame of speech does.
+    vector = np.random.default_rng(1).integers(0, 2, 88).astype(np.int8)
+    vector[:6], vector[85:87] = [0, 1, 1, 0, 0, 1], [0, 0]  # a valid fundamental (b0 = 100)
+    ImbeDecoder().decode_frame_float(encode_frame(vector))
     after = _compiled()
     assert {name for name in after if after[name] != before.get(name, 0)} == set()

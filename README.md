@@ -28,8 +28,8 @@ interactive radio and as a general SDR toolkit.
   SSB (USB/LSB), CW (Morse).
 - Protocol decoders: this list is always expanding. FLEX paging (2-FSK),
   ADS-B (1090 MHz Mode S), DAB+ (AAC), DMR (with AMBE+2), TETRA (with ACELP),
-  FT8/FT4 (WSJT-X), APRS (AFSK1200/AX.25), SSTV (Martin/Scottie/Robot),
-  NAVTEX, ACARS.
+  P25 Phase 1 (control channels; voice with IMBE), FT8/FT4 (WSJT-X), APRS
+  (AFSK1200/AX.25), SSTV (Martin/Scottie/Robot), NAVTEX, ACARS.
 - Multiple devices and multiple independent processing pipelines per device. It
   also connects to remote devices, such as KiwiSDR and spyserver.
 - A command console with history, tab-completion, and argparse-style help.

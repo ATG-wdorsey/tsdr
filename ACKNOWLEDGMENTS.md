@@ -29,6 +29,16 @@ credited at the end:
 - **mbelib** by mbelib contributors
   https://github.com/szechyjs/mbelib
 
+## P25 Decoder and IMBE Vocoder
+
+- **mbelib** by mbelib contributors (the IMBE 7200x4400 decoder)
+  https://github.com/szechyjs/mbelib
+- **DSD** by DSD Author (the voice frames' layout and the IMBE interleave)
+  https://github.com/szechyjs/dsd
+- **OP25** by the OP25 contributors (osmocom, boatbod): the reference for the decoder throughout;
+  its IMBE encoder made the test vectors
+  https://github.com/boatbod/op25
+
 ## TETRA Decoder
 
 - **osmo-tetra** by Osmocom

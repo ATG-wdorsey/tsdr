@@ -118,6 +118,11 @@ class TuningMixin(MixinBase):
         if device.demod_profile is None:
             self._show_error("No active channel")
             return
+        profile = device.demod_profile
+        if profile.fixed_bandwidth:
+            width = format_hz(profile.channel_bandwidth, decimals=3, long_suffix=True)
+            self.show_status(f"Bandwidth: fixed at {width} for {profile.label}")
+            return
         current_bw = int(current_channel_bandwidth(device))
         step = bandwidth_step(current_bw)
         if fine:

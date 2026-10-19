@@ -131,6 +131,7 @@ class Demodulator(ABC):
             has_text=cls.HAS_TEXT,
             message_type=cls.MESSAGE_TYPE,
             sideband=cls._sideband_for(mode),
+            fixed_bandwidth=cls.FIXED_CHANNEL_BANDWIDTH is not None,
         )
 
     @classmethod

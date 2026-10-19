@@ -41,6 +41,8 @@ class DemodProfile:
         sideband: SSB-style asymmetric filter — channel passband sits entirely
             on one side of the carrier ("upper" → [center, center+bw], "lower" →
             [center-bw, center]). None means symmetric around the carrier.
+        fixed_bandwidth: the decoder's channel width is its own (channel_bandwidth);
+            the configured bandwidth doesn't apply.
     """
 
     label: str
@@ -51,6 +53,7 @@ class DemodProfile:
     has_text: bool = False
     message_type: str | None = None
     sideband: Literal["upper", "lower"] | None = None
+    fixed_bandwidth: bool = False
 
 
 @dataclass(frozen=True)
