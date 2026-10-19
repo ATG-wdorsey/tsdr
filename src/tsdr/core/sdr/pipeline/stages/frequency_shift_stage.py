@@ -46,6 +46,7 @@ class FrequencyShiftStage:
         return data.with_changes(
             iq_samples=iq_shifted,
             center_frequency=tuned,
+            capture_center_frequency=data.center_frequency,
             stage_name="frequency_shift",
         )
 

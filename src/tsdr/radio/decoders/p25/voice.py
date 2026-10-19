@@ -74,6 +74,22 @@ _SECOND = np.array(_IY) * 23 + np.array(_IZ)
 
 # Algorithm ID of a clear call (TIA-102.AAAD).
 ALGID_CLEAR = 0x80
+# Algorithm IDs as the panel names them (TIA's assignments; Motorola's as OP25 lists them).
+ALGID_NAMES = {
+    0x80: "clear",
+    0x81: "DES",
+    0x83: "3DES",
+    0x84: "AES-256",
+    0x85: "AES-128",
+    0x88: "AES-CBC",
+    0x89: "AES-128",
+    0x9F: "DES-XL",
+    0xA0: "DVI-XL",
+    0xA1: "DVP-XL",
+    0xAA: "ADP",
+    0xAB: "CFX-256",
+    0xAF: "AES+",
+}
 # LCOs (TIA-102.AABF)
 LCO_GROUP_VOICE = 0x00
 LCO_GROUP_UPDATE = 0x02

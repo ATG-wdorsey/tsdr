@@ -214,6 +214,13 @@ class Demodulator(ABC):
         """
         pass
 
+    def set_capture_center(self, frequency_hz: int) -> None:  # noqa: B027
+        """Notify the demodulator of the hardware's capture center (its input is the capture
+        shifted so the tuned frequency lies at 0 Hz). Optional hook for decoders that decode other
+        channels inside the capture (P25 following granted calls). Default implementation is a no-op.
+        """
+        pass
+
     @property
     def audio_prebuffer_seconds(self) -> float:
         """Minimum prebuffer duration in seconds before audio playback starts."""

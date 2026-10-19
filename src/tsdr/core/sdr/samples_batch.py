@@ -66,6 +66,9 @@ class SamplesBatch:
 
     # RF context at time of capture
     center_frequency: float = 0.0
+    # The hardware's capture center, once FrequencyShiftStage has moved center_frequency to the dial
+    # (0.0 before: center_frequency is the capture's).
+    capture_center_frequency: float = 0.0
     sample_rate: float = 0.0
     rf_gain: float = 0.0
 

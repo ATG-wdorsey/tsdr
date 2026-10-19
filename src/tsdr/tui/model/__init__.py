@@ -85,6 +85,9 @@ class UIModel:
     # The label of the status-line prompt being typed into (`f`: "Frequency: "), or None.
     status_prompt: str | None = None
 
+    # The decoder panel that has the keyboard (Tab; "p25"), or None: the global keys.
+    panel_focus: str | None = None
+
     @classmethod
     def initial(cls, prefs: dict[str, Any]) -> UIModel:
         """Build the starting model from load_preferences() output."""

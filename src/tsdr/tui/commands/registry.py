@@ -159,6 +159,7 @@ from tsdr.tui.commands.sdr.directory import DirectoryCommand  # noqa: E402
 from tsdr.tui.commands.sdr.frequency import FrequencyCommand  # noqa: E402
 from tsdr.tui.commands.sdr.list import SDRListCommand  # noqa: E402
 from tsdr.tui.commands.sdr.memory import MemoryCommand  # noqa: E402
+from tsdr.tui.commands.sdr.p25 import P25Command  # noqa: E402
 from tsdr.tui.commands.sdr.pipeline import SDRPipelineCommand  # noqa: E402
 from tsdr.tui.commands.sdr.record import SDRRecordCommand  # noqa: E402
 from tsdr.tui.commands.sdr.remove import SDRRemoveCommand  # noqa: E402
@@ -195,6 +196,7 @@ register("search", SDRSearchCommand())
 register("squelch", SDRSquelchCommand())
 register("f", FrequencyCommand())
 register("memory", MemoryCommand())
+register("p25", P25Command())
 register("directory", DirectoryCommand())
 register("bandplan", BandplanCommand())
 register("record", SDRRecordCommand())

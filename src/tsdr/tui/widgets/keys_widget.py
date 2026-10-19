@@ -12,8 +12,9 @@ from tsdr.tui.widgets.section_panel import Section, SectionPanel
 
 
 def key_rows() -> list[tuple[str, list[tuple[str, str]]]]:
-    """(category, [(keys, description)]) for the keys that work outside the console."""
-    rows = [b for b in BINDINGS if b.context is Context.GLOBAL]
+    """(category, [(keys, description)]) for the keys that work outside the console: the global
+    ones, and the P25 panel's while it has the keys."""
+    rows = [b for b in BINDINGS if b.context in (Context.GLOBAL, Context.P25_PANEL)]
     return [
         (category, [(format_keys(b), b.description) for b in group])
         for category, group in groupby(rows, key=lambda b: b.category)

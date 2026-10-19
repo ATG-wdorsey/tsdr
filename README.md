@@ -28,7 +28,7 @@ interactive radio and as a general SDR toolkit.
   SSB (USB/LSB), CW (Morse).
 - Protocol decoders: this list is always expanding. FLEX paging (2-FSK),
   ADS-B (1090 MHz Mode S), DAB+ (AAC), DMR (with AMBE+2), TETRA (with ACELP),
-  P25 Phase 1 (control channels; voice with IMBE), FT8/FT4 (WSJT-X), APRS
+  P25 Phase 1 (control channels, following trunked calls; voice with IMBE), FT8/FT4 (WSJT-X), APRS
   (AFSK1200/AX.25), SSTV (Martin/Scottie/Robot), NAVTEX, ACARS.
 - Multiple devices and multiple independent processing pipelines per device. It
   also connects to remote devices, such as KiwiSDR and spyserver.
@@ -380,6 +380,7 @@ Memories and panels:
 - `?`: show / hide the list of keys (a panel, like the numbered ones).
 - `Alt+1` to `Alt+9`: move the mapped panel to the next edge (left, bottom, right).
 - `Ctrl+1` to `Ctrl+9`: recall a band-stack slot; `Ctrl+0`: swap the A/B band stack.
+- `Tab`: give the decoder's panel the keys (the P25 panel: see below); `Tab` or `Escape` gives them back.
 
 Recalling a memory, a band-stack slot or A/B applies all the settings stored with
 it (mode, decoder, bandwidth, DMR timeslot, deviation), whatever the current mode.
@@ -392,6 +393,20 @@ When the console is focused:
 - `↑` / `Ctrl+P`, `↓` / `Ctrl+N`: previous / next history entry.
 - `Ctrl+R`: search history.
 - `Ctrl+L`: clear the console.
+
+When the P25 panel has the keys (`Tab`), its own keys apply and stray letters do nothing; volume, the console,
+`?` and the `Ctrl` keys still work:
+
+- `↑` / `↓` (or `k` / `j`), `PgUp` / `PgDn`, `Home` / `End`: move the cursor.
+- `←` / `→`: switch the view: active channels, talkgroups, call log.
+- `Space` or `Enter`: follow the cursor row's talkgroup, or stop (a followed talkgroup's row is colored).
+- `a` / `n`: follow every talkgroup heard / none, and newly heard ones the same way (`y` confirms).
+- `N`: whether newly heard talkgroups are followed.
+- `e`: learn the talkgroup's encryption again at its next encrypted call.
+- `s`: sort the talkgroups by number or by last heard.
+
+In the console: `p25 follow <TG>... on|off`, `p25 follow all|none`, `p25 new on|off`, `p25 rescan <TG>`,
+`p25 talkgroups`.
 
 ## Configuration and data
 

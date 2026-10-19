@@ -18,7 +18,13 @@ Work on the trunk since 0.4.0, for the next release.
     granted (talkgroup, frequency and slot, encryption and emergency flags);
   - voice at the dial (a trunked system's voice channel, or a conventional channel): IMBE speech, with the call's
     talkgroup and talker; an encrypted call is muted. The bandwidth keys say the channel width is fixed.
-  - Following calls from the control channel and Phase 2 come later.
+  - following trunked calls: with the dial on a site's control channel, the granted calls are followed on a second
+    channel inside the capture while the control channel keeps decoding, one call at a time. The panel shows the active
+    channels (encrypted ones included), the talkgroups and a call log; Tab gives it the keys to choose the talkgroups
+    followed (one, all, none, newly heard), also with the `p25` command. A followed talkgroup's encryption is named
+    (AES, DES, ADP...) from its first encrypted call, which plays muted; its later encrypted calls are skipped and its
+    clear calls still play. The panel says what capture center and rate would cover the site's channels.
+  - Phase 2 comes later.
 
 ## [0.4.0] - 2026-10-19
 

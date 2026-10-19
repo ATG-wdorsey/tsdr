@@ -195,6 +195,8 @@ def _build_demod_children(m: UIModel, edge: Edge) -> tuple[WidgetSpec, ...]:
     props: dict[str, Any] = {"dock_edge": edge}
     if kind in ("dab", "sstv"):
         props["image_mode"] = m.image_mode
+    if kind == "p25":
+        props["panel_focused"] = m.panel_focus == "p25"
     return (WidgetSpec(factory_kind, f"panel:demod:{kind}", props),)
 
 

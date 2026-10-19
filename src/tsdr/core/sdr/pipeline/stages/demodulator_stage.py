@@ -66,10 +66,15 @@ class DemodulatorStage:
             return data
 
         # Pass the currently tuned frequency down so protocol decoders can
-        # compare it against network-announced frequencies (e.g. TETRA MCCH).
+        # compare it against network-announced frequencies (e.g. TETRA MCCH),
+        # and the capture's center, for those that decode other channels in it
+        # (P25 following calls).
         if context.device_context is not None:
             self._demodulator.set_tuned_frequency(
                 int(context.device_context.config.tuned_frequency)
+            )
+            self._demodulator.set_capture_center(
+                int(data.capture_center_frequency or data.center_frequency)
             )
 
         with span("demodulate"):

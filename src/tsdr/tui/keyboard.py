@@ -26,6 +26,7 @@ from tsdr.tui.keybindings import (
     CHORD_LABELS,
     DECODER_CHORD_MODES,
     DEMOD_CHORD_MODES,
+    P25_PANEL_PASSTHROUGH,
     PAUSE_ALLOWED,
     Action,
     Context,
@@ -36,6 +37,7 @@ from tsdr.tui.model import Edge, adjusted_db_max, adjusted_db_min
 from tsdr.tui.model.store import get_ui_store
 from tsdr.tui.pause import PAUSED_HINT, focused_paused
 from tsdr.tui.widgets import SpectrumWidget
+from tsdr.tui.widgets.p25_widget import P25Widget
 from tsdr.tui.widgets.status_prompt import StatusPrompt
 
 _LOOKUP = build_lookup()
@@ -48,6 +50,10 @@ SQUELCH_STEP_DB = 1.0
 CHORD_TIMEOUT_S = 5.0
 
 FREQUENCY_PROMPT = "Frequency: "
+
+P25_PANEL_HINT = (
+    "P25 panel: ↑↓ rows  ←→ views  space follow  a/n all/none  N new  e rescan  Tab back"
+)
 
 
 def _blocked_while_paused(action: Action | None, key: str) -> bool:
@@ -65,6 +71,8 @@ class KeyboardMixin(MixinBase):
     _pending_delete_timer: Timer | None = None
     _pending_demod_timer: Timer | None = None
     _chord: tuple[str, dict[str, str]] = ("Demod", DEMOD_CHORD_MODES)
+    _pending_p25_all: bool | None = None  # `a` / `n` in the P25 panel, waiting for y
+    _pending_p25_timer: Timer | None = None
     active_inline_editor: InlineEditor | None = None
 
     def on_key(self, event: events.Key) -> None:
@@ -80,7 +88,26 @@ class KeyboardMixin(MixinBase):
             return
 
         cmd_input = self.query_one("#command-input", TerminalInput)
-        context = Context.CONSOLE if cmd_input.active else Context.GLOBAL
+        if cmd_input.active:
+            context = Context.CONSOLE
+        elif get_ui_store().model.panel_focus == "p25" and self._p25_widget() is not None:
+            context = Context.P25_PANEL
+        else:
+            if get_ui_store().model.panel_focus is not None:  # its panel has gone
+                get_ui_store().update(panel_focus=None)
+            context = Context.GLOBAL
+
+        if context is Context.P25_PANEL and self._pending_p25_all is not None:
+            on = self._pending_p25_all
+            self._clear_p25_pending()
+            widget = self._p25_widget()
+            if event.key == "y" and widget is not None:
+                self.show_status(widget.follow_all(on))
+            else:
+                self.show_status("P25: cancelled")
+            event.prevent_default()
+            event.stop()
+            return
 
         # Pending confirmations consume every key, so they must precede the table lookup.
         if context is Context.GLOBAL:
@@ -107,8 +134,37 @@ class KeyboardMixin(MixinBase):
                 return
 
         action = _LOOKUP.get((context, event.key))
+        passed = False  # a global key passed through the P25 panel
+        if context is Context.P25_PANEL and action is None:
+            # The panel has the keys, as in vi's modes: a stray letter mustn't retune the radio.
+            outside = _LOOKUP.get((Context.GLOBAL, event.key))
+            if outside in P25_PANEL_PASSTHROUGH or (
+                # Ctrl keys pass, except one whose `y` the panel can't take (deleting a memory).
+                outside is not None
+                and event.key.startswith("ctrl+")
+                and outside is not Action.MEMORY_REMOVE
+            ):
+                action, passed = outside, True
+            elif outside is None and event.key.startswith(("ctrl+", "alt+")):
+                # Ctrl+digits (band registers, A/B) and Alt+digits (panel edges).
+                if focused_paused() and _blocked_while_paused(None, event.key):
+                    self.show_status(PAUSED_HINT)
+                else:
+                    try:
+                        if not self._run_key_family(event.key):
+                            self.show_status(P25_PANEL_HINT)
+                    except SDRException as e:  # as on the global path: the user's to see
+                        self._show_error(str(e))
+                event.prevent_default()
+                event.stop()
+                return
+            else:
+                self.show_status(P25_PANEL_HINT)
+                event.prevent_default()
+                event.stop()
+                return
         if (
-            context is Context.GLOBAL
+            (context is Context.GLOBAL or passed)
             and focused_paused()
             and _blocked_while_paused(action, event.key)
         ):
@@ -286,9 +342,95 @@ class KeyboardMixin(MixinBase):
                 self.query_one("#command-input", TerminalInput).enter_search()
             case Action.CONSOLE_CLEAR:
                 self._clear_console()
+            case Action.PANEL_FOCUS:
+                self._focus_decoder_panel()
+            case Action.P25_LEAVE:
+                get_ui_store().update(panel_focus=None)
+                self.show_status("Keys back to the spectrum")
+            case (
+                Action.P25_UP
+                | Action.P25_DOWN
+                | Action.P25_PAGE_UP
+                | Action.P25_PAGE_DOWN
+                | Action.P25_HOME
+                | Action.P25_END
+                | Action.P25_VIEW_PREV
+                | Action.P25_VIEW_NEXT
+                | Action.P25_FOLLOW
+                | Action.P25_FOLLOW_ALL
+                | Action.P25_FOLLOW_NONE
+                | Action.P25_FOLLOW_NEW
+                | Action.P25_RESCAN
+                | Action.P25_SORT
+            ):
+                self._p25_key(action)
             case _:
                 assert_never(action)
         return True
+
+    def _clear_p25_pending(self) -> None:
+        self._pending_p25_all = None
+        if self._pending_p25_timer is not None:
+            self._pending_p25_timer.stop()
+            self._pending_p25_timer = None
+
+    def _cancel_p25_pending(self) -> None:
+        if self._pending_p25_all is not None:
+            self._clear_p25_pending()
+            self.show_status("P25: cancelled")
+
+    def _p25_widget(self) -> P25Widget | None:
+        widget = self._reconciler.get("panel:demod:p25")
+        return widget if isinstance(widget, P25Widget) else None
+
+    def _focus_decoder_panel(self) -> None:
+        if self._p25_widget() is None:
+            self.show_status(
+                "Tab: no decoder panel with keys here (the P25 decoder's panel has them)"
+            )
+            return
+        get_ui_store().update(panel_focus="p25")
+        self.show_status(P25_PANEL_HINT)
+
+    def _p25_key(self, action: Action) -> None:
+        widget = self._p25_widget()
+        if widget is None:
+            get_ui_store().update(panel_focus=None)
+            return
+        message: str | None = None
+        match action:
+            case Action.P25_UP:
+                widget.move(-1)
+            case Action.P25_DOWN:
+                widget.move(1)
+            case Action.P25_PAGE_UP:
+                widget.page(-1)
+            case Action.P25_PAGE_DOWN:
+                widget.page(1)
+            case Action.P25_HOME:
+                widget.move(-(1 << 30))
+            case Action.P25_END:
+                widget.move(1 << 30)
+            case Action.P25_VIEW_PREV:
+                message = widget.switch_view(-1)
+            case Action.P25_VIEW_NEXT:
+                message = widget.switch_view(1)
+            case Action.P25_FOLLOW:
+                message = widget.toggle_follow()
+            case Action.P25_FOLLOW_ALL | Action.P25_FOLLOW_NONE:
+                self._clear_p25_pending()
+                self._pending_p25_all = action is Action.P25_FOLLOW_ALL
+                self._pending_p25_timer = self.set_timer(CHORD_TIMEOUT_S, self._cancel_p25_pending)
+                which = "every talkgroup heard" if self._pending_p25_all else "none"
+                message = f"P25: follow {which}? Press y to confirm"
+            case Action.P25_FOLLOW_NEW:
+                message = widget.toggle_follow_new()
+            case Action.P25_RESCAN:
+                message = widget.rescan()
+            case Action.P25_SORT:
+                message = widget.toggle_sort()
+        if message is not None:
+            self.show_status(message)
 
     def _console_leave(self) -> None:
         self._clear_preview()

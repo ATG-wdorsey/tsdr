@@ -27,6 +27,7 @@ from textual.keys import format_key
 class Context(Enum):
     GLOBAL = "global"
     CONSOLE = "console"
+    P25_PANEL = "p25-panel"  # the P25 panel has the keyboard's focus (Tab)
 
 
 class Action(StrEnum):
@@ -83,6 +84,7 @@ class Action(StrEnum):
     MEMORY_EDIT = "memory.edit"
     MEMORY_REMOVE = "memory.remove"
     PANEL_KEYS = "panel.keys"
+    PANEL_FOCUS = "panel.focus"
     CONSOLE_FOCUS = "console.focus"
     CONSOLE_LEAVE = "console.leave"
     CONSOLE_TAB = "console.tab"
@@ -92,6 +94,21 @@ class Action(StrEnum):
     CONSOLE_HISTORY_NEXT = "console.history-next"
     CONSOLE_SEARCH = "console.search"
     CONSOLE_CLEAR = "console.clear"
+    P25_LEAVE = "p25.leave"
+    P25_UP = "p25.up"
+    P25_DOWN = "p25.down"
+    P25_PAGE_UP = "p25.page-up"
+    P25_PAGE_DOWN = "p25.page-down"
+    P25_HOME = "p25.home"
+    P25_END = "p25.end"
+    P25_VIEW_PREV = "p25.view-prev"
+    P25_VIEW_NEXT = "p25.view-next"
+    P25_FOLLOW = "p25.follow"
+    P25_FOLLOW_ALL = "p25.follow-all"
+    P25_FOLLOW_NONE = "p25.follow-none"
+    P25_FOLLOW_NEW = "p25.follow-new"
+    P25_RESCAN = "p25.rescan"
+    P25_SORT = "p25.sort"
 
 
 @dataclass(frozen=True)
@@ -110,6 +127,7 @@ DISPLAY = "Display"
 MEMORIES = "Memories & panels"
 CONSOLE = "Console"
 CONSOLE_FOCUSED = "Console (input focused)"
+P25_FOCUSED = "P25 panel (focused: Tab)"
 
 # Second keystroke of the `d` chord; drives keyboard.py dispatch and the description below.
 DEMOD_CHORD_MODES = {
@@ -280,6 +298,11 @@ BINDINGS: tuple[Binding, ...] = (
         (Action.MEMORY_REMOVE, ("ctrl+m",), "Delete the nearest memory (press y to confirm)"),
         (None, ("1-9",), "Toggle the dockable panel mapped to that key"),
         (Action.PANEL_KEYS, ("question_mark",), "Show / hide this list of keys"),
+        (
+            Action.PANEL_FOCUS,
+            ("tab",),
+            "Give the decoder's panel the keys (P25: its views and choices); Tab or Esc returns them",
+        ),
         (None, ("Alt+1-9",), "Move the mapped panel to the next edge (left, bottom, right)"),
     ),
     *_section(
@@ -303,6 +326,39 @@ BINDINGS: tuple[Binding, ...] = (
         (Action.CONSOLE_SEARCH, ("ctrl+r",), "Search history"),
         (Action.CONSOLE_CLEAR, ("ctrl+l",), "Clear the console"),
     ),
+    *_section(
+        Context.P25_PANEL,
+        P25_FOCUSED,
+        (Action.P25_LEAVE, ("tab", "escape"), "Give the keys back to the spectrum"),
+        (Action.P25_UP, ("up", "k"), "Cursor up a row"),
+        (Action.P25_DOWN, ("down", "j"), "Cursor down a row"),
+        (Action.P25_PAGE_UP, ("pageup",), "Cursor up a page"),
+        (Action.P25_PAGE_DOWN, ("pagedown",), "Cursor down a page"),
+        (Action.P25_HOME, ("home",), "Cursor to the first row"),
+        (Action.P25_END, ("end",), "Cursor to the last row"),
+        (Action.P25_VIEW_PREV, ("left",), "Previous view: active channels, talkgroups, call log"),
+        (Action.P25_VIEW_NEXT, ("right",), "Next view"),
+        (Action.P25_FOLLOW, ("space", "enter"), "Follow the cursor row's talkgroup, or stop"),
+        (Action.P25_FOLLOW_ALL, ("a",), "Follow every talkgroup heard (y to confirm)"),
+        (Action.P25_FOLLOW_NONE, ("n",), "Follow none (y to confirm)"),
+        (Action.P25_FOLLOW_NEW, ("N",), "Whether newly heard talkgroups are followed"),
+        (
+            Action.P25_RESCAN,
+            ("e",),
+            "Learn the talkgroup's encryption again at its next encrypted call",
+        ),
+        (Action.P25_SORT, ("s",), "Sort the talkgroups by number or by last heard"),
+    ),
+)
+
+# While the P25 panel has the keys, these global ones still work; any other key shows a hint.
+P25_PANEL_PASSTHROUGH = frozenset(
+    {
+        Action.VOLUME_UP,
+        Action.VOLUME_DOWN,
+        Action.CONSOLE_FOCUS,
+        Action.PANEL_KEYS,
+    }
 )
 
 # Hand-curated typography, not derivable from BINDINGS. Re-check when those keys change.
