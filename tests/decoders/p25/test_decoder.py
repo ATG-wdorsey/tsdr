@@ -523,8 +523,9 @@ def test_a_strong_c4fm_signal_gives_clean_symbols() -> None:
 
 
 def test_a_later_message_overrides_an_earlier_one() -> None:
-    # An MBT grant, then an update moving the call: however the IQ is cut into batches, the update
-    # has the last word.
+    # An MBT grant, then an update naming another channel: however the IQ is cut into batches, the
+    # update has the last word. Another channel is another assignment, whose flags and talker are
+    # unknown until a grant gives them (review 42: a clear call took an encrypted one's flags).
     p, t = synth.pack, synth.tsbk
     status = t(
         tsbk.NET_STS_BCST, p((0, 8), (WACN, 20), (SYSID, 12), (0x1005, 16), (0x70, 8)), last=True
@@ -552,7 +553,7 @@ def test_a_later_message_overrides_an_earlier_one() -> None:
         assert [(c.group, c.channel) for c in snapshots[-1].calls] == [(1001, 0x1020)]
         assert texts == [
             "TG 1001 from 257 on 450.2000 MHz ENC",
-            "TG 1001 from 257 on 450.4000 MHz ENC",
+            "TG 1001 on 450.4000 MHz ENC?",
         ]
 
 

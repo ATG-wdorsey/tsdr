@@ -220,6 +220,9 @@ class P25LogEntry:
     ldus: int = 0
     algid: int | None = None
     kid: int | None = None
+    # The system it was heard on (WACN, system ID), None while unknown: the log outlives retunes, and
+    # a talkgroup number means something else on another system (review 41, R41-2).
+    system: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -315,6 +318,8 @@ class P25Decoder(Demodulator):
 
     def _reset_system(self) -> None:
         """What belongs to the system on the channel."""
+        if hasattr(self, "_wacn"):
+            self._close_calls("system")  # into the log, while the system they belong to is known
         self._plan = tsbk.ChannelPlan()
         self._wacn: int | None = None
         self._sysid: int | None = None
@@ -327,7 +332,6 @@ class P25Decoder(Demodulator):
         self._span: tuple[int, int] | None = (
             None  # the site's channels granted: lowest, highest (Hz)
         )
-        self._close_calls("system")
         self._dirty = True
 
     def _reset_state(self) -> None:
@@ -727,27 +731,30 @@ class P25Decoder(Demodulator):
         resolved = self._plan.resolve(channel)
         freq, slot = resolved if resolved is not None else (None, None)
         old = self._calls.get(group)
-        # Capture time can step back (a clock correction): no reason for a new call.
+        # Capture time can step back (a clock correction): no reason for a new call report.
         known = old if old is not None and now - old.last_seen <= _NEW_CALL_S else None
+        # A call keeps what was heard of it (its flags, its talker) only while it is the same call: a
+        # continuation of its grants and updates on one channel. Anything else is a new transmission,
+        # whose flags are unknown until a grant gives them; seen only through updates (its grant
+        # missed), it is followed and its own voice decides (G5 rule 2). An encrypted call's 0x44 taken
+        # by the clear call after it, on the same channel or another, skipped it (reviews 41, 42).
+        same = (
+            known is not None
+            and known.channel == channel
+            and 0.0 <= now - known.last_seen <= _ACTIVE_S
+            and not (svcopts is not None and now - (known.granted or known.first_seen) > _REGRANT_S)
+        )
+        prev = known if same else None
         call = P25Call(
             group=group,
             channel=channel,
-            source=source if source is not None else (known.source if known else None),
+            source=source if source is not None else (prev.source if prev else None),
             frequency_hz=freq,
             slot=slot,
-            svcopts=svcopts if svcopts is not None else (known.svcopts if known else None),
+            svcopts=svcopts if svcopts is not None else (prev.svcopts if prev else None),
             last_seen=now,
-            first_seen=(
-                known.first_seen
-                if known is not None
-                and known.channel == channel
-                and 0.0 <= now - known.last_seen <= _ACTIVE_S
-                and not (
-                    svcopts is not None and now - (known.granted or known.first_seen) > _REGRANT_S
-                )
-                else now
-            ),
-            granted=now if svcopts is not None else (known.granted if known else None),
+            first_seen=prev.first_seen if prev is not None else now,
+            granted=now if svcopts is not None else (prev.granted if prev else None),
         )
         self._calls[group] = call
         if freq is not None and slot is None:
@@ -823,9 +830,8 @@ class P25Decoder(Demodulator):
         return self._table()
 
     def _table(self) -> talkgroups.TalkgroupTable | None:
-        if self._wacn is None or self._sysid is None:
-            return None
-        return talkgroups.table_for(self._wacn, self._sysid)
+        system = self._system()
+        return None if system is None else talkgroups.table_for(*system)
 
     def _cc_hz(self) -> int | None:
         resolved = self._plan.resolve(self._cc_channel) if self._cc_channel is not None else None
@@ -1084,9 +1090,13 @@ class P25Decoder(Demodulator):
                 ldus=ldus,
                 algid=algid,
                 kid=kid,
+                system=self._system(),
             )
         )
         self._dirty = True
+
+    def _system(self) -> tuple[int, int] | None:
+        return None if self._wacn is None or self._sysid is None else (self._wacn, self._sysid)
 
     def _maybe_snapshot(self, now: float) -> None:
         if now < self._last_snapshot:  # capture time stepped back

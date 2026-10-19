@@ -124,13 +124,14 @@ class P25Widget(SectionPanel):
         return "P25 talkgroups: by last heard" if self._sort_heard else "P25 talkgroups: by number"
 
     def toggle_follow(self) -> str:
-        table, (group, why) = self._table(), self._target()
-        if table is None or group is None:
+        group, system, why = self._target()
+        if group is None or system is None:
             return why or "P25: no talkgroup here"
+        table = talkgroups.table_for(*system)
         on = not table.follows(group)
         table.set_follow(group, on)
         self.refresh()
-        return f"P25: TG {group} {'followed' if on else 'not followed'}"
+        return f"P25: TG {group}{self._label(system)} {'followed' if on else 'not followed'}"
 
     def follow_all(self, on: bool) -> str:
         table = self._table()
@@ -151,23 +152,45 @@ class P25Widget(SectionPanel):
         return f"P25: newly heard talkgroups {'followed' if table.follow_new else 'not followed'}"
 
     def rescan(self) -> str:
-        table, (group, why) = self._table(), self._target()
-        if table is None or group is None:
+        group, system, why = self._target()
+        if group is None or system is None:
             return why or "P25: no talkgroup here"
-        table.rescan(group)
+        talkgroups.table_for(*system).rescan(group)
         self.refresh()
-        return f"P25: TG {group}'s encryption is learned again at its next encrypted call"
+        return (
+            f"P25: TG {group}{self._label(system)}'s encryption is learned again at its next "
+            "encrypted call"
+        )
 
     # rows
 
     def _table(self) -> talkgroups.TalkgroupTable | None:
+        """The current system's table."""
         snap = self._snapshot
         if snap is None or snap.wacn is None or snap.sysid is None:
             return None
         return talkgroups.table_for(snap.wacn, snap.sysid)
 
+    def _current(self) -> tuple[int, int] | None:
+        snap = self._snapshot
+        if snap is None or snap.wacn is None or snap.sysid is None:
+            return None
+        return (snap.wacn, snap.sysid)
+
+    def _label(self, system: tuple[int, int]) -> str:
+        """ " (SYS xxx)" for a system other than the current one (a call log row from before a
+        retune)."""
+        return "" if system == self._current() else f" ({self._system_name(system)})"
+
+    def _system_name(self, system: tuple[int, int]) -> str:
+        """ "SYS xxx", with the WACN when the current system has the same system ID (review 42)."""
+        current = self._current()
+        if current is not None and current[1] == system[1]:
+            return f"WACN {system[0]:05X} SYS {system[1]:03X}"
+        return f"SYS {system[1]:03X}"
+
     def _rows(self) -> list[tuple[object, int, str]]:
-        """The view's rows: (key, talkgroup, markup)."""
+        """The view's rows: (key, talkgroup, markup). Log rows carry their system in the key."""
         snap = self._snapshot
         if snap is None:
             return []
@@ -186,7 +209,10 @@ class P25Widget(SectionPanel):
                 key=(lambda t: -t.last_heard) if self._sort_heard else (lambda t: t.group),
             )
             return [(t.group, t.group, self._talkgroup_row(t, snap)) for t in groups]
-        return [((e.group, e.start), e.group, self._log_row(e, snap)) for e in reversed(snap.log)]
+        return [
+            ((e.system, e.group, e.start), e.group, self._log_row(e, snap))
+            for e in reversed(snap.log)
+        ]
 
     def _find(self, keys: list[object]) -> int:
         """The cursor's row: where its key is now; when that row has gone, the row at its last place
@@ -197,20 +223,31 @@ class P25Widget(SectionPanel):
             self._cursor = min(self._cursor, len(keys) - 1)
         return self._cursor
 
-    def _target(self) -> tuple[int | None, str | None]:
-        """The talkgroup the keys act on, or None and why not. When the row the cursor was on has
-        gone, nothing is done: the cursor takes the row now at its place, for the next press."""
+    def _target(self) -> tuple[int | None, tuple[int, int] | None, str | None]:
+        """The talkgroup the keys act on and its system (a call log row's own: it may have been heard
+        before a retune, and a talkgroup number means something else on another system), or None
+        and why not. When the row the cursor was on has gone, nothing is done: the cursor takes the
+        row now at its place, for the next press."""
         rows = self._rows()
         if not rows:
-            return None, None
+            return None, None, None
         keys = [key for key, _, _ in rows]
         i = self._find(keys)
         if self._selected is not None and self._selected not in keys:
             self._selected = keys[i]
             self.refresh()
-            return None, f"P25: that row has gone; the cursor is on TG {rows[i][1]} now"
-        self._selected = keys[i]
-        return rows[i][1], None
+            return None, None, f"P25: that row has gone; the cursor is on TG {rows[i][1]} now"
+        self._selected = key = keys[i]
+        if VIEWS[self._view] == "log" and isinstance(key, tuple):
+            if key[0] is None:
+                return None, None, "P25: that call's system wasn't known"
+            return rows[i][1], key[0], None
+        current = self._current()
+        return (
+            (rows[i][1], current, None)
+            if current is not None
+            else (None, None, "P25: no system yet")
+        )
 
     @staticmethod
     def _learned(snap: P25Snapshot, group: int) -> talkgroups.P25Talkgroup | None:
@@ -262,8 +299,14 @@ class P25Widget(SectionPanel):
             f"{_ago(max(0.0, snap.time - e.end)):>4} TG {e.group:<5} {where} "
             f"{e.end - e.start:3.0f}s {escape(outcome)}"
         )
-        tg = self._learned(snap, e.group)
-        followed = tg.follow if tg is not None else snap.follow_new
+        current = (snap.wacn, snap.sysid)
+        if e.system is not None and e.system != current:
+            # Heard on another system (before a retune): its own table, and said so.
+            line += f" [italic]{self._system_name(e.system)}[/italic]"
+            followed = talkgroups.table_for(*e.system).follows(e.group)
+        else:
+            tg = self._learned(snap, e.group)
+            followed = tg.follow if tg is not None else snap.follow_new
         return f"[{_FOLLOWED}]{line}[/{_FOLLOWED}]" if followed else f"[dim]{line}[/dim]"
 
     # render

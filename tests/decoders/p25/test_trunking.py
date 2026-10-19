@@ -169,3 +169,31 @@ def test_turning_a_talkgroup_off_stops_its_call(speech) -> None:
     assert len(_audio(audio, 1.0, 3.5)) >= 9 * 9 * 160  # it played until then
     assert len(_audio(audio, 3.5, 4.5)) == 0
     assert len(_audio(audio, 4.5, 7.5)) >= 6 * 9 * 160
+
+
+@pytest.mark.parametrize(
+    ("number", "start"),
+    [
+        (190, 7.0),  # the same channel, after a pause (review 41, R41-1)
+        (192, 4.2),  # another channel, a second after the encrypted call ends (review 42, R42-1)
+    ],
+)
+def test_a_clear_call_after_an_encrypted_one_found_by_updates(speech, number, start) -> None:
+    # A new call seen only through updates (its grant missed) took the last call's encrypted flag,
+    # and with the talkgroup's encryption learned, it was skipped.
+    talkgroups.clear()
+    calls = [
+        site.Call(1001, 190, 2.0, ldus=4, algid=AES_256, kid=KEY),
+        site.Call(1001, number, start, ldus=8, grant=False),
+    ]
+    s = site.Site(calls, duration=start + 4.0, error_hz=700.0, seed=6)
+    iq = s.capture(speech)
+    decoder = P25Decoder(s.rate)
+    decoder.set_tuned_frequency(site.CC_HZ)
+    decoder.set_capture_center(site.CC_HZ)
+    audio: list[tuple[float, np.ndarray]] = []
+    for i in range(0, len(iq), 24_000):
+        decoder.demodulate(iq[i : i + 24_000], i / s.rate)
+        audio += [(i / s.rate, b.samples) for b in decoder.get_audio()]
+    assert len(_audio(audio, 2.0, start)) == 0  # the encrypted call: muted, its type learned
+    assert len(_audio(audio, start, start + 4.0)) >= 6 * 9 * 160
