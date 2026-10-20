@@ -224,7 +224,11 @@ BINDINGS: tuple[Binding, ...] = (
         ),
         (Action.TUNE_STEP_NEXT, ("s",), "Cycle the tuning step size forward"),
         (Action.TUNE_STEP_PREV, ("S",), "Cycle the tuning step size backward"),
-        (Action.TUNE_MODE_TOGGLE, ("c",), "Toggle center and free tuning"),
+        (
+            Action.TUNE_MODE_TOGGLE,
+            ("c",),
+            "Toggle center and free tuning (while P25 runs: center the capture on its site)",
+        ),
         (Action.LO_OFFSET_BELOW, ("o",), "Put the LO below the dial (again: no offset)"),
         (Action.LO_OFFSET_ABOVE, ("O",), "Put the LO above the dial (again: no offset)"),
         (None, ("Ctrl+1-9",), "Recall a band-stack slot"),

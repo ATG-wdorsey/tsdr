@@ -50,6 +50,7 @@ from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import format_hz
 from tsdr.radio.registry import DEMODULATOR_CLASSES, DEMODULATORS
 from tsdr.tui._mixin_base import MixinBase
+from tsdr.tui.commands.sdr.p25 import center_on_site
 from tsdr.tui.messages import DeviceStateChanged, FFTUpdate
 
 logger = logging.getLogger(__name__)
@@ -153,15 +154,20 @@ class TuningMixin(MixinBase):
         device = self._focused()
         if device is None:
             return
-        new_mode: TuningMode = "free" if device.config.tuning_mode == "center" else "center"
-        if new_mode == "center" and not device.device.capabilities.frequency_controllable:
-            self._show_error("Center locked by device")
-            return
         audio = device.config.pipelines.get("audio")
         spec = audio.audio_spec if audio is not None else None
         demod = DEMODULATOR_CLASSES.get(spec.mode.upper()) if spec is not None else None
-        if new_mode == "center" and demod is not None and demod.FREE_TUNING:
-            self.show_status(f"{demod.LABEL} keeps the capture on the site: free tuning")
+        if demod is not None and demod.FREE_TUNING:
+            # It keeps free tuning: `c` centers the capture on its site instead, in either tuning mode, and says when the
+            # device's capture can't move (the owner, 2026-10-20; review 56, R56-3 and R56-4)
+            try:
+                self.show_status(center_on_site(device.device_id))
+            except SDRException as e:
+                self._show_error(str(e))
+            return
+        new_mode: TuningMode = "free" if device.config.tuning_mode == "center" else "center"
+        if new_mode == "center" and not device.device.capabilities.frequency_controllable:
+            self._show_error("Center locked by device")
             return
         get_engine().update_device_config(device.device_id, tuning_mode=new_mode)
         self.show_status(f"Tuning: {new_mode}")

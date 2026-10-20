@@ -28,6 +28,7 @@ what happened to it (the one outcome rule, `CallRecord.outcome`).
 import collections
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -129,7 +130,19 @@ _TAKES_PER_CHUNK = 3
 # channel's half width.
 _CAPTURE_USABLE = 0.45
 _CHANNEL_HALF_HZ = 6_250.0
+# The capture center a fit chooses keeps the LO (the hardware's DC, its leakage and near-DC products) this far from every
+# channel of the site heard: 50 kHz from a channel's edge (the owner, 2026-10-20); it moves in raster half steps.
+_LO_CLEAR_HZ = 50_000.0 + _CHANNEL_HALF_HZ
+_LO_SEARCH_STEPS = 400  # up to 5 MHz either way
+# When the rate can't hold the site, the dial's channel is kept this much (of its frequency) further inside the usable
+# band than a channel's half width: the envelope's receiver error (review 56, L2).
+_DIAL_MARGIN_PPM = 2.5
 _LOG_CALLS = 64
+
+
+def rate_text(rate: float) -> str:
+    """A sample rate a fit needs, in MS/s, rounded up to the tenth, never below the need (review 56, R56-2)."""
+    return f"{math.ceil(round(rate / 1e5, 6)) / 10:.1f}"
 
 
 @dataclass(frozen=True)
@@ -241,6 +254,9 @@ class P25Snapshot:
     # The site's channels heard (its control channel and every FDMA channel granted), lowest and
     # highest, Hz: against `capture`, the center and rate that would hold them all.
     site_span: tuple[int, int] | None = None
+    # `fit()` while the site's channels heard don't all fit the capture: the panel's advice, as `p25 fit` and `c` place it
+    fit: tuple[int, int, float, float] | None = None
+    sample_rate: float = 0.0  # the capture's
     channel_kind: str | None = None  # the dial's: control, voice, data; None without a NID for 3 s
     cc_hz: int | None = None  # the site's control channel, as its broadcasts name it
     dial_hz: int | None = None
@@ -299,6 +315,8 @@ class P25Decoder(Demodulator):
         self._span: tuple[int, int] | None = (
             None  # the site's channels granted: lowest, highest (Hz)
         )
+        # every channel granted (Hz), for the LO's place in a fit
+        self._heard_hz: frozenset[int] = frozenset()
         self._dirty = True
 
     def _reset_state(self) -> None:
@@ -721,6 +739,9 @@ class P25Decoder(Demodulator):
         if freq is not None and slot is None:
             low, high = self._span or (freq, freq)
             self._span = (min(low, freq), max(high, freq))
+        if freq is not None and freq not in self._heard_hz:
+            # replaced whole: fits read it on the main thread
+            self._heard_hz = self._heard_hz | {freq}
         state = self._state()
         if state is not None:
             flagged = None if svcopts is None else bool(svcopts & tsbk.SVC_ENCRYPTED)
@@ -796,21 +817,74 @@ class P25Decoder(Demodulator):
 
     def fit(self) -> tuple[int, int, float, float] | None:
         """What `p25 fit` needs (any thread): the site's channels heard, lowest and highest, and the capture center and
-        least sample rate whose usable band holds them; None before the site is heard."""
+        least sample rate whose usable band holds them; None before the site is heard. The center is the raster half
+        step nearest the site's middle that keeps the LO _LO_CLEAR_HZ from every channel heard."""
         span = self._site_span()
         if span is None:
             return None
         low, high = span
-        # between two channels (a 12.5 kHz raster's half step): the hardware's DC on none of them
-        center = round((low + high) / 2 / 12_500) * 12_500 + 6_250
+        dial = self._dial()
+        if dial is not None:  # the dial's channel held too (it is the control channel's, normally)
+            low, high = min(low, dial), max(high, dial)
+        center = self._clear_lo((low + high) / 2, lambda c: True)
         need = 2 * (max(center - low, high - center) + _CHANNEL_HALF_HZ) / (2 * _CAPTURE_USABLE)
-        return low, high, float(center), need
+        return low, high, center, need
+
+    def center_for(self, rate: float) -> tuple[int, int, float, float] | None:
+        """`c` while P25 runs (any thread): `fit()` with the center for the capture's rate as it is. When that rate can't
+        hold the site, the center comes as near the site's middle as keeps the dial's channel inside the usable band,
+        the LO clear of the channels heard as `fit()` keeps it; None before the site is heard or while the dial is
+        unknown."""
+        fit = self.fit()
+        dial = self._dial()
+        if fit is None or dial is None:
+            return None
+        low, high, _, need = fit
+        if rate >= need:
+            return fit
+        # the farthest the dial's channel may be from the capture's center, the receiver's error kept as a margin; the
+        # center as near the site's middle as that lets it
+        reach = _CAPTURE_USABLE * rate - _CHANNEL_HALF_HZ - _DIAL_MARGIN_PPM * 1e-6 * dial
+        target = min(max((low + high) / 2, dial - reach), dial + reach)
+        return low, high, self._clear_lo(target, lambda c: abs(c - dial) <= reach), need
+
+    @staticmethod
+    def holds(low: float, high: float, center: float, rate: float) -> bool:
+        """Whether a capture at `center` and `rate` holds the channels from `low` to `high` (as `_inside` judges them)."""
+        half = _CAPTURE_USABLE * rate - _CHANNEL_HALF_HZ
+        return center - half <= low and high <= center + half
+
+    def _clear_lo(self, target: float, allowed: Callable[[float], bool]) -> float:
+        """The capture's center for a fit: a raster half step (between two channels: the hardware's DC on none of
+        them), the one nearest `target` (ties: the lower) that `allowed` takes and that is _LO_CLEAR_HZ from every
+        channel of the site heard; when none within _LO_SEARCH_STEPS is that clear, the nearest one `allowed` takes
+        (review 56, R56-1: by the distance from the target itself, not from a half step rounded near it)."""
+        channels = set(self._heard_hz)
+        cc = self._cc_hz()
+        if cc is not None:
+            channels.add(cc)
+        if self._dial_hz is not None:
+            channels.add(self._dial_hz)
+        below = (
+            math.floor((target - 6_250) / 12_500) * 12_500 + 6_250
+        )  # the half step at or below the target
+        steps = range(-_LO_SEARCH_STEPS, _LO_SEARCH_STEPS + 2)
+        nearest = None
+        for c in sorted((below + 12_500 * k for k in steps), key=lambda c: (abs(c - target), c)):
+            if not allowed(c):
+                continue
+            if all(abs(c - f) >= _LO_CLEAR_HZ for f in channels):
+                return float(c)
+            if nearest is None:
+                nearest = c
+        return float(nearest if nearest is not None else below)
 
     def _site_span(self) -> tuple[int, int] | None:
         cc = self._cc_hz()
-        if self._span is None:
+        span = self._span  # once: the pipeline thread may reset it meanwhile (review 56, L4)
+        if span is None:
             return None if cc is None else (cc, cc)
-        low, high = self._span
+        low, high = span
         return (low, high) if cc is None else (min(low, cc), max(high, cc))
 
     def _inside(self, frequency_hz: int | None) -> bool | None:
@@ -1042,6 +1116,14 @@ class P25Decoder(Demodulator):
             else None
         )
         state = self._state()
+        capture, span = self._capture(), self._site_span()
+        fit = None
+        if (
+            capture is not None
+            and span is not None
+            and (span[0] - _CHANNEL_HALF_HZ < capture[0] or span[1] + _CHANNEL_HALF_HZ > capture[1])
+        ):
+            fit = self.fit()
         return P25Snapshot(
             locked=0.0 <= now - self._last_message_time < 2.0,
             nac=self._nac,
@@ -1063,8 +1145,10 @@ class P25Decoder(Demodulator):
             follow_new=state.follow_new if state is not None else True,
             following=following,
             log=tuple(self._log),
-            capture=self._capture(),
-            site_span=self._site_span(),
+            capture=capture,
+            site_span=span,
+            fit=fit,
+            sample_rate=self.sample_rate,
             channel_kind=self._channel_kind(now),
             cc_hz=self._cc_hz(),
             dial_hz=self._dial_hz,

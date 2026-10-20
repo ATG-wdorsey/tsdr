@@ -20,13 +20,10 @@ from textual.message import Message
 from textual.reactive import reactive
 
 from tsdr.core.events.events import DecoderOutputEvent, StatsUpdateEvent
-from tsdr.radio.decoders.p25.decoder import P25Snapshot, P25Voice
+from tsdr.radio.decoders.p25.decoder import P25Snapshot, P25Voice, rate_text
 from tsdr.tui.widgets.p25_panel import FOLLOWED, MIN_ROWS, TITLES, VIEWS, P25PanelState
 from tsdr.tui.widgets.section_panel import Section, SectionPanel, _SectionSurface
 
-# The decoder's usable share of a capture, on either side of its center, and a channel's half width.
-_USABLE = 0.45
-_HALF_CHANNEL_HZ = 6_250.0
 _SYSTEM_WIDTH, _QUALITY_WIDTH = 22, 16
 _SIDE_WIDTH = 42  # the side column's usable width
 FOCUSED_TITLE = "[reverse] P25 · KEYS · Tab/Esc to leave [/reverse]"
@@ -188,17 +185,15 @@ class P25Widget(SectionPanel):
         if snap.capture is not None:
             low, high = snap.capture
             lines.append(f"[dim]capture {low / 1e6:.3f}-{high / 1e6:.3f}[/dim]")
-            span = snap.site_span
-            if span is not None and (
-                span[0] - _HALF_CHANNEL_HZ < low or span[1] + _HALF_CHANNEL_HZ > high
-            ):
-                center = (span[0] + span[1]) / 2
-                rate = (span[1] - span[0] + 2 * _HALF_CHANNEL_HZ) / (2 * _USABLE)
-                lines.append(f"[yellow]site {span[0] / 1e6:.4f}-{span[1] / 1e6:.4f}[/yellow]")
+            if (
+                snap.fit is not None
+            ):  # the site's channels heard don't all fit: what `p25 fit` would set
+                site_low, site_high, center, rate = snap.fit
+                lines.append(f"[yellow]site {site_low / 1e6:.4f}-{site_high / 1e6:.4f}[/yellow]")
                 lines.append(
-                    f"[yellow]p25 fit: {center / 1e6:.4f}, {rate / 1e6:.1f} MS/s[/yellow]"
+                    f"[yellow]p25 fit: {center / 1e6:.4f}, {rate_text(rate)} MS/s[/yellow]"
                     if side
-                    else f"[yellow]center {center / 1e6:.4f}, {rate / 1e6:.1f} MS/s or more "
+                    else f"[yellow]center {center / 1e6:.4f}, {rate_text(rate)} MS/s or more "
                     "(p25 fit)[/yellow]"
                 )
         return lines

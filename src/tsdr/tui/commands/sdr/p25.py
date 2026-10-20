@@ -4,7 +4,7 @@ from argparse import Namespace
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
 from tsdr.core.sdr.pipeline.stages.demodulator_stage import DemodulatorStage
-from tsdr.radio.decoders.p25.decoder import P25Decoder
+from tsdr.radio.decoders.p25.decoder import P25Decoder, rate_text
 from tsdr.radio.decoders.p25.systems import SystemState
 from tsdr.tui.commands._format import success
 from tsdr.tui.commands.base import Command, CommandParser, Completion
@@ -31,31 +31,66 @@ def _table(device_id: str) -> SystemState:
     return table
 
 
-def _fit(device_id: str) -> str:
-    """The capture center and rate that hold the site's channels heard, the dial staying on its control channel
-    (DESIGN-M4b 10.1 item 7): the rate raised only when the current one can't."""
-    fit = _decoder(device_id).fit()
-    if fit is None:
-        raise SDRException(
-            "No P25 site heard yet (its control channel and grants give its channels)"
-        )
-    low, high, center, need = fit
-    engine = get_engine()
-    context = engine.get_device(device_id)
+_NO_SITE = "No P25 site heard yet (its control channel and grants give its channels)"
+
+
+def _movable(device_id: str) -> float:
+    """The device's sample rate, or raise SDRException when its capture can't be moved."""
+    context = get_engine().get_device(device_id)
     caps = context.device.capabilities
     if not caps.frequency_controllable or caps.provides_spectrum:
         raise SDRException("This device's capture can't be moved")
-    rate = context.config.sample_rate
+    return context.config.sample_rate
+
+
+def center_on_site(device_id: str) -> str:
+    """`c` while P25 runs (the owner, 2026-10-20): the capture centered on the site's channels heard at its rate as it
+    is, the control channel kept inside; `p25 fit` also raises the rate. The status line's text, or raise
+    SDRException."""
+    decoder = _decoder(device_id)
+    rate = _movable(device_id)
+    placed = decoder.center_for(rate)
+    if placed is None:
+        raise SDRException(_NO_SITE)
+    low, high, center, need = placed
+    get_engine().update_device_config(device_id, center_frequency=center, tuning_mode="free")
+    site = f"{low / 1e6:.4f}-{high / 1e6:.4f}"
+    if decoder.holds(
+        low, high, center, rate
+    ):  # every channel heard inside, whether the LO could be kept clear or not
+        return f"P25: capture centered on the site ({site}): {center / 1e6:.4f} MHz"
+    return (
+        f"P25: capture at {center / 1e6:.4f} MHz, the control channel inside; the site ({site}) needs "
+        f"{rate_text(need)} MS/s, the capture is {rate / 1e6:.1f}: channels at its edge stay outside (p25 fit)"
+    )
+
+
+def _fit(device_id: str) -> str:
+    """The capture center and rate that hold the site's channels heard, the dial staying on its control channel
+    (DESIGN-M4b 10.1 item 7): the rate raised only when the current one can't. When no rate the device has can, the
+    control channel is kept inside, as `c` keeps it."""
+    decoder = _decoder(device_id)
+    fit = decoder.fit()
+    if fit is None:
+        raise SDRException(_NO_SITE)
+    need = fit[3]
+    rate = _movable(device_id)
+    engine = get_engine()
+    caps = engine.get_device(device_id).device.capabilities
     if rate < need:
         if caps.sample_rates:
             rates = sorted(caps.sample_rates)
             rate = next((r for r in rates if r >= need), rates[-1])
         else:
             rate = math.ceil(need / 500_000) * 500_000.0
+    placed = decoder.center_for(rate)
+    if placed is None:
+        raise SDRException(_NO_SITE)
+    low, high, center, need = placed
     engine.update_device_config(
         device_id, sample_rate=rate, center_frequency=center, tuning_mode="free"
     )
-    held = "" if rate >= need else f" (it needs {need / 1e6:.1f} MS/s: the edges stay out)"
+    held = "" if rate >= need else f" (it needs {rate_text(need)} MS/s: the edges stay out)"
     return success(
         f"Capture {center / 1e6:.4f} MHz, {rate / 1e6:.1f} MS/s: the site's channels heard, "
         f"{low / 1e6:.4f}-{high / 1e6:.4f} MHz{held}"

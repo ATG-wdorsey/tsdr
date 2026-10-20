@@ -25,7 +25,8 @@ Work on the trunk since 0.4.0, for the next release.
     (AES, DES, ADP...) from its first encrypted call, which plays muted; its later encrypted calls are skipped and its
     clear calls still play; every key learned is kept, and `e` looks again. A call flagged encrypted whose own
     algorithm shows clear plays. The panel says what capture center and rate would cover the site's channels, and
-    `p25 fit` sets them; starting P25 selects free tuning.
+    `p25 fit` sets them; starting P25 selects free tuning, and `c` then centers the capture on the site's channels at
+    the rate as it is (the control channel kept inside).
   - the panel: its views filling a side column's height; what the dial is on (control, voice or data channel);
     each active channel's SNR; the call log's start times and outcome tags; the talkgroups heard on this NAC or the
     whole system's (`t`); rows that fit the panel's width, with the cursor row in full below them; a click gives it the

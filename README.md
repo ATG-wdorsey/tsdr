@@ -256,7 +256,8 @@ Tuning:
 - Click the spectrum to tune there. The click snaps to the mode's channel raster
   (12.5 kHz for NFM, 100 kHz for WFM), or to the tuning step when that is finer.
 - `c`: toggle center / free tuning (center: hardware follows every dial move;
-  free: DSP offset until the band edge; entering center recenters).
+  free: DSP offset until the band edge; entering center recenters). While P25 runs, `c` centers the capture on
+  the site's channels instead (see P25 below).
 - `o` / `O`: put the LO below / above the dial while demodulating; the same key
   again removes the offset. Zero-IF radios (Pluto, HackRF, LimeSDR, USRP,
   bladeRF) keep the LO below the dial by default, one channel width away and at
@@ -411,7 +412,9 @@ still work:
 The panel's first line says what the dial is on (control, voice or data channel, with the control channel's
 frequency); the call log shows each call's start time and outcome (the tags are explained in `?`); the active channels
 show each channel's SNR. Starting P25 selects free tuning, so the capture stays on the site while the dial is on its
-control channel (`c` says so instead of switching).
+control channel. `c` then centers the capture on the site's channels heard, at the sample rate as it is, with the LO at
+least 50 kHz from every one of them; when that rate can't hold them all, it keeps the control channel inside and says
+that channels at the site's edge stay outside (`p25 fit` also raises the rate).
 
 In the console: `p25 follow <TG>... on|off`, `p25 follow all|none`, `p25 new on|off`, `p25 rescan <TG> [--forget]`,
 `p25 talkgroups`, and `p25 fit`, which sets the capture's center and rate to hold the site's channels heard.

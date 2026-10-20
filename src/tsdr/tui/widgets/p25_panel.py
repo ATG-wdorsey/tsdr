@@ -20,7 +20,7 @@ from rich.cells import cell_len
 from rich.markup import escape
 
 from tsdr.radio.decoders.p25 import systems, voice
-from tsdr.radio.decoders.p25.decoder import P25Channel, P25LogEntry, P25Snapshot
+from tsdr.radio.decoders.p25.decoder import P25Channel, P25LogEntry, P25Snapshot, rate_text
 
 VIEWS = ("channels", "talkgroups", "log")
 TITLES = {"channels": "CHANNELS", "talkgroups": "TALKGROUPS", "log": "CALL LOG"}
@@ -617,14 +617,19 @@ class P25PanelState:
                 else:
                     line = f"TG {c.call.group} {freq:.4f} outside {low / 1e6:.1f}-{high / 1e6:.1f}"
                 remedy = ""
-                if snap.site_span is not None:
-                    a, b = snap.site_span
-                    center = (a + b) / 2
-                    rate = (b - a + 12_500) / 0.9
+                if snap.fit is not None and snap.fit[3] <= snap.sample_rate:
+                    # the capture's rate holds the site: `c` centers it there (review 56, R56-5)
                     remedy = (
-                        f"center {center / 1e6:.1f}, {rate / 1e6:.1f} MS/s or more (p25 fit)"
+                        "press c to center the capture on the site"
                         if wide
-                        else f"p25 fit: {center / 1e6:.1f}, {rate / 1e6:.1f} MS/s"
+                        else "c: center on the site"
+                    )
+                elif snap.fit is not None:  # what `p25 fit` would set
+                    _, _, center, rate = snap.fit
+                    remedy = (
+                        f"center {center / 1e6:.1f}, {rate_text(rate)} MS/s or more (p25 fit)"
+                        if wide
+                        else f"p25 fit: {center / 1e6:.1f}, {rate_text(rate)} MS/s"
                     )
                 return line, remedy
         return None
@@ -643,7 +648,9 @@ class P25PanelState:
             if state is not None and not state.follows(call.group):
                 continue
             self._alerted.add(call.cid)
+            fits = snap.fit is not None and snap.fit[3] <= snap.sample_rate  # `c` is enough (R56-5)
             out.append(
-                f"P25: TG {call.group} on {call.frequency_hz / 1e6:.4f} is outside the capture (p25 fit)"
+                f"P25: TG {call.group} on {call.frequency_hz / 1e6:.4f} is outside the capture "
+                + ("(c: center on the site)" if fits else "(p25 fit)")
             )
         return out
