@@ -19,6 +19,9 @@ from tsdr.core.tracing import get_smoothed_stats, traced
 from tsdr.devices.base import as_spectrum_source
 from tsdr.radio.dsp._kernels import _iq_metrics_c64
 
+# A channel measured across the capture: P25's 12.5 kHz.
+P25_CHANNEL_HZ = 12_500.0
+
 
 class RateLimiter:
     """Fixed-FPS gate for UI updates."""
@@ -72,6 +75,8 @@ class EventEmitterStage:
         self._floor = BandFloor()
         self._cn_held: float | None = None
         self._cn_time = 0.0
+        # The channels across the capture (P25's calls): granted frequency -> (the call's serial, C/N held)
+        self._channels_held: dict[int, tuple[int, float | None]] = {}
 
     @traced("event_emitter")
     def process(self, data: SamplesBatch, context: PipelineContext) -> SamplesBatch | None:
@@ -130,6 +135,7 @@ class EventEmitterStage:
             offset = dc.config.tuned_frequency - data.center_frequency if dc else 0.0
             cn = channel_cn_db(measured, data.sample_rate, offset, channel_bw, self._floor)
         self._cn_held = cn_peak_hold(self._cn_held, cn, dt)
+        channel_snrs = self._channel_cns(measured, data, dc, dt) if dc else ()
 
         sample_queue = dc.sample_queue
         queue_size = sample_queue.qsize() if sample_queue else 0
@@ -169,6 +175,7 @@ class EventEmitterStage:
                 spectrum_bins=len(data.spectrum),
                 demod_mode=dc.active_mode,
                 channel_snr=self._cn_held,
+                channel_snrs=channel_snrs,
                 stereo=dc.stereo,
                 iq_rms=iq_rms,
                 iq_peak=iq_peak,
@@ -178,6 +185,25 @@ class EventEmitterStage:
                 spectrum_view=spectrum_view,
             )
         )
+
+    def _channel_cns(
+        self, measured: np.ndarray, data: SamplesBatch, dc, dt: float
+    ) -> tuple[tuple[int, float], ...]:
+        """Each channel the demodulator decodes across the capture, measured as the meter measures the dial's (12.5
+        kHz at its corrected position), with a peak hold of its own reset when its frequency's call changes."""
+        positions = dc.channel_positions
+        if not positions:
+            self._channels_held = {}
+            return ()
+        held: dict[int, tuple[int, float | None]] = {}
+        for cid, freq, position in positions:
+            offset = dc.config.tuned_frequency + position - data.center_frequency
+            cn = channel_cn_db(measured, data.sample_rate, offset, P25_CHANNEL_HZ, self._floor)
+            old = self._channels_held.get(freq)
+            before = old[1] if old is not None and old[0] == cid else None
+            held[freq] = (cid, cn_peak_hold(before, cn, dt))
+        self._channels_held = held
+        return tuple((f, v) for f, (_, v) in held.items() if v is not None)
 
     def _emit_demod_status(
         self, data: SamplesBatch, context: PipelineContext, device_id: str

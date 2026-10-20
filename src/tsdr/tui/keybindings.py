@@ -109,6 +109,7 @@ class Action(StrEnum):
     P25_FOLLOW_NEW = "p25.follow-new"
     P25_RESCAN = "p25.rescan"
     P25_SORT = "p25.sort"
+    P25_SCOPE = "p25.scope"
 
 
 @dataclass(frozen=True)
@@ -345,9 +346,10 @@ BINDINGS: tuple[Binding, ...] = (
         (
             Action.P25_RESCAN,
             ("e",),
-            "Learn the talkgroup's encryption again at its next encrypted call",
+            "Look again at the talkgroup's next encrypted call (its keys kept)",
         ),
         (Action.P25_SORT, ("s",), "Sort the talkgroups by number or by last heard"),
+        (Action.P25_SCOPE, ("t",), "Talkgroups: this NAC's, or the whole system's"),
     ),
 )
 

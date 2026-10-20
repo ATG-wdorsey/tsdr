@@ -85,6 +85,8 @@ class DemodulatorStage:
         # Cross-pipeline stereo flag (stats reads device_context)
         if batches and context.device_context is not None:
             context.device_context.stereo = batches[-1].stereo
+        if context.device_context is not None:
+            context.device_context.channel_positions = self._demodulator.channel_positions()
 
         messages = self._demodulator.get_messages()
         status = self._demodulator.status()

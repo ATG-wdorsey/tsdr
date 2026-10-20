@@ -394,19 +394,27 @@ When the console is focused:
 - `Ctrl+R`: search history.
 - `Ctrl+L`: clear the console.
 
-When the P25 panel has the keys (`Tab`), its own keys apply and stray letters do nothing; volume, the console,
-`?` and the `Ctrl` keys still work:
+When the P25 panel has the keys (`Tab`, or a click in the panel), its title, its top border and the status line
+(`-- P25 --`) say so; its own keys apply and stray letters do nothing; volume, the console, `?` and the `Ctrl` keys
+still work:
 
-- `↑` / `↓` (or `k` / `j`), `PgUp` / `PgDn`, `Home` / `End`: move the cursor.
+- `↑` / `↓` (or `k` / `j`), `PgUp` / `PgDn`, `Home` / `End`: move the cursor (a click on a row puts it there).
 - `←` / `→`: switch the view: active channels, talkgroups, call log.
 - `Space` or `Enter`: follow the cursor row's talkgroup, or stop (a followed talkgroup's row is colored).
-- `a` / `n`: follow every talkgroup heard / none, and newly heard ones the same way (`y` confirms).
+- `a` / `n`: follow every talkgroup heard / none, and newly heard ones the same way (`y` confirms; the system is the
+  one shown when you pressed `a` or `n`).
 - `N`: whether newly heard talkgroups are followed.
-- `e`: learn the talkgroup's encryption again at its next encrypted call.
+- `e`: look again at the talkgroup's next encrypted call (the keys learned are kept).
 - `s`: sort the talkgroups by number or by last heard.
+- `t`: the talkgroups heard on this NAC, or the whole system's.
 
-In the console: `p25 follow <TG>... on|off`, `p25 follow all|none`, `p25 new on|off`, `p25 rescan <TG>`,
-`p25 talkgroups`.
+The panel's first line says what the dial is on (control, voice or data channel, with the control channel's
+frequency); the call log shows each call's start time and outcome (the tags are explained in `?`); the active channels
+show each channel's SNR. Starting P25 selects free tuning, so the capture stays on the site while the dial is on its
+control channel (`c` says so instead of switching).
+
+In the console: `p25 follow <TG>... on|off`, `p25 follow all|none`, `p25 new on|off`, `p25 rescan <TG> [--forget]`,
+`p25 talkgroups`, and `p25 fit`, which sets the capture's center and rate to hold the site's channels heard.
 
 ## Configuration and data
 

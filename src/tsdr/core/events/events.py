@@ -88,6 +88,9 @@ class StatsUpdateEvent(Event):
     # The tuned channel's C/N in dB (its power over the noise in its bandwidth), held by
     # the meter's peak detector; None when it can't be measured.
     channel_snr: float | None = None
+    # The C/N of channels decoded across the capture (P25's active calls), each held as the meter's: (granted
+    # frequency, dB).
+    channel_snrs: tuple[tuple[int, float], ...] = ()
     stereo: bool | None = None
     iq_rms: float | None = None
     iq_peak: float | None = None

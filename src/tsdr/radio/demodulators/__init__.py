@@ -83,6 +83,9 @@ class Demodulator(ABC):
     SIDEBAND: ClassVar[Literal["upper", "lower"] | None] = None
     FIXED_CHANNEL_BANDWIDTH: ClassVar[float | None] = None
     FIXED_SAMPLE_RATE: ClassVar[float | None] = None
+    # Decodes channels across the capture, not only the dial's (P25 following calls): selects free
+    # tuning, so the capture stays where it holds them while the dial moves.
+    FREE_TUNING: ClassVar[bool] = False
 
     def __init__(self) -> None:
         self._audio_batches: list[AudioBatch] = []
@@ -264,6 +267,11 @@ class Demodulator(ABC):
     def get_constellation(self) -> tuple[np.ndarray, str] | None:
         """Return (points, modulation_type) or None."""
         return None
+
+    def channel_positions(self) -> tuple[tuple[int, int, float], ...]:
+        """Channels decoded across the capture beside the dial's (P25's active calls), for their C/N: (the
+        call's serial, its granted frequency, where it lies in the input from the dial, Hz). Pipeline thread."""
+        return ()
 
 
 __all__ = [

@@ -5,7 +5,7 @@ talkgroup's encrypted call is looked at until its algorithm and key are known, t
 import numpy as np
 import pytest
 
-from tsdr.radio.decoders.p25 import talkgroups
+from tsdr.radio.decoders.p25 import systems
 from tsdr.radio.decoders.p25.decoder import P25Decoder, P25Snapshot
 from tsdr.radio.vocoder.agc import VoiceAGC
 from tsdr.radio.vocoder.imbe import ImbeDecoder
@@ -49,8 +49,8 @@ def speech() -> list[np.ndarray]:
 
 @pytest.fixture(scope="module")
 def followed(speech):
-    talkgroups.clear()
-    talkgroups.table_for(site.WACN, site.SYSID).set_follow(3003, False)
+    systems.clear()
+    systems.system_for(site.WACN, site.SYSID).set_follow(3003, False)
     s = site.Site(SCENARIO, duration=26.0, error_hz=1500.0)
     iq = s.capture(speech)
     decoder = P25Decoder(s.rate)
@@ -104,8 +104,7 @@ def test_an_encrypted_talkgroup_is_looked_at_once(followed) -> None:
     assert second.outcome == "encrypted" and second.ldus == 0
     assert clear.outcome == "played" and clear.ldus == 4
     assert len(_audio(audio, 14.5, 16.5)) >= 4 * 9 * 160
-    [tg] = [t for t in snapshots[-1].talkgroups if t.group == 2002]
-    assert (tg.algid, tg.kid) == (AES_256, KEY)
+    assert systems.system_for(site.WACN, site.SYSID).get(2002).latest_key == (AES_256, KEY)
 
 
 def test_a_talkgroup_not_followed_is_listed_only(followed) -> None:
@@ -151,7 +150,7 @@ def test_the_control_channel_keeps_decoding(followed) -> None:
 def test_turning_a_talkgroup_off_stops_its_call(speech) -> None:
     # Review 38, F1: the follow choice was checked only when a call was taken; review 39, F2: a
     # call stopped so was never taken again.
-    talkgroups.clear()
+    systems.clear()
     s = site.Site([site.Call(1001, 190, 1.0, ldus=30)], duration=7.5, error_hz=-700.0, seed=4)
     iq = s.capture(speech)
     decoder = P25Decoder(s.rate)
@@ -161,9 +160,9 @@ def test_turning_a_talkgroup_off_stops_its_call(speech) -> None:
     for start in range(0, len(iq), 24_000):
         t = start / s.rate
         if 3.5 <= t < 4.5:
-            talkgroups.table_for(site.WACN, site.SYSID).set_follow(1001, False)
+            systems.system_for(site.WACN, site.SYSID).set_follow(1001, False)
         elif t >= 4.5:  # and back on during the same call (review 39, F2): it is taken again
-            talkgroups.table_for(site.WACN, site.SYSID).set_follow(1001, True)
+            systems.system_for(site.WACN, site.SYSID).set_follow(1001, True)
         decoder.demodulate(iq[start : start + 24_000], t)
         audio += [(t, b.samples) for b in decoder.get_audio()]
     assert len(_audio(audio, 1.0, 3.5)) >= 9 * 9 * 160  # it played until then
@@ -181,7 +180,7 @@ def test_turning_a_talkgroup_off_stops_its_call(speech) -> None:
 def test_a_clear_call_after_an_encrypted_one_found_by_updates(speech, number, start) -> None:
     # A new call seen only through updates (its grant missed) took the last call's encrypted flag,
     # and with the talkgroup's encryption learned, it was skipped.
-    talkgroups.clear()
+    systems.clear()
     calls = [
         site.Call(1001, 190, 2.0, ldus=4, algid=AES_256, kid=KEY),
         site.Call(1001, number, start, ldus=8, grant=False),

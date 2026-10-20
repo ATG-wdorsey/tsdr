@@ -1,10 +1,11 @@
+import math
 from argparse import Namespace
 
 from tsdr.core.sdr.engine import get_engine
 from tsdr.core.sdr.exceptions import SDRException
 from tsdr.core.sdr.pipeline.stages.demodulator_stage import DemodulatorStage
 from tsdr.radio.decoders.p25.decoder import P25Decoder
-from tsdr.radio.decoders.p25.talkgroups import TalkgroupTable
+from tsdr.radio.decoders.p25.systems import SystemState
 from tsdr.tui.commands._format import success
 from tsdr.tui.commands.base import Command, CommandParser, Completion
 from tsdr.tui.commands.sdr._utils import device_id_completions, get_focused_device_id
@@ -12,17 +13,53 @@ from tsdr.tui.commands.sdr._utils import device_id_completions, get_focused_devi
 _ON_OFF = {"on": True, "off": False}
 
 
-def _table(device_id: str) -> TalkgroupTable:
-    """The talkgroup table of the system the device's P25 decoder hears, or raise SDRException."""
+def _decoder(device_id: str) -> P25Decoder:
+    """The device's P25 decoder, or raise SDRException."""
     context = get_engine().get_device(device_id)
     for pipeline in context.pipelines.values():
         for stage in pipeline.stages:
             if isinstance(stage, DemodulatorStage) and isinstance(stage.demodulator, P25Decoder):
-                table = stage.demodulator.talkgroup_table
-                if table is None:
-                    raise SDRException("No P25 system heard yet (its control channel names it)")
-                return table
+                return stage.demodulator
     raise SDRException(f"No P25 decoder active on device '{device_id}'")
+
+
+def _table(device_id: str) -> SystemState:
+    """The system the device's P25 decoder hears, or raise SDRException."""
+    table = _decoder(device_id).system_state
+    if table is None:
+        raise SDRException("No P25 system heard yet (its control channel names it)")
+    return table
+
+
+def _fit(device_id: str) -> str:
+    """The capture center and rate that hold the site's channels heard, the dial staying on its control channel
+    (DESIGN-M4b 10.1 item 7): the rate raised only when the current one can't."""
+    fit = _decoder(device_id).fit()
+    if fit is None:
+        raise SDRException(
+            "No P25 site heard yet (its control channel and grants give its channels)"
+        )
+    low, high, center, need = fit
+    engine = get_engine()
+    context = engine.get_device(device_id)
+    caps = context.device.capabilities
+    if not caps.frequency_controllable or caps.provides_spectrum:
+        raise SDRException("This device's capture can't be moved")
+    rate = context.config.sample_rate
+    if rate < need:
+        if caps.sample_rates:
+            rates = sorted(caps.sample_rates)
+            rate = next((r for r in rates if r >= need), rates[-1])
+        else:
+            rate = math.ceil(need / 500_000) * 500_000.0
+    engine.update_device_config(
+        device_id, sample_rate=rate, center_frequency=center, tuning_mode="free"
+    )
+    held = "" if rate >= need else f" (it needs {need / 1e6:.1f} MS/s: the edges stay out)"
+    return success(
+        f"Capture {center / 1e6:.4f} MHz, {rate / 1e6:.1f} MS/s: the site's channels heard, "
+        f"{low / 1e6:.4f}-{high / 1e6:.4f} MHz{held}"
+    )
 
 
 class P25Command(Command):
@@ -36,16 +73,29 @@ class P25Command(Command):
         follow.add_argument("targets", nargs="+")
         new = sub.add_parser("new", help="whether newly heard talkgroups are followed")
         new.add_argument("state", choices=sorted(_ON_OFF))
-        rescan = sub.add_parser("rescan", help="learn a talkgroup's encryption again")
+        rescan = sub.add_parser(
+            "rescan", help="look again at a talkgroup's next encrypted call (its keys kept)"
+        )
         rescan.add_argument("groups", nargs="+", type=int)
+        rescan.add_argument(
+            "--forget",
+            action="store_true",
+            help="instead forget what was learned of its encryption (its keys, a flag known wrong)",
+        )
         sub.add_parser("talkgroups", help="list the talkgroups heard")
-        for p in (follow, new, rescan, sub.choices["talkgroups"]):
+        sub.add_parser(
+            "fit", help="set the capture's center and rate to hold the site's channels heard"
+        )
+        for p in (follow, new, rescan, sub.choices["talkgroups"], sub.choices["fit"]):
             p.add_argument("--device", dest="device_id")
 
     def run(self, args: Namespace) -> str:
         if not args.subcommand:
             return self.help_text()
-        table = _table(getattr(args, "device_id", None) or get_focused_device_id())
+        device_id = getattr(args, "device_id", None) or get_focused_device_id()
+        if args.subcommand == "fit":
+            return _fit(device_id)
+        table = _table(device_id)
         if args.subcommand == "follow":
             return self._follow(table, args.targets)
         if args.subcommand == "new":
@@ -55,27 +105,25 @@ class P25Command(Command):
             )
         if args.subcommand == "rescan":
             for group in args.groups:
-                table.rescan(group)
-            return success(
-                f"Encryption learned again at the next encrypted call: {', '.join(map(str, args.groups))}"
-            )
+                table.rescan(group, forget=args.forget)
+            groups = ", ".join(map(str, args.groups))
+            if args.forget:
+                return success(f"Encryption forgotten: {groups}")
+            return success(f"Looked at again at the next encrypted call: {groups}")
         if args.subcommand == "talkgroups":
-            rows = table.snapshot()
+            rows = table.rows()
             if not rows:
                 return "No talkgroups heard yet"
             return "\n".join(
-                f"  TG {t.group:<6} {'[cyan]followed[/]' if t.follow else '[dim]not followed[/]'}"
-                + (
-                    f"  ALGID 0x{t.algid:02X} key 0x{t.kid:04X}"
-                    if t.algid is not None and t.kid is not None
-                    else ""
-                )
+                f"  TG {t.group:<6} "
+                f"{'[cyan]followed[/]' if table.follows(t.group) else '[dim]not followed[/]'}"
+                + "".join(f"  ALGID 0x{alg:02X} key 0x{kid:04X}" for alg, kid, _ in t.keys)
                 for t in rows
             )
         raise SDRException(f"Unknown subcommand: {args.subcommand}")
 
     @staticmethod
-    def _follow(table: TalkgroupTable, targets: list[str]) -> str:
+    def _follow(table: SystemState, targets: list[str]) -> str:
         if targets in (["all"], ["none"]):
             table.set_all(targets == ["all"])
             return success(

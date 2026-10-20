@@ -48,7 +48,7 @@ from tsdr.core.tuning import (
 )
 from tsdr.core.tuning_state import get_tuning_state
 from tsdr.core.units import format_hz
-from tsdr.radio.registry import DEMODULATORS
+from tsdr.radio.registry import DEMODULATOR_CLASSES, DEMODULATORS
 from tsdr.tui._mixin_base import MixinBase
 from tsdr.tui.messages import DeviceStateChanged, FFTUpdate
 
@@ -156,6 +156,12 @@ class TuningMixin(MixinBase):
         new_mode: TuningMode = "free" if device.config.tuning_mode == "center" else "center"
         if new_mode == "center" and not device.device.capabilities.frequency_controllable:
             self._show_error("Center locked by device")
+            return
+        audio = device.config.pipelines.get("audio")
+        spec = audio.audio_spec if audio is not None else None
+        demod = DEMODULATOR_CLASSES.get(spec.mode.upper()) if spec is not None else None
+        if new_mode == "center" and demod is not None and demod.FREE_TUNING:
+            self.show_status(f"{demod.LABEL} keeps the capture on the site: free tuning")
             return
         get_engine().update_device_config(device.device_id, tuning_mode=new_mode)
         self.show_status(f"Tuning: {new_mode}")

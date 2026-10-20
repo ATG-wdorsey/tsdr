@@ -8,6 +8,7 @@ from rich.table import Table
 from rich.text import Text
 
 from tsdr.tui.keybindings import BINDINGS, Context, format_keys
+from tsdr.tui.widgets.p25_panel import OUTCOME_LEGEND
 from tsdr.tui.widgets.section_panel import Section, SectionPanel
 
 
@@ -35,4 +36,11 @@ class KeysWidget(SectionPanel):
             for keys, description in rows:
                 table.add_row(Text(keys), Text(description))
             sections.append(Section(table, title=f"[bold]{category}:[/bold]", min_width=40))
+        # The P25 call log's outcome tags (DESIGN-M4b 10.1 item 4)
+        legend = Table.grid(padding=(0, 2))
+        legend.add_column(no_wrap=True, style="cyan")
+        legend.add_column()
+        for tag, meaning in OUTCOME_LEGEND:
+            legend.add_row(Text(tag), Text(meaning))
+        sections.append(Section(legend, title="[bold]P25 call log:[/bold]", min_width=40))
         return sections

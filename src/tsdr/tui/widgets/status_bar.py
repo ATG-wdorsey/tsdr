@@ -1,6 +1,7 @@
 import logging
 from typing import Literal
 
+from textual.reactive import reactive
 from textual.timer import Timer
 from textual.widgets import Static
 
@@ -26,6 +27,12 @@ class StatusBar(Static):
 
     DEFAULT_CLASSES = "status-bar"
     DISPLAY_DURATION = 30.0  # seconds
+    # A panel that has the keys, shown at the left for as long as it has them (as vi's -- INSERT --)
+    mode: reactive[str] = reactive("")
+
+    def watch_mode(self, _mode: str) -> None:
+        if self._display_mode == "output":
+            self._refresh()
 
     def __init__(self) -> None:
         super().__init__("")
@@ -114,7 +121,10 @@ class StatusBar(Static):
         self._render_output(self._last_output)
 
     def _render_output(self, message: str) -> None:
-        self.update(message if message else "")
+        self.update(self._mode_prefix() + (message if message else ""))
 
     def _render_error(self, message: str) -> None:
-        self.update(f"[red]Warning[/red] {message}")
+        self.update(f"{self._mode_prefix()}[red]Warning[/red] {message}")
+
+    def _mode_prefix(self) -> str:
+        return f"[reverse] -- {self.mode} -- [/reverse] " if self.mode else ""

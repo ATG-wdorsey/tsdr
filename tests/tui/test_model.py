@@ -53,11 +53,12 @@ def test_initial_layout_augments_missing_panels() -> None:
         }
     }
     m = UIModel.initial(prefs)
-    # rds/dab/adsb filtered → bottom empty post-filter; demod + directory (both
-    # default-bottom) augmented onto it.
-    assert m.layout.bottom.panels == ("demod", "directory")
-    # decoder-output + memories absent from saved → appended to default edge (left).
-    assert m.layout.left.panels == ("decoder-output", "memories")
+    # rds/dab/adsb filtered → bottom empty post-filter; directory (default-bottom)
+    # augmented onto it.
+    assert m.layout.bottom.panels == ("directory",)
+    # demod, decoder-output and memories absent from saved → appended to their
+    # default edge (left).
+    assert m.layout.left.panels == ("demod", "decoder-output", "memories")
     # performance and keys were missing from saved right → appended.
     assert m.layout.right.panels == ("stats", "performance", "keys")
 

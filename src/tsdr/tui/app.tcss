@@ -127,6 +127,13 @@ EdgeStrip > .edge-strip--active { text-style: bold; color: $panel-accent; }
     border-title-align: left;
 }
 
+/* The panel that has the keys (Tab; the P25 panel): its top border heavier, in the accent. */
+#panel-content--left.-keys,
+#panel-content--right.-keys,
+#panel-content--bottom.-keys {
+    border-top: heavy $panel-accent;
+}
+
 #panel-content--left,
 #panel-content--right {
     width: 44;

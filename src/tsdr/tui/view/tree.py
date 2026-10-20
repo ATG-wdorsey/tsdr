@@ -25,11 +25,16 @@ def derive_tree(model: UIModel) -> WidgetSpec:
         (
             WidgetSpec("tuner", "tuner", {}),
             WidgetSpec("main_container", "main-container", {}, _main_children(model)),
-            WidgetSpec("status_bar", "status-bar", {}),
+            WidgetSpec("status_bar", "status-bar", {"mode": "P25" if p25_keys(model) else ""}),
             WidgetSpec("status_prompt", "status-prompt", _status_prompt_props(model)),
             WidgetSpec("console", "console", _console_props(model)),
         ),
     )
+
+
+def p25_keys(m: UIModel) -> bool:
+    """The P25 panel actually has the keys: neither the console nor a status-line prompt has taken them."""
+    return m.panel_focus == "p25" and not m.console_active and m.status_prompt is None
 
 
 def _status_prompt_props(m: UIModel) -> dict[str, str]:
@@ -122,7 +127,9 @@ def _panel_content_wrapper(m: UIModel, edge: Edge, active: str | None) -> tuple[
     children = _build_panel_children(m, panel_def, edge)
     if not children:
         return ()
-    props = {"panel_title": panel_def.border_title or _panel_label(active, m)}
+    props: dict[str, Any] = {"panel_title": panel_def.border_title or _panel_label(active, m)}
+    # The panel with the keys: its top border heavier, in the accent (10.1 item 5)
+    props["classes"] = "-keys" if active == "demod" and p25_keys(m) else ""
     return (WidgetSpec("panel_content", f"panel-content:{edge}", props, children),)
 
 
@@ -196,7 +203,7 @@ def _build_demod_children(m: UIModel, edge: Edge) -> tuple[WidgetSpec, ...]:
     if kind in ("dab", "sstv"):
         props["image_mode"] = m.image_mode
     if kind == "p25":
-        props["panel_focused"] = m.panel_focus == "p25"
+        props["panel_focused"] = p25_keys(m)
     return (WidgetSpec(factory_kind, f"panel:demod:{kind}", props),)
 
 

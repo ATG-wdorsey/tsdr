@@ -174,6 +174,9 @@ class SDRDeviceContext:
 
         # Stereo status (set by demodulators)
         self.stereo: bool | None = None
+        # Channels decoded across the capture (P25's active calls): (serial, granted frequency, offset from the
+        # dial), replaced whole by the demodulator stage, measured one batch later by the stats stage.
+        self.channel_positions: tuple[tuple[int, int, float], ...] = ()
 
         # VSQ, the voice squelch for SEARCH (fed and read by the pipeline worker)
         self.voice_squelch = VoiceSquelch(device_id)

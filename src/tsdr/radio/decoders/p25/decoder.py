@@ -12,16 +12,17 @@ or an algorithm other than clear in the header or an LDU2 (the plan's rule G5); 
 LDU1 may play before its first LDU2 shows the algorithm.
 
 Following (the control channel at the dial): the decoder gets the whole capture, so a granted voice
-channel inside it is decoded beside the control channel, which keeps decoding. The channel is
-shifted to 0 Hz with the receiver's error the control channel measures (scaled to its frequency),
-so it starts centered; the second decoder's coarse search stays as a fallback. One call at a time,
-of a talkgroup the system's table follows (`talkgroups.py`). A call holds the channel from its grant
-until its voice ends; in the hang time after a terminator the channel goes to another call (the same
-talkgroup first within _HANG_S of its last transmission). An
-encrypted call is followed, muted, only until its algorithm and key ID are known (the header or an
-LDU2), which the table keeps for its talkgroup; afterwards that talkgroup's flagged grants are
-skipped, unless what it learned was clear (the flag is wrong there). Every call, followed or not,
-goes in the call log with what happened to it.
+channel inside it is decoded beside the control channel, which keeps decoding (`voice_channel.py`).
+The channel is shifted to 0 Hz with the receiver's error the control channel measures (scaled to its
+frequency), so it starts centered; the second decoder's coarse search stays as a fallback. The calls
+are records (`calls.py`: one per call, by rule C1), the follower decides which one has the channel and
+when it ends (`follower.py`: FREE, WAIT, HOLD, HANG), and the system's talkgroups hold the choices and
+what was learned (`systems.py`). One call at a time; in the hang time after a transmission the channel
+goes to another call (the same talkgroup first within its hang time). An encrypted call is followed,
+muted, only until its algorithm and key ID are known (the header or an LDU2), which its talkgroup keeps;
+afterwards that talkgroup's flagged grants are skipped, unless a flagged call showed clear (the flag is
+wrong there) or a rescan asks for another look. Every call, followed or not, goes in the call log with
+what happened to it (the one outcome rule, `CallRecord.outcome`).
 """
 
 import collections
@@ -34,22 +35,21 @@ import numpy as np
 
 from tsdr.core.events.events import DecodedMessage
 from tsdr.core.sdr.datatypes import AudioBatch, DemodStatus
-from tsdr.radio.decoders.p25 import fec, talkgroups, tsbk, voice
+from tsdr.radio.decoders.p25 import fec, systems, tsbk, voice
+from tsdr.radio.decoders.p25.calls import CallRecord, CallTracker, P25Call, ReportWindow
 from tsdr.radio.decoders.p25.demod import OFFSET_AMBIGUITY_HZ, P25SymbolDemod
+from tsdr.radio.decoders.p25.follower import Follower, VoiceDecision
 from tsdr.radio.decoders.p25.phase1 import Nid, Phase1Framer, Tsbk, VoiceFrame
+from tsdr.radio.decoders.p25.voice_channel import VoiceChannel
 from tsdr.radio.demodulators import Demodulator
-from tsdr.radio.dsp._kernels import apply_freq_shift_c64
 from tsdr.radio.vocoder.agc import VoiceAGC
 from tsdr.radio.vocoder.imbe import ImbeDecoder
 
 logger = logging.getLogger(__name__)
 
-# A grant for a talkgroup not heard for this long is reported as a new call.
-_NEW_CALL_S = 5.0
 # A snapshot lists up to this many calls, those heard within the last minute.
 _RECENT_CALLS = 8
 _RECENT_S = 60.0
-_MAX_CALLS = 64
 # An adjacent site no longer announced for this long is dropped.
 _ADJACENT_EXPIRY_S = 120.0
 # Without a block passing its CRC for this long (a control channel sends dozens a second), the next
@@ -102,6 +102,17 @@ _COARSE_STEPS = tuple(k * OFFSET_AMBIGUITY_HZ / 2 for k in (0, 2, -2, 4, -4, 1, 
 # system state goes with it. Messages count only with the locked NAC.
 _NAC_WINDOW = 16
 _NAC_LOCK = 3
+# The channel at the dial is a control, voice or data channel by the data units of its NIDs in the
+# last _KIND_S (a NID decodes even when its block doesn't); none for that long: no P25 signal.
+_KIND_S = 3.0
+_KIND_OF_DUID = {
+    fec.DUID_TSDU: "control",
+    fec.DUID_HDU: "voice",
+    fec.DUID_LDU1: "voice",
+    fec.DUID_LDU2: "voice",
+    fec.DUID_TDU: "voice",
+    fec.DUID_TDULC: "voice",
+}
 # The block pass rate is counted over the latest this many blocks.
 _QUALITY_WINDOW = 200
 # A call at the dial ends this long after its last voice data unit without a terminator.
@@ -111,48 +122,14 @@ _PCM_RATE = 8000
 _AGC_MAX_GAIN = 50.0
 _AGC_START_GAIN = 25.0
 _AGC_PEAK = 30000 / 32768
-# A call is active while its grants or updates keep coming: sites repeat them for every call up
-# (the reference capture: every 0.4 s, 99 % within 1.1 s, at most 2.3 s with 14 % of blocks lost).
-# Its grants after a longer silence start a new call; so does a grant more than _REGRANT_S after the
-# last (a site repeats a grant within half a second, and the next transmission's comes 1.5 s or more
-# later: the reference capture).
-_ACTIVE_S = 2.5
-_REGRANT_S = 1.0
-# A call is taken only while fresh, its latest grant or update within this long (a call whose updates
-# have stopped has likely ended: the grid's "three", calls left while another held the channel).
-_FRESH_S = 1.2
-# A followed call whose voice hasn't come this long after it was taken is left.
-_VOICE_WAIT_S = 1.0
-# After a transmission's terminator the channel stays on the call (its talkgroup's next transmission
-# may come on it without a new grant) unless another call wants it, and that talkgroup is preferred
-# for this long.
-_HANG_S = 2.0
+# A call taken and stopped at once (learned, another call's voice) leaves the channel to the next candidate in the same
+# chunk, at most this many times.
+_TAKES_PER_CHUNK = 3
 # The usable share of the capture (the decimation's and the analog filter's edges stay out), and a
 # channel's half width.
 _CAPTURE_USABLE = 0.45
 _CHANNEL_HALF_HZ = 6_250.0
 _LOG_CALLS = 64
-
-
-@dataclass(frozen=True)
-class P25Call:
-    group: int
-    channel: int  # 16-bit channel number
-    source: int | None
-    frequency_hz: int | None  # None while the channel's identifier is unknown
-    slot: int | None  # TDMA slot; None on an FDMA channel or while the identifier is unknown
-    svcopts: int | None  # None until a grant gives them (updates don't): flags unknown, not clear
-    last_seen: float
-    first_seen: float = 0.0  # since its grants began on this channel
-    granted: float | None = None  # its latest grant (not an update): a transmission starting
-
-    @property
-    def encrypted(self) -> bool:
-        return bool(self.svcopts and self.svcopts & tsbk.SVC_ENCRYPTED)
-
-    @property
-    def emergency(self) -> bool:
-        return bool(self.svcopts and self.svcopts & tsbk.SVC_EMERGENCY)
 
 
 @dataclass(frozen=True)
@@ -186,9 +163,11 @@ class P25Voice:
 
     @property
     def encrypted(self) -> bool:
+        """Muted: its algorithm decides once shown, clear playing whatever the flags say (D8); before, a flag
+        mutes (link control's, or its grant's)."""
         if self.algid is None:
             return self.flagged or self.granted_encrypted
-        return self.flagged or self.algid != voice.ALGID_CLEAR
+        return self.algid != voice.ALGID_CLEAR
 
 
 @dataclass(frozen=True)
@@ -223,6 +202,7 @@ class P25LogEntry:
     # The system it was heard on (WACN, system ID), None while unknown: the log outlives retunes, and
     # a talkgroup number means something else on another system (review 41, R41-2).
     system: tuple[int, int] | None = None
+    cid: int = 0  # the call's serial
 
 
 @dataclass(frozen=True)
@@ -231,29 +211,6 @@ class P25Following:
     frequency_hz: int
     since: float
     voice: P25Voice | None
-
-
-@dataclass
-class _Followed:
-    """The call on the second channel (pipeline thread only)."""
-
-    call: P25Call  # as when taken; (group, first_seen) names it
-    since: float
-    shift_hz: float  # where its channel lies in the input
-    phase: float = 0.0
-    ldus: int = 0
-    last_voice: float = 0.0
-    holding: bool = False  # a transmission under way: from a voice frame to its terminator
-    learned: tuple[int, int] | None = None
-    audible: bool = False  # some of its voice played (not all muted)
-    before: tuple[int, bool] = (
-        0,
-        False,
-    )  # LDUs and audible from before its talkgroup was turned off
-
-    @property
-    def key(self) -> tuple[int, float]:
-        return (self.call.group, self.call.first_seen)
 
 
 @dataclass(frozen=True)
@@ -276,7 +233,7 @@ class P25Snapshot:
     voice: P25Voice | None = None  # the call at the dial (or followed), while it lasts
     voice_frames: int = 0  # LDUs decoded
     channels: tuple[P25Channel, ...] = ()  # the active calls
-    talkgroups: tuple[talkgroups.P25Talkgroup, ...] = ()
+    # (the talkgroups are read from `systems.system_for(wacn, sysid)` directly, at the panel's own pace: 10.2)
     follow_new: bool = True
     following: P25Following | None = None
     log: tuple[P25LogEntry, ...] = ()  # the latest calls ended, oldest first
@@ -284,6 +241,9 @@ class P25Snapshot:
     # The site's channels heard (its control channel and every FDMA channel granted), lowest and
     # highest, Hz: against `capture`, the center and rate that would hold them all.
     site_span: tuple[int, int] | None = None
+    channel_kind: str | None = None  # the dial's: control, voice, data; None without a NID for 3 s
+    cc_hz: int | None = None  # the site's control channel, as its broadcasts name it
+    dial_hz: int | None = None
 
 
 class P25Decoder(Demodulator):
@@ -294,6 +254,7 @@ class P25Decoder(Demodulator):
     MESSAGE_TYPE = "p25"
     HAS_TEXT = True
     FIXED_CHANNEL_BANDWIDTH = 12_500.0
+    FREE_TUNING = True  # D7: the capture stays on the site, the dial on its control channel
     _SNAPSHOT_INTERVAL = 0.5
 
     @property
@@ -310,8 +271,12 @@ class P25Decoder(Demodulator):
         self._dial_hz: int | None = None
         self._center_hz: int | None = None
         # The voice channel calls are followed on (a decoder of its own, never following).
-        self._follower = P25Decoder(sample_rate, follow=False) if follow else None
-        # The call log outlives resets (a retune, a rate change): it is history.
+        self._channel = VoiceChannel(P25Decoder(sample_rate, follow=False)) if follow else None
+        # The calls and the call log outlive resets (a retune, a rate change): a call's serial is never reused, and the
+        # log is history.
+        self._tracker = CallTracker()
+        self._reports = ReportWindow()
+        self._follower = Follower()
         self._log: collections.deque[P25LogEntry] = collections.deque(maxlen=_LOG_CALLS)
         self._dirty = False
         self._reset_state()
@@ -319,13 +284,15 @@ class P25Decoder(Demodulator):
     def _reset_system(self) -> None:
         """What belongs to the system on the channel."""
         if hasattr(self, "_wacn"):
-            self._close_calls("system")  # into the log, while the system they belong to is known
+            self._close_calls("system")  # into the log, each with its own system
+        self._follower.hang = None  # R52-2: a system inherits nothing, its hang talkgroup included
+        self._tracker.recent.clear()
+        self._reports.clear()
         self._plan = tsbk.ChannelPlan()
         self._wacn: int | None = None
         self._sysid: int | None = None
         self._rfss: int | None = None
         self._site: int | None = None
-        self._calls: dict[int, P25Call] = {}
         # (sysid, rfss, site) -> (channel, flags, last heard)
         self._adjacent: dict[tuple[int, int, int], tuple[int, int, float]] = {}
         self._cc_channel: int | None = None  # the control channel's own, from its broadcasts
@@ -335,22 +302,14 @@ class P25Decoder(Demodulator):
         self._dirty = True
 
     def _reset_state(self) -> None:
-        if hasattr(self, "_open"):
+        if hasattr(self, "_wacn"):
             self._close_calls("reset")
-        self._following: _Followed | None = None
-        self._last_played: tuple[int, float] | None = (
-            None  # (group, time) of the latest transmission followed
-        )
-        # Active calls not yet in the log, by (group, first seen): the latest of each, and what happened to it.
-        self._open: dict[tuple[int, float], P25Call] = {}
-        self._results: dict[tuple[int, float], tuple[str, int, int | None, int | None]] = {}
-        self._results_open: dict[tuple[int, float], str] = {}  # why a call isn't followed (latest)
-        # Calls stopped because their talkgroup was turned off: (LDUs, audible) so far. They may be
-        # taken again if it is turned back on.
-        self._partial: dict[tuple[int, float], tuple[int, bool]] = {}
+        self._follower.hang = None
         self._reset_system()
         self._nac: int | None = None
         self._nacs: collections.deque[int] = collections.deque(maxlen=_NAC_WINDOW)
+        # What the channel at the dial carries, from its latest data units (the panel's first line)
+        self._kinds: collections.deque[tuple[float, str]] = collections.deque(maxlen=64)
         self._block_results: list[bool] = []
         self._tsbks = 0
         self._mbts = 0
@@ -375,6 +334,9 @@ class P25Decoder(Demodulator):
         self._voice: P25Voice | None = None
         self._voice_frames = 0
         self._ended: tuple[str, P25Voice] | None = None  # the latest call ended at the dial and why
+        self._chunk_ended: list[
+            tuple[str, P25Voice]
+        ] = []  # those ended in this chunk (the second channel's report)
         self._expect_encrypted = (
             False  # the call followed was granted flagged (P25Voice.granted_encrypted)
         )
@@ -382,9 +344,10 @@ class P25Decoder(Demodulator):
         self._agc = VoiceAGC(max_gain=_AGC_MAX_GAIN, start_gain=_AGC_START_GAIN, peak=_AGC_PEAK)
 
     def demodulate(self, iq_samples: np.ndarray, capture_utc_s: float) -> None:
+        self._chunk_ended = []  # R52-4: this chunk's ended transmissions only
         symbols = self._demod.process(iq_samples)
         if len(symbols) == 0:  # a chunk shorter than a symbol: the voice channel still gets it
-            if self._follower is not None:
+            if self._channel is not None:
                 self._follow(iq_samples, capture_utc_s)
             return
         pairs = np.concatenate([[self._last_symbol], symbols]) / 3.0
@@ -399,6 +362,7 @@ class P25Decoder(Demodulator):
         for event in events:
             if isinstance(event, Nid):
                 self._track_nac(event.nac)
+                self._kinds.append((capture_utc_s, _KIND_OF_DUID.get(event.duid, "data")))
             elif isinstance(event, VoiceFrame):
                 # A call follows its own NAC: any NAC starts one (before the channel's locks too, and
                 # a radio on another NAC is heard), and while it lasts other NACs' frames wait.
@@ -417,13 +381,16 @@ class P25Decoder(Demodulator):
                     self._handle(tsbk.parse(event.data), capture_utc_s)
                 else:
                     self._mbts += 1
+                    self._kinds.append(
+                        (capture_utc_s, "control")
+                    )  # a trunking MBT (its PDU's NID: data)
                     self._handle(tsbk.parse_mbt(event.header, event.data), capture_utc_s)
         self._search(decoded, len(iq_samples))
         if self._voice is not None and not (
             0.0 <= capture_utc_s - self._voice.last_heard <= _VOICE_TIMEOUT_S
         ):
             self._end_voice("timeout")
-        if self._follower is not None:
+        if self._channel is not None:
             self._follow(iq_samples, capture_utc_s)
         if pcm:
             self._audio_batches.append(
@@ -479,6 +446,17 @@ class P25Decoder(Demodulator):
                 # lost.
                 self._end_voice("new_call")
             changes = {"group": lc.talkgroup, "target": lc.target, "source": lc.source}
+            old = self._voice
+            if (
+                old is not None
+                and old.source
+                and lc.source
+                and lc.source != old.source
+                and old.algid not in (None, voice.ALGID_CLEAR)
+            ):
+                # Another talker, its header and the last one's terminator lost: an encrypted transmission's algorithm
+                # isn't this one's (D10; never a clear one's, which would only mute: the owner's "favor playing").
+                changes.update(algid=None, kid=None)
             options = lc.service_options
             if options is not None:  # flags not given leave what is known as it is
                 changes["flagged"] = bool(options & voice.SVC_ENCRYPTED)
@@ -545,6 +523,7 @@ class P25Decoder(Demodulator):
         if call is None:
             return
         self._ended = (reason, call)
+        self._chunk_ended.append((reason, call))
         self._dirty = True
         logger.info(
             "p25_voice reason=%s group=%s seconds=%.1f",
@@ -723,66 +702,32 @@ class P25Decoder(Demodulator):
             if getattr(self, f"_{name}") != value:
                 setattr(self, f"_{name}", value)
                 self._dirty = True
+        system = self._system()
+        if system is not None:
+            self._tracker.name_system(system)
+            if self._nac is not None:
+                systems.system_for(*system).heard_nac(self._nac, self._last_message_time)
 
     def _grant(
         self, group: int, channel: int, svcopts: int | None, source: int | None, now: float
     ) -> None:
-        """A grant (svcopts given: 0x00, MBT 0x00, 0x03) or an update (svcopts None: 0x02)."""
+        """A grant (svcopts given: 0x00, MBT 0x00, 0x03) or an update (svcopts None: 0x02): the call it belongs to
+        (`calls.py`, rule C1), the talkgroup heard, the report."""
         resolved = self._plan.resolve(channel)
-        freq, slot = resolved if resolved is not None else (None, None)
-        old = self._calls.get(group)
-        # Capture time can step back (a clock correction): no reason for a new call report.
-        known = old if old is not None and now - old.last_seen <= _NEW_CALL_S else None
-        # A call keeps what was heard of it (its flags, its talker) only while it is the same call: a
-        # continuation of its grants and updates on one channel. Anything else is a new transmission,
-        # whose flags are unknown until a grant gives them; seen only through updates (its grant
-        # missed), it is followed and its own voice decides (G5 rule 2). An encrypted call's 0x44 taken
-        # by the clear call after it, on the same channel or another, skipped it (reviews 41, 42).
-        same = (
-            known is not None
-            and known.channel == channel
-            and 0.0 <= now - known.last_seen <= _ACTIVE_S
-            and not (svcopts is not None and now - (known.granted or known.first_seen) > _REGRANT_S)
+        call, new = self._tracker.message(
+            self._system(), group, channel, svcopts, source, now, resolved
         )
-        prev = known if same else None
-        call = P25Call(
-            group=group,
-            channel=channel,
-            source=source if source is not None else (prev.source if prev else None),
-            frequency_hz=freq,
-            slot=slot,
-            svcopts=svcopts if svcopts is not None else (prev.svcopts if prev else None),
-            last_seen=now,
-            first_seen=prev.first_seen if prev is not None else now,
-            granted=now if svcopts is not None else (prev.granted if prev else None),
-        )
-        self._calls[group] = call
+        freq, slot = call.frequency_hz, call.slot
         if freq is not None and slot is None:
             low, high = self._span or (freq, freq)
             self._span = (min(low, freq), max(high, freq))
-        table = self._table()
-        if table is not None:
-            table.heard(group, now, call.first_seen == now)
-        if len(self._calls) > _MAX_CALLS:
-            others = sorted(
-                (g for g in self._calls if g != group), key=lambda g: self._calls[g].last_seen
-            )
-            for g in others[: len(self._calls) - _MAX_CALLS]:
-                del self._calls[g]
-        if known is None:
-            self._report(call, "new")
-        elif known.frequency_hz is None and freq is not None:
-            self._report(call, "channel_known")  # the identifier came after the grant
-        elif (call.svcopts is None, call.encrypted, call.emergency) != (
-            known.svcopts is None,
-            known.encrypted,
-            known.emergency,
-        ):
-            self._report(call, "flags")  # a grant shows flags an update didn't carry
-        elif channel != known.channel:
-            self._report(call, "moved")  # updates repeat the current channel
-        elif source is not None and known.source is not None and source != known.source:
-            self._report(call, "talker")
+        state = self._state()
+        if state is not None:
+            flagged = None if svcopts is None else bool(svcopts & tsbk.SVC_ENCRYPTED)
+            state.heard(group, now, new, flagged, self._nac)
+        reason = self._reports.reason(call, source, now)
+        if reason is not None:
+            self._report(call.view(), reason)
 
     def _report(self, call: P25Call, reason: str) -> None:
         self._dirty = True
@@ -816,22 +761,22 @@ class P25Decoder(Demodulator):
         if (
             self._dial_hz is not None
             and frequency_hz != self._dial_hz
-            and self._following is not None
+            and self._follower.call is not None
         ):
-            self._stop_following("retuned")  # its shift was from the old dial
+            self._stop("retuned")  # its shift was from the old dial
         self._dial_hz = int(frequency_hz)
 
     def set_capture_center(self, frequency_hz: int) -> None:
         self._center_hz = int(frequency_hz)
 
     @property
-    def talkgroup_table(self) -> talkgroups.TalkgroupTable | None:
-        """The table of the system heard (shared: thread-safe), or None until its broadcasts name it."""
-        return self._table()
+    def system_state(self) -> systems.SystemState | None:
+        """The system heard (shared: thread-safe), or None until its broadcasts name it."""
+        return self._state()
 
-    def _table(self) -> talkgroups.TalkgroupTable | None:
+    def _state(self) -> systems.SystemState | None:
         system = self._system()
-        return None if system is None else talkgroups.table_for(*system)
+        return None if system is None else systems.system_for(*system)
 
     def _cc_hz(self) -> int | None:
         resolved = self._plan.resolve(self._cc_channel) if self._cc_channel is not None else None
@@ -848,6 +793,18 @@ class P25Decoder(Demodulator):
         center = self._center_hz if self._center_hz is not None else dial
         half = _CAPTURE_USABLE * self.sample_rate
         return (center - half, center + half)
+
+    def fit(self) -> tuple[int, int, float, float] | None:
+        """What `p25 fit` needs (any thread): the site's channels heard, lowest and highest, and the capture center and
+        least sample rate whose usable band holds them; None before the site is heard."""
+        span = self._site_span()
+        if span is None:
+            return None
+        low, high = span
+        # between two channels (a 12.5 kHz raster's half step): the hardware's DC on none of them
+        center = round((low + high) / 2 / 12_500) * 12_500 + 6_250
+        need = 2 * (max(center - low, high - center) + _CHANNEL_HALF_HZ) / (2 * _CAPTURE_USABLE)
+        return low, high, float(center), need
 
     def _site_span(self) -> tuple[int, int] | None:
         cc = self._cc_hz()
@@ -872,8 +829,8 @@ class P25Decoder(Demodulator):
         error = self._demod.frequency_offset_hz - (cc - dial)
         return (frequency_hz - dial) + error * frequency_hz / cc
 
-    def _verdict(self, call: P25Call, table: talkgroups.TalkgroupTable) -> str | None:
-        """Why `call` can't be followed (a P25LogEntry outcome), or None when it can."""
+    def _verdict(self, call: CallRecord, state: systems.SystemState) -> str | None:
+        """Why `call` can't be followed (DESIGN-M4b 4.3; a P25LogEntry outcome), or None when it can."""
         if call.frequency_hz is None:
             return "unknown"
         if call.slot is not None:
@@ -883,202 +840,121 @@ class P25Decoder(Demodulator):
             return "unknown"  # the dial unknown: nothing to shift from
         if not inside:
             return "outside"
-        if not table.follows(call.group):
+        if not state.follows(call.group):
             return "not_followed"
-        tg = table.get(call.group)
-        if call.encrypted and tg is not None and tg.algid not in (None, voice.ALGID_CLEAR):
+        if call.flagged and state.skips_flagged(call.group):
             return "encrypted"
         return None
 
     def _follow(self, iq: np.ndarray, now: float) -> None:
-        """The second channel: feed the call followed and see whether it has ended; take the best
-        call wanting the channel; log the calls ended."""
-        table = self._table()
-        if self._following is not None:
-            self._feed(iq, now, table)
-        active = {
-            (c.group, c.first_seen): c
-            for c in self._calls.values()
-            if 0.0 <= now - c.last_seen <= _ACTIVE_S
-        }
-        self._open.update(active)
-        f = self._following
-        best: P25Call | None = None
-        if table is not None:
-            for key, call in active.items():
-                if f is not None and key == f.key or key in self._results:
-                    continue  # followed now, or before (its grant repeating)
-                verdict = self._verdict(call, table)
-                if verdict is None and f is not None and not self._yields(f, call, now):
-                    verdict = "busy"
-                if verdict is not None:
-                    self._results_open[key] = verdict
-                elif now - call.last_seen <= _FRESH_S and (
-                    best is None or self._better(call, best, now)
-                ):
-                    best = call
-        if best is not None and (f is None or self._yields(f, best, now)):
-            if f is not None:
-                self._stop_following("yielded")
-            self._start_following(best, now)
-            self._feed(iq, now, table)
-        for key in [k for k, c in self._open.items() if k not in active]:
-            if self._following is None or key != self._following.key:
-                self._log_call(key, self._open.pop(key))
+        """The second channel (DESIGN-M4b 4.3): feed the call followed and see whether it goes on; take the best call
+        wanting the channel (fed this same chunk); close the calls ended into the log."""
+        state = self._state()
+        f = self._follower
+        if f.call is not None:
+            self._feed(iq, now, state)
+        if state is not None:  # no system named yet: nothing taken (nor in M4a)
+            for _ in range(_TAKES_PER_CHUNK):
+                best = f.choose(
+                    now,
+                    self._tracker.active(now),
+                    lambda c: self._verdict(c, state),
+                    self._tracker.moved,
+                )
+                if best is None:
+                    break
+                if f.call is not None:
+                    self._stop("yielded")  # in its hang time
+                self._take(best, now, state)
+                self._feed(iq, now, state)
+                if f.call is not None:
+                    break
+            if f.call is not None:
+                # The calls that wanted the channel and didn't get it: busy, as the next chunk would find them
+                f.choose(
+                    now,
+                    self._tracker.active(now),
+                    lambda c: self._verdict(c, state),
+                    self._tracker.moved,
+                )
+        for call in self._tracker.close_inactive(now, f.call):
+            self._log_call(call)
 
-    def _better(self, a: P25Call, b: P25Call, now: float) -> bool:
-        """Whether `a` should have the channel before `b`: the talkgroup just heard within _HANG_S,
-        then the newer call."""
-        last = self._last_played
-        if (
-            last is not None
-            and 0.0 <= now - last[1] <= _HANG_S
-            and (a.group == last[0]) != (b.group == last[0])
-        ):
-            return a.group == last[0]
-        return a.first_seen > b.first_seen
-
-    def _yields(self, f: _Followed, call: P25Call, now: float) -> bool:
-        """Whether the call followed gives the channel to `call`: in the hang time after a
-        transmission's terminator, yes; not while a transmission is under way, nor while waiting for
-        its first voice (it comes a few tenths of a second after the grant; up to _VOICE_WAIT_S)."""
-        return not f.holding and f.ldus > 0
-
-    def _start_following(self, call: P25Call, now: float) -> None:
-        assert self._follower is not None and call.frequency_hz is not None
-        # The shift centers the channel: the second decoder's search starts from 0, whatever an
-        # earlier call's transmitter needed.
-        self._follower._good_coarse = 0.0
-        self._follower.reset()
-        table = self._table()
-        tg = table.get(call.group) if table is not None else None
-        # A flagged grant mutes its call until its algorithm shows, unless the flag was learned wrong.
-        self._follower._expect_encrypted = call.encrypted and not (
-            tg is not None and tg.algid == voice.ALGID_CLEAR
+    def _take(self, call: CallRecord, now: float, state: systems.SystemState) -> None:
+        assert self._channel is not None and call.frequency_hz is not None
+        call.look = state.look(call.group)
+        self._channel.start(
+            call.frequency_hz, self._position(call.frequency_hz), self._mute_flag(call, state)
         )
-        key = (call.group, call.first_seen)
-        self._following = _Followed(
-            call, now, self._position(call.frequency_hz), before=self._partial.pop(key, (0, False))
-        )
+        self._follower.take(call, now)
         self._dirty = True
         logger.info(
             "p25_follow reason=start group=%d frequency_hz=%d shift_hz=%.0f",
             call.group,
             call.frequency_hz,
-            self._following.shift_hz,
+            self._channel.shift_hz,
         )
 
-    def _feed(self, iq: np.ndarray, now: float, table: talkgroups.TalkgroupTable | None) -> None:
-        """The capture shifted to the call followed, through the second decoder; its audio and texts
-        join this decoder's. Ends the call when it is over (see _yields for giving it up early)."""
-        f, inner = self._following, self._follower
-        assert f is not None and inner is not None
-        shifted, f.phase = apply_freq_shift_c64(iq, f.shift_hz, self.sample_rate, f.phase)
-        inner.demodulate(shifted, now)
-        audio, texts = inner.get_audio(), [m for m in inner.get_messages() if m.text]
-        if table is not None and not table.follows(f.call.group):
-            self._stop_following("unfollowed")  # turned off while followed: its audio stops now
-            return
-        on_air = inner._voice
-        if on_air is not None and (
-            on_air.target is not None or on_air.group not in (None, f.call.group)
-        ):
-            # Another call on the channel (the site gave it to another talkgroup in the hang time):
-            # not this one's to play.
-            self._stop_following("other_call")
-            return
-        self._audio_batches.extend(audio)
-        self._pending.extend(texts)
-        f.audible = f.audible or any(len(b.samples) for b in audio)
-        if inner._voice_frames > f.ldus:
-            f.ldus = inner._voice_frames
-            f.last_voice = now
-        heard = inner._voice
-        if heard is None and inner._ended is not None:
-            heard = inner._ended[1]
-        if f.holding and inner._voice is None:
-            self._last_played = (f.call.group, now)  # a transmission ended
-        f.holding = inner._voice is not None
-        if (
-            heard is not None
-            and heard.algid is not None
-            and heard.kid is not None
-            and f.learned is None
-            and (heard.algid != voice.ALGID_CLEAR or f.call.encrypted)
-        ):
-            f.learned = (heard.algid, heard.kid)
-            if table is not None:
-                table.learn(f.call.group, heard.algid, heard.kid)
-            if heard.algid == voice.ALGID_CLEAR:
-                inner._expect_encrypted = False  # the flag is wrong: its next transmission plays
-            if heard.algid != voice.ALGID_CLEAR:
-                self._stop_following("learned")
-                return
-        latest = self._calls.get(f.call.group)
-        moved = latest is None or latest.first_seen != f.call.first_seen
-        updated = latest is not None and 0.0 <= now - latest.last_seen <= _ACTIVE_S
-        if f.holding:
-            return
-        # Elapsed times out of range (capture time stepped back) count as over.
-        waited, quiet = now - f.since, now - f.last_voice
-        if f.ldus == 0:
-            if moved or not 0.0 <= waited <= _VOICE_WAIT_S:
-                self._stop_following("no_voice")
-        elif moved or not 0.0 <= quiet <= _HANG_S or (not updated and quiet > _VOICE_TIMEOUT_S):
-            self._stop_following("ended")
+    @staticmethod
+    def _mute_flag(call: CallRecord, state: systems.SystemState | None) -> bool:
+        """The call's grant flags encryption, and its talkgroup's flag isn't known wrong (R47-4)."""
+        row = state.get(call.group) if state is not None else None
+        return call.flagged and not (row is not None and row.flag_wrong)
 
-    def _stop_following(self, reason: str) -> None:
-        f, self._following = self._following, None
-        if f is None:
+    def _feed(self, iq: np.ndarray, now: float, state: systems.SystemState | None) -> None:
+        """The capture shifted to the call followed, through the second channel; its audio and texts join this
+        decoder's unless the follower drops them (4.3 step 2)."""
+        f, channel = self._follower, self._channel
+        call = f.call
+        assert call is not None and channel is not None
+        mute = self._mute_flag(call, state)
+        if mute != channel.muted_by_flag:
+            channel.set_mute_flag(mute)  # D5: a grant's flag arriving after the take
+        report = channel.feed(iq, now)
+        chosen = state.follows(call.group) if state is not None else True
+        decision: VoiceDecision = f.voice(
+            report, now, chosen, self._tracker.moved(call), call.active(now)
+        )
+        for v in report.voices:
+            if v.group == call.group and v.source:
+                call.source = v.source  # C2: its own voice names its talker
+                call.talkers.add(v.source)
+        if decision.learn is not None:
+            call.learned = decision.learn
+            if state is not None:
+                state.learn(call.group, *decision.learn, now, call.flagged, call.look)
+        elif decision.clear_voice and state is not None:
+            state.clear_voice(call.group, now)
+        if decision.keep_audio:
+            self._audio_batches.extend(report.audio)
+            self._pending.extend(report.texts)
+        if decision.stop is not None:
+            self._stop(decision.stop)
+
+    def _stop(self, reason: str) -> None:
+        f = self._follower
+        if f.call is None:
             return
+        call = f.stop(reason)
+        if self._channel is not None:
+            self._channel.stop()
         self._dirty = True
-        ldus, audible = f.ldus + f.before[0], f.audible or f.before[1]
-        if reason == "unfollowed":
-            # Its talkgroup turned off: not a final result, it may be turned back on during the call.
-            self._partial[f.key] = (ldus, audible)
-            self._results_open[f.key] = "not_followed"
-            outcome = "not_followed"
-        else:
-            outcome = self._outcome(f, ldus, audible)
-            algid, kid = f.learned if f.learned is not None else (None, None)
-            self._results[f.key] = (outcome, ldus, algid, kid)
         logger.info(
             "p25_follow reason=%s group=%d outcome=%s ldus=%d",
             reason,
-            f.call.group,
-            outcome,
-            f.ldus,
+            call.group,
+            call.outcome,
+            call.ldus,
         )
 
-    def _outcome(self, f: _Followed, ldus: int, audible: bool) -> str:
-        if f.learned is not None and f.learned[0] != voice.ALGID_CLEAR:
-            return "learned"
-        if audible:
-            return "played"
-        if ldus:
-            return "muted"  # its voice encrypted, left before its algorithm showed
-        return "busy" if self._results_open.get(f.key) == "busy" else "no_voice"
-
     def _close_calls(self, reason: str) -> None:
-        """A reset: the call followed ends and every open call goes in the log."""
-        if self._following is not None:
-            self._stop_following(reason)
-        for key, call in list(self._open.items()):
-            self._log_call(key, call)
-        self._open.clear()
-        self._results.clear()
-        self._results_open.clear()
-        self._partial.clear()
+        """A reset, a retune, a system change: the call followed ends and every call goes in the log."""
+        self._stop(reason)
+        for call in self._tracker.close_all():
+            self._log_call(call)
 
-    def _log_call(self, key: tuple[int, float], call: P25Call) -> None:
-        result = self._results.pop(key, None)
-        partial = self._partial.pop(key, None)
-        if result is None and partial is not None:  # followed until its talkgroup was turned off
-            result = ("played" if partial[1] else "not_followed", partial[0], None, None)
-        if result is None:  # never followed: why not
-            result = (self._results_open.get(key, "unknown"), 0, None, None)
-        outcome, ldus, algid, kid = result
-        self._results_open.pop(key, None)
+    def _log_call(self, call: CallRecord) -> None:
+        algid, kid = call.learned if call.learned is not None else (None, None)
         self._log.append(
             P25LogEntry(
                 start=call.first_seen,
@@ -1086,11 +962,12 @@ class P25Decoder(Demodulator):
                 group=call.group,
                 frequency_hz=call.frequency_hz,
                 svcopts=call.svcopts,
-                outcome=outcome,
-                ldus=ldus,
+                outcome=call.outcome,
+                ldus=call.ldus,
                 algid=algid,
                 kid=kid,
-                system=self._system(),
+                system=call.system,
+                cid=call.cid,
             )
         )
         self._dirty = True
@@ -1111,24 +988,38 @@ class P25Decoder(Demodulator):
         self._last_snapshot = now
         self._pending.append(DecodedMessage(text="", timestamp=now, data=self._to_snapshot(now)))
 
-    def _channel(self, call: P25Call, f: _Followed | None) -> P25Channel:
-        key = (call.group, call.first_seen)
-        followed = f is not None and key == f.key
-        algid: int | None = None
-        kid: int | None = None
-        if followed and f is not None and f.learned is not None:
-            algid, kid = f.learned
-        elif key in self._results:
-            _, _, algid, kid = self._results[key]
-        return P25Channel(call, followed, self._inside(call.frequency_hz), algid, kid)
+    def _channel_row(self, call: CallRecord) -> P25Channel:
+        algid, kid = call.learned if call.learned is not None else (None, None)
+        return P25Channel(
+            call.view(), call is self._follower.call, self._inside(call.frequency_hz), algid, kid
+        )
+
+    def channel_positions(self) -> tuple[tuple[int, int, float], ...]:
+        if self._dial() is None:
+            return ()
+        return tuple(
+            (c.cid, c.frequency_hz, self._position(c.frequency_hz))
+            for c in self._tracker.open.values()
+            if c.frequency_hz is not None and c.slot is None and self._inside(c.frequency_hz)
+        )
+
+    def _channel_kind(self, now: float) -> str | None:
+        """control, voice or data: the most of the latest data units within _KIND_S; None without any."""
+        counts = collections.Counter(k for t, k in self._kinds if 0.0 <= now - t <= _KIND_S)
+        if not counts:
+            return None
+        if counts["control"]:
+            counts["data"] -= counts["control"]  # each trunking MBT came with a PDU's NID
+        return max(("control", "voice", "data"), key=lambda k: counts[k])
 
     def _tsbk_rate(self) -> float:
         results = self._block_results
         return sum(results) / len(results) * 100 if results else 0.0
 
     def _to_snapshot(self, now: float) -> P25Snapshot:
+        records = list(self._tracker.open.values())
         calls = sorted(
-            (c for c in self._calls.values() if now - c.last_seen <= _RECENT_S),
+            (c.view() for c in self._tracker.recent.values() if now - c.last_seen <= _RECENT_S),
             key=lambda c: c.last_seen,
             reverse=True,
         )[:_RECENT_CALLS]
@@ -1136,20 +1027,21 @@ class P25Decoder(Demodulator):
             P25Site(sysid, rfss, site, r[0] if (r := self._plan.resolve(ch)) else None, flags)
             for (sysid, rfss, site), (ch, flags, _) in sorted(self._adjacent.items())
         )
-        f, inner = self._following, self._follower
+        f, channel = self._follower, self._channel
         active = sorted(
-            (c for c in self._calls.values() if 0.0 <= now - c.last_seen <= _ACTIVE_S),
-            key=lambda c: c.first_seen,
-            reverse=True,
+            (c for c in records if c.active(now)), key=lambda c: (c.first_seen, c.cid), reverse=True
         )
-        channels = tuple(self._channel(c, f) for c in active)
-        followed_voice = inner._voice if f is not None and inner is not None else None
+        channels = tuple(self._channel_row(c) for c in active)
+        inner = channel.decoder if channel is not None else None
+        followed_voice = inner._voice if f.call is not None and inner is not None else None
         following = (
-            P25Following(f.call.group, f.call.frequency_hz or 0, f.since, followed_voice)
-            if f is not None
+            P25Following(
+                f.call.group, f.call.frequency_hz or 0, f.call.taken or now, followed_voice
+            )
+            if f.call is not None
             else None
         )
-        table = self._table()
+        state = self._state()
         return P25Snapshot(
             locked=0.0 <= now - self._last_message_time < 2.0,
             nac=self._nac,
@@ -1166,14 +1058,16 @@ class P25Decoder(Demodulator):
             time=now,
             voice=self._voice or followed_voice,
             voice_frames=self._voice_frames
-            + (inner._voice_frames if f is not None and inner else 0),
+            + (inner._voice_frames if f.call is not None and inner else 0),
             channels=channels,
-            talkgroups=table.snapshot() if table is not None else (),
-            follow_new=table.follow_new if table is not None else True,
+            follow_new=state.follow_new if state is not None else True,
             following=following,
             log=tuple(self._log),
             capture=self._capture(),
             site_span=self._site_span(),
+            channel_kind=self._channel_kind(now),
+            cc_hz=self._cc_hz(),
+            dial_hz=self._dial_hz,
         )
 
     def get_messages(self) -> list[DecodedMessage]:
@@ -1209,9 +1103,9 @@ class P25Decoder(Demodulator):
             coarse = self._demod.coarse_hz
             self._demod = P25SymbolDemod(rate)
             self._demod.set_coarse(coarse)
-            if self._follower is not None:
-                self._stop_following("sample_rate")
-                self._follower.set_sample_rate(rate)
+            if self._channel is not None:
+                self._stop("sample_rate")
+                self._channel.set_sample_rate(rate)
 
     def reset(self) -> None:
         super().reset()

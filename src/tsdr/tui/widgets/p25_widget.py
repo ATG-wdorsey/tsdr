@@ -1,86 +1,84 @@
-"""P25 domain-specific display widget.
+"""P25 domain-specific display widget: rendering only (the logic is `p25_panel.P25PanelState`).
 
-Reads a P25Snapshot payload off DecoderOutputEvent and renders three columns: the system and site,
-a view of the trunked system (the active channels, the talkgroups, or the call log), and signal
-quality. Tab gives the panel the keyboard (`keybindings.Context.P25_PANEL`): a cursor moves over the
-view's rows and the keys follow talkgroups on and off, all or none; a followed talkgroup's row is
-colored, the call followed marked with ▶.
+Reads a P25Snapshot payload off DecoderOutputEvent and renders three columns: the system and site, a view of the
+trunked system (the active channels, the talkgroups, or the call log), and signal quality. Tab, or a click in the
+panel, gives it the keyboard (`keybindings.Context.P25_PANEL`): its title, its top border and the status line then
+say so. In a side column the view's rows fill the height (at least 12); on the bottom bar it shows 12 and its rows fit
+the width left beside the other columns.
 """
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
+from rich.console import Group
 from rich.markup import escape
+from rich.text import Text
+from textual import events
+from textual.css.query import NoMatches
+from textual.message import Message
 from textual.reactive import reactive
 
 from tsdr.core.events.events import DecoderOutputEvent, StatsUpdateEvent
-from tsdr.radio.decoders.p25 import talkgroups, voice
-from tsdr.radio.decoders.p25.decoder import P25Channel, P25LogEntry, P25Snapshot, P25Voice
-from tsdr.tui.widgets.section_panel import Section, SectionPanel
+from tsdr.radio.decoders.p25.decoder import P25Snapshot, P25Voice
+from tsdr.tui.widgets.p25_panel import FOLLOWED, MIN_ROWS, TITLES, VIEWS, P25PanelState
+from tsdr.tui.widgets.section_panel import Section, SectionPanel, _SectionSurface
 
-VIEWS = ("channels", "talkgroups", "log")
-_VIEW_TITLES = {"channels": "CHANNELS", "talkgroups": "TALKGROUPS", "log": "CALL LOG"}
-_ROWS = 10  # rows of a view shown at once, around the cursor
-_PAGE = _ROWS - 1
-_FOLLOWED = "cyan"
 # The decoder's usable share of a capture, on either side of its center, and a channel's half width.
 _USABLE = 0.45
 _HALF_CHANNEL_HZ = 6_250.0
-_OUTCOMES = {
-    "played": "played",
-    "learned": "enc learned",
-    "encrypted": "enc skipped",
-    "not_followed": "not followed",
-    "busy": "busy",
-    "outside": "outside",
-    "no_voice": "no voice",
-    "muted": "enc muted",
-    "unknown": "unknown ch",
-    "tdma": "Phase 2",
-}
+_SYSTEM_WIDTH, _QUALITY_WIDTH = 22, 16
+_SIDE_WIDTH = 42  # the side column's usable width
+FOCUSED_TITLE = "[reverse] P25 · KEYS · Tab/Esc to leave [/reverse]"
+# the bottom bar's columns: Rich's grid puts one column of padding between them
+_GAP = 1
 
 
-def encryption(algid: int | None, kid: int | None) -> str:
-    """An algorithm and key as the panel shows them (ALGID names as TIA's assignments and OP25 list
-    them)."""
-    if algid is None:
-        return "ENC ?"
-    name = voice.ALGID_NAMES.get(algid, f"ALG 0x{algid:02X}")
-    if algid == voice.ALGID_CLEAR or kid is None:
-        return name
-    return f"{name} key {kid:04X}"
+class _Hits(NamedTuple):
+    """Where the last render drew the view's rows, in the render's own coordinates (its surface's): a click selects the
+    row drawn under it, by its key, or none (review 53, R53-2 and R53-3)."""
 
-
-def _ago(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    if seconds < 3600:
-        return f"{seconds / 60:.0f}m"
-    return f"{seconds / 3600:.0f}h"
+    top: int  # the line of the first row drawn
+    x: tuple[int, int] | None  # the view column's x range (None: the whole width)
+    keys: tuple[object, ...]  # the rows drawn, top down (none when their place isn't known exactly)
 
 
 class P25Widget(SectionPanel):
     """Three-column P25 display.
 
-    Col 1: System (NAC, system ID, WACN, RFSS and site, adjacent sites)
+    Col 1: System (what the channel at the dial is, its control channel, NAC, system, site)
     Col 2: The view: active channels, talkgroups or call log (Tab: the keys)
     Col 3: Signal quality (lock, TSBK pass rate, messages, frequency offset, SNR)
     """
 
     panel_focused: reactive[bool] = reactive(False)
 
+    # the handler's name stated (`on_p25_widget_clicked`): Textual would derive `on_p25widget_clicked` (review 53, R53-1);
+    # the lint's mypy has no Textual, so it checks the keyword against `object`
+    class Clicked(Message, namespace="p25_widget"):  # type: ignore[call-arg]
+        """A click in the panel: it takes the keys, and the cursor goes to the row clicked, by its key (None: not on a
+        row)."""
+
+        def __init__(self, key: object | None) -> None:
+            self.key = key
+            super().__init__()
+
     def __init__(self) -> None:
         super().__init__()
-        self._snapshot: P25Snapshot | None = None
+        self.state = P25PanelState()
         self._snr_db: float | None = None
-        self._view = 0
-        # The cursor is on a row's key (a call, a talkgroup, a log entry), not its index: rows come
-        # and go and reorder under it (review 38, F2). `_cursor` is where that key was last found.
-        self._selected: object | None = None
-        self._cursor = 0
-        self._sort_heard = False
+        self._hits: _Hits | None = None
+        # the view's lines above its rows, and the rows drawn
+        self._view_rows: tuple[int, tuple[object, ...]] = (0, ())
 
-    def watch_panel_focused(self, _focused: bool) -> None:
+    def watch_panel_focused(self, focused: bool) -> None:
+        self.state.focused = focused
+        self.set_panel_title(FOCUSED_TITLE if focused else None)
         self.refresh()
+
+    def on_mount(self) -> None:
+        if self.panel_focused:
+            self.set_panel_title(FOCUSED_TITLE)
 
     # event handlers
 
@@ -91,239 +89,89 @@ class P25Widget(SectionPanel):
                 latest = msg.data
         if latest is None:
             return
-        self._snapshot = latest
+        self.state.update(latest)
+        for alert in self.state.new_alerts():
+            self.app.show_status(f"[yellow]{escape(alert)}[/yellow]")  # type: ignore[attr-defined]
         self.refresh()
 
     def update_stats(self, event: StatsUpdateEvent) -> None:
         if not self.display:
             return
         self._snr_db = event.channel_snr
+        self.state.channel_snr = dict(event.channel_snrs)
         self.refresh()
 
-    # keys (the keyboard mixin calls these while the panel has the keys); each returns a status line
-
-    def move(self, rows: int) -> None:
-        keys = [key for key, _, _ in self._rows()]
-        if keys:
-            self._cursor = max(0, min(self._find(keys) + rows, len(keys) - 1))
-            self._selected = keys[self._cursor]
-        self.refresh()
-
-    def page(self, pages: int) -> None:
-        self.move(pages * _PAGE)
-
-    def switch_view(self, step: int) -> str:
-        self._view = (self._view + step) % len(VIEWS)
-        self._selected, self._cursor = None, 0
-        self.refresh()
-        return f"P25: {_VIEW_TITLES[VIEWS[self._view]].lower()}"
-
-    def toggle_sort(self) -> str:
-        self._sort_heard = not self._sort_heard  # the cursor stays on its talkgroup
-        self.refresh()
-        return "P25 talkgroups: by last heard" if self._sort_heard else "P25 talkgroups: by number"
-
-    def toggle_follow(self) -> str:
-        group, system, why = self._target()
-        if group is None or system is None:
-            return why or "P25: no talkgroup here"
-        table = talkgroups.table_for(*system)
-        on = not table.follows(group)
-        table.set_follow(group, on)
-        self.refresh()
-        return f"P25: TG {group}{self._label(system)} {'followed' if on else 'not followed'}"
-
-    def follow_all(self, on: bool) -> str:
-        table = self._table()
-        if table is None:
-            return "P25: no system yet"
-        table.set_all(on)
-        self.refresh()
-        if on:
-            return "P25: following every talkgroup heard, and newly heard ones"
-        return "P25: following none, nor newly heard ones"
-
-    def toggle_follow_new(self) -> str:
-        table = self._table()
-        if table is None:
-            return "P25: no system yet"
-        table.set_follow_new(not table.follow_new)
-        self.refresh()
-        return f"P25: newly heard talkgroups {'followed' if table.follow_new else 'not followed'}"
-
-    def rescan(self) -> str:
-        group, system, why = self._target()
-        if group is None or system is None:
-            return why or "P25: no talkgroup here"
-        talkgroups.table_for(*system).rescan(group)
-        self.refresh()
-        return (
-            f"P25: TG {group}{self._label(system)}'s encryption is learned again at its next "
-            "encrypted call"
-        )
-
-    # rows
-
-    def _table(self) -> talkgroups.TalkgroupTable | None:
-        """The current system's table."""
-        snap = self._snapshot
-        if snap is None or snap.wacn is None or snap.sysid is None:
-            return None
-        return talkgroups.table_for(snap.wacn, snap.sysid)
-
-    def _current(self) -> tuple[int, int] | None:
-        snap = self._snapshot
-        if snap is None or snap.wacn is None or snap.sysid is None:
-            return None
-        return (snap.wacn, snap.sysid)
-
-    def _label(self, system: tuple[int, int]) -> str:
-        """ " (SYS xxx)" for a system other than the current one (a call log row from before a
-        retune)."""
-        return "" if system == self._current() else f" ({self._system_name(system)})"
-
-    def _system_name(self, system: tuple[int, int]) -> str:
-        """ "SYS xxx", with the WACN when the current system has the same system ID (review 42)."""
-        current = self._current()
-        if current is not None and current[1] == system[1]:
-            return f"WACN {system[0]:05X} SYS {system[1]:03X}"
-        return f"SYS {system[1]:03X}"
-
-    def _rows(self) -> list[tuple[object, int, str]]:
-        """The view's rows: (key, talkgroup, markup). Log rows carry their system in the key."""
-        snap = self._snapshot
-        if snap is None:
-            return []
-        table = self._table()
-        view = VIEWS[self._view]
-        if view == "channels":
-            # One row per talkgroup (its latest call): keyed by the talkgroup, so its next
-            # transmission, a new call on top, keeps the cursor on it (review 39, F1).
-            return [
-                (c.call.group, c.call.group, self._channel_row(c, snap, table))
-                for c in snap.channels
-            ]
-        if view == "talkgroups":
-            groups = sorted(
-                snap.talkgroups,
-                key=(lambda t: -t.last_heard) if self._sort_heard else (lambda t: t.group),
-            )
-            return [(t.group, t.group, self._talkgroup_row(t, snap)) for t in groups]
-        return [
-            ((e.system, e.group, e.start), e.group, self._log_row(e, snap))
-            for e in reversed(snap.log)
-        ]
-
-    def _find(self, keys: list[object]) -> int:
-        """The cursor's row: where its key is now; when that row has gone, the row at its last place
-        (the key kept: `_target` won't act on another row unasked)."""
-        if self._selected in keys:
-            self._cursor = keys.index(self._selected)
-        elif keys:
-            self._cursor = min(self._cursor, len(keys) - 1)
-        return self._cursor
-
-    def _target(self) -> tuple[int | None, tuple[int, int] | None, str | None]:
-        """The talkgroup the keys act on and its system (a call log row's own: it may have been heard
-        before a retune, and a talkgroup number means something else on another system), or None
-        and why not. When the row the cursor was on has gone, nothing is done: the cursor takes the
-        row now at its place, for the next press."""
-        rows = self._rows()
-        if not rows:
-            return None, None, None
-        keys = [key for key, _, _ in rows]
-        i = self._find(keys)
-        if self._selected is not None and self._selected not in keys:
-            self._selected = keys[i]
-            self.refresh()
-            return None, None, f"P25: that row has gone; the cursor is on TG {rows[i][1]} now"
-        self._selected = key = keys[i]
-        if VIEWS[self._view] == "log" and isinstance(key, tuple):
-            if key[0] is None:
-                return None, None, "P25: that call's system wasn't known"
-            return rows[i][1], key[0], None
-        current = self._current()
-        return (
-            (rows[i][1], current, None)
-            if current is not None
-            else (None, None, "P25: no system yet")
-        )
-
-    @staticmethod
-    def _learned(snap: P25Snapshot, group: int) -> talkgroups.P25Talkgroup | None:
-        return next((t for t in snap.talkgroups if t.group == group), None)
-
-    def _channel_row(
-        self, c: P25Channel, snap: P25Snapshot, table: talkgroups.TalkgroupTable | None
-    ) -> str:
-        call = c.call
-        where = f"{call.frequency_hz / 1e6:9.4f}" if call.frequency_hz is not None else "  unknown"
-        tg = self._learned(snap, call.group)
-        heard = snap.following.voice if c.followed and snap.following is not None else None
-        if heard is not None and heard.algid is not None:
-            enc = encryption(heard.algid, heard.kid)  # the call's own algorithm, as it plays
-        elif c.algid is not None:
-            enc = encryption(c.algid, c.kid)  # learned from this call
-        elif heard is not None and heard.encrypted:
-            # Muted (its link control's flag), its algorithm not yet heard: its talkgroup's, if learned.
-            known = tg is not None and tg.algid not in (None, voice.ALGID_CLEAR)
-            enc = encryption(tg.algid, tg.kid) if known and tg is not None else "ENC ?"
-        elif call.encrypted:
-            enc = encryption(tg.algid, tg.kid) if tg is not None and tg.learned else "ENC ?"
-        elif tg is not None and tg.algid not in (None, voice.ALGID_CLEAR):
-            # Not flagged, but its talkgroup encrypts (a system that leaves the flag off): unsure.
-            enc = encryption(tg.algid, tg.kid) + "?"
-        else:
-            enc = "?" if call.svcopts is None else "clear"
-        flags = " [bold red]EMERG[/bold red]" if call.emergency else ""
-        if c.inside is False:
-            flags += " [dim]outside[/dim]"
-        mark = "▶" if c.followed else " "
-        line = f"{mark} {where} TG {call.group:<5} {escape(enc):<14} {snap.time - call.first_seen:3.0f}s{flags}"
-        followed = table.follows(call.group) if table is not None else True
-        return f"[{_FOLLOWED}]{line}[/{_FOLLOWED}]" if followed else f"[dim]{line}[/dim]"
-
-    def _talkgroup_row(self, t: talkgroups.P25Talkgroup, snap: P25Snapshot) -> str:
-        enc = encryption(t.algid, t.kid) if t.learned else "-"
-        # "-": set before ever heard
-        heard = _ago(max(0.0, snap.time - t.last_heard)) if t.calls else "-"
-        line = f"TG {t.group:<6} {escape(enc):<16} {heard:>4} {t.calls:>3}x"
-        return f"[{_FOLLOWED}]{line}[/{_FOLLOWED}]" if t.follow else f"[dim]{line}[/dim]"
-
-    def _log_row(self, e: P25LogEntry, snap: P25Snapshot) -> str:
-        where = f"{e.frequency_hz / 1e6:9.4f}" if e.frequency_hz is not None else "  unknown"
-        outcome = _OUTCOMES.get(e.outcome, e.outcome)
-        if e.algid is not None:
-            outcome += f" {encryption(e.algid, e.kid)}"
-        line = (
-            f"{_ago(max(0.0, snap.time - e.end)):>4} TG {e.group:<5} {where} "
-            f"{e.end - e.start:3.0f}s {escape(outcome)}"
-        )
-        current = (snap.wacn, snap.sysid)
-        if e.system is not None and e.system != current:
-            # Heard on another system (before a retune): its own table, and said so.
-            line += f" [italic]{self._system_name(e.system)}[/italic]"
-            followed = talkgroups.table_for(*e.system).follows(e.group)
-        else:
-            tg = self._learned(snap, e.group)
-            followed = tg.follow if tg is not None else snap.follow_new
-        return f"[{_FOLLOWED}]{line}[/{_FOLLOWED}]" if followed else f"[dim]{line}[/dim]"
+    def on_click(self, event: events.Click) -> None:
+        """The row drawn under the click, by its key (None: not on a row). The click's place is taken in the render's
+        coordinates: the screen's less the surface's region, which moves with the scroll."""
+        key: object | None = None
+        try:
+            surface = self.query_one(_SectionSurface).region
+        except NoMatches:
+            surface = None
+        hits = self._hits
+        if surface is not None and hits is not None:
+            x, y = event.screen_x - surface.x, event.screen_y - surface.y
+            i = y - hits.top
+            low, high = hits.x if hits.x is not None else (0, surface.width)
+            if 0 <= i < len(hits.keys) and low <= x < high:
+                key = hits.keys[i]
+        self.post_message(self.Clicked(key))
 
     # render
 
     def build_sections(self) -> list[Section]:
-        snap = self._snapshot
+        snap = self.state.snapshot
         if snap is None:
             return [Section("Waiting...")]
+        side = self.dock_edge != "bottom"
+        system = self._render_system(snap, side)
+        quality = self._render_quality(snap)
+        self._system_lines = len(system)
+        if not side:
+            # the three columns fit the surface (a scrollbar excluded), so Rich keeps their widths and the view's x
+            # range is known; on a bar too narrow for them it isn't, and a click there selects no row
+            room = self._surface_width() - _SYSTEM_WIDTH - _QUALITY_WIDTH - 2 * _GAP
+            width, exact = max(30, room), room >= 30
+            rows = MIN_ROWS
+        else:
+            width = max(30, min(self.size.width, 200) - 2 if self.size.width else _SIDE_WIDTH)
+            # the other columns stacked above and below, the gaps, the header, the detail and position lines
+            used = self._system_lines + quality.count("\n") + 1 + 2 + 5
+            rows = max(MIN_ROWS, self.size.height - used)
+        view = self._render_view(snap, width, rows)
+        above, keys = self._view_rows
+        if side:  # the system lines and a blank line above the view (`_render_vertical`)
+            self._hits = _Hits(len(system) + 1 + above, None, keys)
+        else:
+            start = _SYSTEM_WIDTH + _GAP
+            self._hits = _Hits(above, (start, start + width), keys if exact else ())
+        # R52-1: in a side column the system lines stand above the view's rows, so none may wrap (the rows' place is
+        # counted in lines); on the bottom bar it is a column of its own beside them and may wrap
+        system_body = _lines(system) if side else "\n".join(system)
         return [
-            Section(self._render_system(snap), width=20, min_width=16),
-            Section(self._render_view(snap), width=48, min_width=36),
-            Section(self._render_quality(snap), width=18, min_width=14),
+            Section(system_body, width=_SYSTEM_WIDTH, min_width=_SYSTEM_WIDTH),
+            Section(view, width=width, min_width=30),
+            Section(quality, width=_QUALITY_WIDTH, min_width=14),
         ]
 
-    @staticmethod
-    def _render_system(snap: P25Snapshot) -> str:
+    def _render_system(self, snap: P25Snapshot, side: bool) -> list[str]:
         lines: list[str] = []
+        kind = snap.channel_kind
+        if kind == "control":
+            dial, cc = snap.dial_hz, snap.cc_hz
+            if cc is not None and dial is not None and abs(dial - cc) > 1_000:
+                lines.append(f"[bold]Control channel[/bold] (the site's: {cc / 1e6:.4f})")
+            elif cc is not None or dial is not None:
+                lines.append(f"[bold]Control channel[/bold]  CC {(cc or dial or 0) / 1e6:.4f}")
+            else:
+                lines.append("[bold]Control channel[/bold]")
+        elif kind == "voice":
+            lines.append("[bold]Voice channel[/bold]")
+        elif kind == "data":
+            lines.append("[bold]Data channel[/bold]")
+        else:
+            lines.append("[dim]No P25 signal[/dim]")
         lines.append(
             f"NAC [bold]{snap.nac:03X}[/bold]" if snap.nac is not None else "[dim]no NAC[/dim]"
         )
@@ -344,45 +192,79 @@ class P25Widget(SectionPanel):
             if span is not None and (
                 span[0] - _HALF_CHANNEL_HZ < low or span[1] + _HALF_CHANNEL_HZ > high
             ):
-                # The center and rate whose usable band holds every channel heard.
                 center = (span[0] + span[1]) / 2
                 rate = (span[1] - span[0] + 2 * _HALF_CHANNEL_HZ) / (2 * _USABLE)
+                lines.append(f"[yellow]site {span[0] / 1e6:.4f}-{span[1] / 1e6:.4f}[/yellow]")
                 lines.append(
-                    f"[yellow]site {span[0] / 1e6:.4f}-{span[1] / 1e6:.4f}: center "
-                    f"{center / 1e6:.4f}, {rate / 1e6:.1f} MS/s or more[/yellow]"
+                    f"[yellow]p25 fit: {center / 1e6:.4f}, {rate / 1e6:.1f} MS/s[/yellow]"
+                    if side
+                    else f"[yellow]center {center / 1e6:.4f}, {rate / 1e6:.1f} MS/s or more "
+                    "(p25 fit)[/yellow]"
                 )
-        return "\n".join(lines)
+        return lines
 
-    def _render_view(self, snap: P25Snapshot) -> str:
-        view = VIEWS[self._view]
-        tabs = "  ".join(
-            f"[bold]{_VIEW_TITLES[v]}[/bold]"
-            if v == view
-            else f"[dim]{_VIEW_TITLES[v].lower()}[/dim]"
-            for v in VIEWS
-        )
-        hint = "[reverse] Tab: back [/reverse]" if self.panel_focused else "[dim]Tab: keys[/dim]"
-        new = "new: follow" if snap.follow_new else "new: skip"
-        lines = [f"{tabs}  [dim]{new}[/dim]  {hint}"]
+    def _render_view(self, snap: P25Snapshot, width: int, shown: int) -> Group:
+        """The view: every line down to the last row one line on screen (R52-1: a click's row is counted in lines),
+        then the cursor row's detail, which may wrap."""
+        state = self.state
+        state.width, state.shown = width, shown
+        view = VIEWS[state.view]
+        wide = width >= 60
+        follow_new = state.follow_new()
+        extra = [] if follow_new is None else [f"new: {'follow' if follow_new else 'skip'}"]
+        if view == "talkgroups":
+            extra.append("all" if state.whole_system or snap.nac is None else f"NAC {snap.nac:03X}")
+            known, _ = state.nac_system()
+            if known is not None and state.system is None:
+                # no broadcasts here: the rows are the system its NAC names (3.1b), said so
+                extra.append(state.system_label(known))
+        hint = "" if self.panel_focused else "  [dim]Tab: keys[/dim]"
+        if wide:
+            tabs = " ".join(
+                f"[bold]{TITLES[v]}[/bold]" if v == view else f"[dim]{TITLES[v].lower()}[/dim]"
+                for v in VIEWS
+            )
+            lines = [f"{tabs}  [dim]{' · '.join(extra)}[/dim]{hint}"]
+        else:  # a side column: the view's title alone (←→ for the others), its settings below
+            lines = [
+                f"[dim]◂[/dim] [bold]{TITLES[view]}[/bold] [dim]▸[/dim]{hint}",
+                f"[dim]{' · '.join(extra)}[/dim]",
+            ]
+        alert = state.outside_alert(wide)
+        if alert is not None:
+            lines.append(f"[yellow]{escape(alert[0])}[/yellow]")
+            if alert[1]:
+                lines.append(f"[yellow]{escape(alert[1])}[/yellow]")
         if snap.voice is not None:
             lines.append(_voice_line(snap.voice, snap.nac))
-        rows = self._rows()
+        if state.pending is not None:
+            lines.append("[reverse] y to confirm [/reverse]")
+        if snap.channel_kind in ("voice", "data"):
+            lines.append("[dim]Following needs the control channel[/dim]")
+        rows = state.rows()
+        tail: list[str] = []
         if not rows:
-            lines.append("[dim]none yet[/dim]")
-            return "\n".join(lines)
-        keys = [key for key, _, _ in rows]
-        cursor = self._find(keys)
-        if self._selected is None:
-            self._selected = keys[cursor]  # what is shown under the cursor is what the keys act on
-        first = max(0, min(cursor - _ROWS // 2, len(rows) - _ROWS))
-        for i in range(first, min(first + _ROWS, len(rows))):
-            text = rows[i][2]
+            _, why = state.nac_system() if view == "talkgroups" else (None, None)
+            self._view_rows = (len(lines), ())
+            # the view's last line: it may wrap (R53-6)
+            return _lines(lines, [f"[dim]{escape(why) if why else 'none yet'}[/dim]"])
+        cursor = state.cursor(rows)
+        assert cursor is not None
+        first = max(0, min(cursor - shown // 2, len(rows) - shown))
+        drawn = rows[first : first + shown]
+        self._view_rows = (len(lines), tuple(r.key for r in drawn))
+        for i in range(first, first + len(drawn)):
+            row = rows[i]
+            text = row.build(width)
+            text = f"[{FOLLOWED}]{text}[/{FOLLOWED}]" if row.followed else f"[dim]{text}[/dim]"
             if self.panel_focused and i == cursor:
                 text = f"[reverse]{text}[/reverse]"
             lines.append(text)
-        if len(rows) > _ROWS:
-            lines.append(f"[dim]{cursor + 1}/{len(rows)}[/dim]")
-        return "\n".join(lines)
+        if self.panel_focused:
+            tail.append(f"[italic]{rows[cursor].detail()}[/italic]")
+        if len(rows) > shown:
+            tail.append(f"[dim]{cursor + 1}/{len(rows)}[/dim]")
+        return _lines(lines, tail)
 
     def _render_quality(self, snap: P25Snapshot) -> str:
         lines = ["[green]●[/green] LOCKED" if snap.locked else "[red]○[/red] SEARCHING"]
@@ -400,13 +282,32 @@ class P25Widget(SectionPanel):
         lines.append(f"[dim]{snap.tsbks + snap.mbts} messages[/dim]")
         return "\n".join(lines)
 
+    def _surface_width(self) -> int:
+        """The width the render is drawn in: the inner surface's (the panel's less a scrollbar)."""
+        try:
+            width = self.query_one(_SectionSurface).size.width
+        except NoMatches:
+            width = 0
+        return int(width or self.size.width)
+
+    _system_lines = 0
+
 
 # render helpers
 
 
+def _lines(lines: list[str], wrapping: list[str] = ()) -> Group:  # type: ignore[assignment]
+    """`lines` one screen line each (cropped with an ellipsis, never wrapped), then `wrapping` as they come."""
+    texts = []
+    for line in lines:
+        text = Text.from_markup(line, overflow="ellipsis")
+        text.no_wrap = True
+        texts.append(text)
+    return Group(*texts, *(Text.from_markup(line) for line in wrapping))
+
+
 def _voice_line(call: P25Voice, channel_nac: int | None) -> str:
-    """The call heard (at the dial, or followed): muted if encrypted; its NAC when not the
-    channel's."""
+    """The call heard (at the dial, or followed): muted if encrypted; its NAC when not the channel's."""
     who = f"TG {call.group}" if call.group is not None else "voice"
     if call.target is not None:
         who = f"unit {call.target}"

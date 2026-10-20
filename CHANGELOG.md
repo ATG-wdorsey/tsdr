@@ -23,8 +23,19 @@ Work on the trunk since 0.4.0, for the next release.
     channels (encrypted ones included), the talkgroups and a call log; Tab gives it the keys to choose the talkgroups
     followed (one, all, none, newly heard), also with the `p25` command. A followed talkgroup's encryption is named
     (AES, DES, ADP...) from its first encrypted call, which plays muted; its later encrypted calls are skipped and its
-    clear calls still play. The panel says what capture center and rate would cover the site's channels.
+    clear calls still play; every key learned is kept, and `e` looks again. A call flagged encrypted whose own
+    algorithm shows clear plays. The panel says what capture center and rate would cover the site's channels, and
+    `p25 fit` sets them; starting P25 selects free tuning.
+  - the panel: its views filling a side column's height; what the dial is on (control, voice or data channel);
+    each active channel's SNR; the call log's start times and outcome tags; the talkgroups heard on this NAC or the
+    whole system's (`t`); rows that fit the panel's width, with the cursor row in full below them; a click gives it the
+    keys, and while it has them its title, border and the status line say so.
   - Phase 2 comes later.
+
+### Changed
+
+- The decoder panel's default place is the left column, where a decoder's rows fill the height; a saved layout keeps
+  its own place (`panel move demod ...`).
 
 ## [0.4.0] - 2026-10-19
 

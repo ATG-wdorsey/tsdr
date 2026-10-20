@@ -51,9 +51,10 @@ class UILayout:
 
 
 DEFAULT_LAYOUT = UILayout(
-    left=EdgePanels(panels=("decoder-output", "memories")),
+    # The decoder panel in the left column, where its views' rows fill the height (the owner, 2026-10-19).
+    left=EdgePanels(panels=("demod", "decoder-output", "memories")),
     right=EdgePanels(panels=("stats", "performance", "keys")),
-    bottom=EdgePanels(panels=("demod", "directory")),
+    bottom=EdgePanels(panels=("directory",)),
     hotkeys=(
         (1, "decoder-output"),
         (2, "demod"),
@@ -87,6 +88,8 @@ class UIModel:
 
     # The decoder panel that has the keyboard (Tab; "p25"), or None: the global keys.
     panel_focus: str | None = None
+    # The console has the keys (it takes them from a panel that has them, and gives them back).
+    console_active: bool = False
 
     @classmethod
     def initial(cls, prefs: dict[str, Any]) -> UIModel:

@@ -52,7 +52,7 @@ CHORD_TIMEOUT_S = 5.0
 FREQUENCY_PROMPT = "Frequency: "
 
 P25_PANEL_HINT = (
-    "P25 panel: ↑↓ rows  ←→ views  space follow  a/n all/none  N new  e rescan  Tab back"
+    "P25 panel: ↑↓ rows  ←→ views  space follow  a/n all/none  N new  e rescan  t NAC/all  Tab back"
 )
 
 
@@ -71,8 +71,9 @@ class KeyboardMixin(MixinBase):
     _pending_delete_timer: Timer | None = None
     _pending_demod_timer: Timer | None = None
     _chord: tuple[str, dict[str, str]] = ("Demod", DEMOD_CHORD_MODES)
-    _pending_p25_all: bool | None = None  # `a` / `n` in the P25 panel, waiting for y
-    _pending_p25_timer: Timer | None = None
+    _pending_p25_timer: Timer | None = (
+        None  # `a` / `n` in the P25 panel waiting for y (its state holds it)
+    )
     active_inline_editor: InlineEditor | None = None
 
     def on_key(self, event: events.Key) -> None:
@@ -97,17 +98,19 @@ class KeyboardMixin(MixinBase):
                 get_ui_store().update(panel_focus=None)
             context = Context.GLOBAL
 
-        if context is Context.P25_PANEL and self._pending_p25_all is not None:
-            on = self._pending_p25_all
-            self._clear_p25_pending()
+        if context is Context.P25_PANEL:
             widget = self._p25_widget()
-            if event.key == "y" and widget is not None:
-                self.show_status(widget.follow_all(on))
-            else:
-                self.show_status("P25: cancelled")
-            event.prevent_default()
-            event.stop()
-            return
+            if widget is not None and widget.state.pending is not None:
+                # Every key answers the confirmation: y acts on the system captured at `a`/`n` (D3), any other
+                # cancels it and does nothing else (R44-8).
+                self._stop_p25_timer()
+                message = widget.state.key("y" if event.key == "y" else "cancel")
+                widget.refresh()
+                if message is not None:
+                    self.show_status(message)
+                event.prevent_default()
+                event.stop()
+                return
 
         # Pending confirmations consume every key, so they must precede the table lookup.
         if context is Context.GLOBAL:
@@ -362,21 +365,24 @@ class KeyboardMixin(MixinBase):
                 | Action.P25_FOLLOW_NEW
                 | Action.P25_RESCAN
                 | Action.P25_SORT
+                | Action.P25_SCOPE
             ):
                 self._p25_key(action)
             case _:
                 assert_never(action)
         return True
 
-    def _clear_p25_pending(self) -> None:
-        self._pending_p25_all = None
+    def _stop_p25_timer(self) -> None:
         if self._pending_p25_timer is not None:
             self._pending_p25_timer.stop()
             self._pending_p25_timer = None
 
     def _cancel_p25_pending(self) -> None:
-        if self._pending_p25_all is not None:
-            self._clear_p25_pending()
+        """The confirmation's time ran out."""
+        self._pending_p25_timer = None
+        widget = self._p25_widget()
+        if widget is not None and widget.state.cancel_pending():
+            widget.refresh()
             self.show_status("P25: cancelled")
 
     def _p25_widget(self) -> P25Widget | None:
@@ -384,51 +390,71 @@ class KeyboardMixin(MixinBase):
         return widget if isinstance(widget, P25Widget) else None
 
     def _focus_decoder_panel(self) -> None:
-        if self._p25_widget() is None:
+        widget = self._p25_widget()
+        if widget is None:
             self.show_status(
                 "Tab: no decoder panel with keys here (the P25 decoder's panel has them)"
             )
             return
+        widget.state.anchor()  # D4: the cursor on the row shown
         get_ui_store().update(panel_focus="p25")
         self.show_status(P25_PANEL_HINT)
+
+    def on_click(self, event: events.Click) -> None:
+        """Any click cancels the P25 panel's pending confirmation (a click is a key other than y), and otherwise acts
+        as always (Table E). It doesn't take the panel's keys back: Tab and Esc do."""
+        widget = self._p25_widget()
+        if widget is not None and widget.state.pending is not None:
+            self._stop_p25_timer()
+            widget.state.key("cancel")
+            widget.refresh()
+            self.show_status("P25: cancelled")
+
+    def on_p25_widget_clicked(self, message: P25Widget.Clicked) -> None:
+        """A click in the P25 panel gives it the keys, the cursor to the row clicked; not while the console or a
+        status-line prompt has them (Table E)."""
+        widget = self._p25_widget()
+        if widget is None:
+            return
+        if (
+            self.query_one("#command-input", TerminalInput).active
+            or get_ui_store().model.status_prompt
+        ):
+            return
+        widget.state.click(message.key)
+        widget.refresh()
+        if get_ui_store().model.panel_focus != "p25":
+            get_ui_store().update(panel_focus="p25")
+            self.show_status(P25_PANEL_HINT)
+
+    _P25_KEYS = {
+        Action.P25_UP: "up",
+        Action.P25_DOWN: "down",
+        Action.P25_PAGE_UP: "pageup",
+        Action.P25_PAGE_DOWN: "pagedown",
+        Action.P25_HOME: "home",
+        Action.P25_END: "end",
+        Action.P25_VIEW_PREV: "left",
+        Action.P25_VIEW_NEXT: "right",
+        Action.P25_FOLLOW: "space",
+        Action.P25_FOLLOW_ALL: "a",
+        Action.P25_FOLLOW_NONE: "n",
+        Action.P25_FOLLOW_NEW: "N",
+        Action.P25_RESCAN: "e",
+        Action.P25_SORT: "s",
+        Action.P25_SCOPE: "t",
+    }
 
     def _p25_key(self, action: Action) -> None:
         widget = self._p25_widget()
         if widget is None:
             get_ui_store().update(panel_focus=None)
             return
-        message: str | None = None
-        match action:
-            case Action.P25_UP:
-                widget.move(-1)
-            case Action.P25_DOWN:
-                widget.move(1)
-            case Action.P25_PAGE_UP:
-                widget.page(-1)
-            case Action.P25_PAGE_DOWN:
-                widget.page(1)
-            case Action.P25_HOME:
-                widget.move(-(1 << 30))
-            case Action.P25_END:
-                widget.move(1 << 30)
-            case Action.P25_VIEW_PREV:
-                message = widget.switch_view(-1)
-            case Action.P25_VIEW_NEXT:
-                message = widget.switch_view(1)
-            case Action.P25_FOLLOW:
-                message = widget.toggle_follow()
-            case Action.P25_FOLLOW_ALL | Action.P25_FOLLOW_NONE:
-                self._clear_p25_pending()
-                self._pending_p25_all = action is Action.P25_FOLLOW_ALL
-                self._pending_p25_timer = self.set_timer(CHORD_TIMEOUT_S, self._cancel_p25_pending)
-                which = "every talkgroup heard" if self._pending_p25_all else "none"
-                message = f"P25: follow {which}? Press y to confirm"
-            case Action.P25_FOLLOW_NEW:
-                message = widget.toggle_follow_new()
-            case Action.P25_RESCAN:
-                message = widget.rescan()
-            case Action.P25_SORT:
-                message = widget.toggle_sort()
+        message = widget.state.key(self._P25_KEYS[action])
+        if widget.state.pending is not None:
+            self._stop_p25_timer()
+            self._pending_p25_timer = self.set_timer(CHORD_TIMEOUT_S, self._cancel_p25_pending)
+        widget.refresh()
         if message is not None:
             self.show_status(message)
 

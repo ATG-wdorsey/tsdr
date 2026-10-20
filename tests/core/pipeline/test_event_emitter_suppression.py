@@ -32,6 +32,7 @@ class _FakeDeviceContext:
     dropped_samples: int = 0
     active_mode: str = "OFF"
     stereo: bool = False
+    channel_positions: tuple = ()
 
 
 def _caps(provides_spectrum: bool) -> DeviceCapabilities:

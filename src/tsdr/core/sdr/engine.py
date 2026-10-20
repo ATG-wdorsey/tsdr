@@ -66,6 +66,30 @@ def get_engine() -> SDREngine:
     return _active_engine
 
 
+def _free_tuning_demod(pipelines: Mapping[str, PipelineConfig]) -> bool:
+    for pipeline in pipelines.values():
+        spec = pipeline.audio_spec
+        cls = DEMODULATOR_CLASSES.get(spec.mode.upper()) if spec is not None else None
+        if cls is not None and cls.FREE_TUNING:
+            return True
+    return False
+
+
+def needs_free_tuning(
+    caps: DeviceCapabilities,
+    tuning_mode: str,
+    pipelines: Mapping[str, PipelineConfig],
+    before: Mapping[str, PipelineConfig] | None = None,
+) -> bool:
+    """D7 (DESIGN-M4b 10.1 item 7): a demodulator that decodes channels across the capture (P25 following calls)
+    keeps the capture on them, in free tuning, when it comes into service: chosen, restored with a saved
+    configuration, or started (review 52, R52-3). `before`, for a change of pipelines: only a change that brings it in
+    selects it, so a later squelch change or recording keeps a tuning mode chosen since (review 53, R53-4)."""
+    if tuning_mode != "center" or not caps.frequency_controllable or caps.provides_spectrum:
+        return False
+    return _free_tuning_demod(pipelines) and not (before is not None and _free_tuning_demod(before))
+
+
 class SDREngine:
     """Central coordinator for SDR devices and processing pipelines.
 
@@ -133,6 +157,11 @@ class SDREngine:
             raise ConfigurationError(f"Failed to create device {device_id}: {e}") from e
 
         device_config = device_config if device_config is not None else DeviceConfig()
+        if needs_free_tuning(
+            device.capabilities, device_config.tuning_mode, device_config.pipelines
+        ):
+            logger.info("tuning_free device=%s reason=restored", device_id)
+            device_config = replace(device_config, tuning_mode="free")
 
         sample_queue: Queue = Queue(maxsize=device_config.queue_size)
         control_queue: Queue = Queue(maxsize=device_config.queue_size // 2)
@@ -264,6 +293,12 @@ class SDREngine:
                 f"Device {device_id} is still finishing its last batch (the stop timed out); "
                 "try again in a moment"
             )
+
+        if needs_free_tuning(
+            context.device.capabilities, context.config.tuning_mode, context.config.pipelines
+        ):
+            logger.info("tuning_free device=%s reason=start", device_id)
+            self.update_device_config(device_id, tuning_mode="free")
 
         # Start device workers (pipeline worker materializes pipelines in setup)
         context.start(worker_runner=self.worker_runner)
@@ -397,6 +432,15 @@ class SDREngine:
         old_pipelines = context.config.pipelines
 
         caps = context.device.capabilities
+        if (
+            "pipelines" in changes
+            and "tuning_mode" not in changes
+            and needs_free_tuning(
+                caps, context.config.tuning_mode, changes["pipelines"], before=old_pipelines
+            )
+        ):
+            logger.info("tuning_free device=%s reason=pipelines", device_id)
+            changes["tuning_mode"] = "free"
 
         for key in ("tuned_frequency", "center_frequency"):
             if key in changes:
