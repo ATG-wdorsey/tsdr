@@ -3,6 +3,8 @@ KiwiSDR was dropped on restart because `_build_params` had no case for it (and
 `PersistedDevice` had no password/user fields), so added Kiwis vanished.
 """
 
+import pytest
+
 from tsdr.core.demod_spec import DemodSpec
 from tsdr.core.devices import PersistedDevice
 from tsdr.core.preferences import (
@@ -130,3 +132,28 @@ def test_the_squelch_kept_while_demodulation_is_off_survives_a_restart() -> None
     restarted.set_audio_demod("m", DemodSpec(mode="NFM"))
     audio = restarted.devices["m"].config.pipelines["audio"]
     assert (audio.squelch_enabled, audio.squelch_threshold_db) == (True, -78.0)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected"), [("P25", "WFM", 200_000), ("NFM", "NFM", 12_500.0)]
+)
+def test_the_mode_kept_while_demodulation_is_off_survives_a_restart(
+    old: str, new: str, expected: float
+) -> None:
+    """Q155 (review 59, R59-1): NFM, P25, `D o`, quit, restart, `d w` started WFM at 12.5 kHz:
+    only the squelch was saved with demodulation off, so the first mode after the restart was
+    taken for a restore and kept the width."""
+    engine = SDREngine()
+    engine.add_device("m", "mock", MockParams(), DeviceConfig())
+    engine.set_audio_demod("m", DemodSpec(mode="NFM"))
+    engine.update_device_config("m", channel_bandwidth=12_500.0)
+    engine.set_audio_demod("m", DemodSpec(mode=old))
+    engine.remove_pipeline("m", "audio")
+    saved = _build_persisted_device(engine.devices["m"])
+    assert saved.audio_spec is None
+
+    restarted = SDREngine()
+    restarted.add_device("m", "mock", MockParams(), _build_device_config(saved))
+    _restore_audio_pipeline(restarted, saved)
+    restarted.set_audio_demod("m", DemodSpec(mode=new))
+    assert restarted.devices["m"].config.channel_bandwidth == expected

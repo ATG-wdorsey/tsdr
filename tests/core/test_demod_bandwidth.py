@@ -49,6 +49,24 @@ def test_the_same_demodulator_keeps_the_users_bandwidth(
     assert _bandwidth(engine) == 2_400.0
 
 
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [("NFM", "WFM", 200_000), ("P25", "WFM", 200_000), ("NFM", "NFM", 15_000.0)],
+)
+def test_a_mode_picked_after_demodulation_off_is_a_change_from_the_last(
+    engine: SDREngine, old: str, new: str, expected: float
+) -> None:
+    """`d o` then `d w` after NFM (or P25 on NFM's bandwidth) left WFM at 12.5 kHz:
+    with no demodulator, the engine took it for a restore at startup."""
+    engine.set_audio_demod("radio", DemodSpec(mode="NFM"))
+    engine.update_device_config("radio", channel_bandwidth=15_000.0)
+    engine.set_audio_demod("radio", DemodSpec(mode=old))
+    engine.stop_audio_output("radio")
+    engine.remove_pipeline("radio", "audio")
+    engine.set_audio_demod("radio", DemodSpec(mode=new))
+    assert _bandwidth(engine) == expected
+
+
 def test_a_restored_demodulator_keeps_the_configured_bandwidth(engine: SDREngine) -> None:
     engine.update_device_config("radio", channel_bandwidth=20_000.0)
     engine.set_audio_demod("radio", DemodSpec(mode="NFM"))

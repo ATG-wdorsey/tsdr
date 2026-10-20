@@ -38,6 +38,11 @@ Work on the trunk since 0.4.0, for the next release.
 - The decoder panel's default place is the left column, where a decoder's rows fill the height; a saved layout keeps
   its own place (`panel move demod ...`).
 
+### Fixed
+
+- A mode chosen after demodulation was turned off (`d o`, `D o`, `demod off`), also after a restart, starts at its own
+  bandwidth, as a change from the last mode does: WFM chosen after NFM or P25 came on at 12.5 kHz.
+
 ## [0.4.0] - 2026-10-19
 
 A C/N meter, FLAC recordings that keep up at the radio's full rate, DMR from co-channel repeaters and radios in direct

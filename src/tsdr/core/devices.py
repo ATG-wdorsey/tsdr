@@ -53,6 +53,8 @@ class PersistedDevice(BaseModel):
     spectrum_span: float | None = None
 
     audio_spec: DemodSpec | None = None
+    # saved with demodulation off: the mode it had, which the next one changes from (Q155)
+    kept_mode: str | None = None
     squelch_enabled: bool | None = None
     squelch_threshold_db: float | None = None
     squelch_hang_ms: float | None = None

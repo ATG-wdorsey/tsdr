@@ -412,8 +412,12 @@ class TuningMixin(MixinBase):
 
         reg = store.get_register(key, new_idx)
         if reg is None:
-            seed_mode = device.active_mode if device.active_mode != "RAW" else "AM"
-            seed_bw = int(current_channel_bandwidth(device)) or default_bandwidth(seed_mode)
+            if device.active_mode == "RAW":
+                # demodulation off: AM starts at its own width, not the last mode's (Q155, R60-1)
+                seed_mode, seed_bw = "AM", default_bandwidth("AM")
+            else:
+                seed_mode = device.active_mode
+                seed_bw = int(current_channel_bandwidth(device)) or default_bandwidth(seed_mode)
             seed_spec = current_spec_or_default(device, override_mode=seed_mode)
             reg = BandRegister(
                 slot=new_idx,

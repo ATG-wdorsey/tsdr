@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from tsdr.core import storage
 from tsdr.core.bandplans import get_bandplan_store
-from tsdr.core.demod_spec import PreviousTuneState
+from tsdr.core.demod_spec import DemodSpec, PreviousTuneState
 from tsdr.core.devices import PersistedDevice, get_device_store
 from tsdr.core.sdr.config import FLAC_LEVELS, WFM_DE_EMPHASIS_US, DeviceConfig, PipelineConfig
 from tsdr.core.sdr.engine import get_engine
@@ -118,6 +118,8 @@ def _build_persisted_device(context: SDRDeviceContext) -> PersistedDevice:
     if audio_config and audio_config.audio_spec is not None:
         fields["audio_spec"] = audio_config.audio_spec
         squelch = audio_config
+    elif squelch is not None and squelch.audio_spec is not None:
+        fields["kept_mode"] = squelch.audio_spec.mode
     if squelch is not None:
         if squelch.squelch_enabled:
             fields["squelch_enabled"] = True
@@ -223,9 +225,12 @@ def _build_device_config(device: PersistedDevice) -> DeviceConfig | None:
 def _restore_audio_pipeline(engine: SDREngine, device: PersistedDevice) -> None:
     spec = device.audio_spec
     if spec is None or spec.mode not in DEMODULATORS:
-        # Saved with demodulation off: the squelch waits for the next demodulator.
+        # Saved with demodulation off: the squelch waits for the next demodulator, which
+        # changes from the mode kept with it.
+        kept = device.kept_mode
         engine.get_device(device.id).kept_squelch = PipelineConfig(
             stages=(),
+            audio_spec=DemodSpec(mode=kept) if kept in DEMODULATORS else None,
             squelch_enabled=bool(device.squelch_enabled),
             squelch_threshold_db=(
                 -50.0 if device.squelch_threshold_db is None else device.squelch_threshold_db

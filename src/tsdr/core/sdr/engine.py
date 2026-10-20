@@ -906,12 +906,18 @@ class SDREngine:
             )
         context = self.devices[device_id]
         old_pipeline = context.config.pipelines.get("audio")
-        old_mode = (
-            old_pipeline.audio_spec.mode
-            if old_pipeline is not None and old_pipeline.audio_spec is not None
-            else None
+        # With demodulation off, the mode it had is kept with the squelch (across a
+        # restart too: the preferences' `kept_mode`): a mode picked then (`d o`, then
+        # `d w`) is a change from it too.
+        was = old_pipeline if old_pipeline is not None else context.kept_squelch
+        old_mode = was.audio_spec.mode if was is not None and was.audio_spec is not None else None
+        logger.info(
+            "demod_change device=%s old=%s off=%s new=%s",
+            device_id,
+            old_mode,
+            old_pipeline is None,
+            spec.mode,
         )
-        logger.info("demod_change device=%s old=%s new=%s", device_id, old_mode, spec.mode)
 
         new_stages_tuple = (
             StageType.FREQUENCY_SHIFT,
@@ -925,9 +931,9 @@ class SDREngine:
         new_has_audio = new_cls is not None and new_cls.HAS_AUDIO
         # Another demodulator starts at its own bandwidth: NFM's 12.5 kHz kept
         # into WFM, or CW's 200 Hz into NFM, leaves it nearly silent. LSB <-> USB
-        # (one class) keep the user's, and with no demodulator before (a restore)
-        # the configured bandwidth stays unless it is too wide. A fixed-width
-        # decoder (ADS-B, DAB, RTTY) ignores the setting: it is left alone.
+        # (one class) keep the user's, and with no demodulator before (a restore
+        # at startup) the configured bandwidth stays unless it is too wide. A
+        # fixed-width decoder (ADS-B, DAB, RTTY) ignores the setting: it is left alone.
         if new_cls is None or new_cls.FIXED_CHANNEL_BANDWIDTH is not None:
             new_bw = None
         elif old_cls is not None and old_cls is not new_cls:
@@ -938,7 +944,7 @@ class SDREngine:
         # The squelch belongs to the receiver, not the mode: keep it, also across
         # turning demodulation off and on again (`d o`, `D o`).
         new_pc = PipelineConfig(stages=new_stages_tuple, audio_spec=spec)
-        squelch_from = old_pipeline if old_pipeline is not None else context.kept_squelch
+        squelch_from = was
         if squelch_from is not None:
             new_pc = replace(
                 new_pc,
