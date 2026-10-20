@@ -7,15 +7,17 @@ git tag (`v0.2.0`, ...); `main` on GitHub always holds the latest release. Versi
 The changes in 0.2.0 were also offered upstream as pull requests; their full descriptions (why, cause, change,
 testing) are in [PRs.md](PRs.md).
 
-## [Unreleased]
+## [0.4.0] - 2026-10-19
 
-Work on the trunk since 0.3.0, for the next release.
+A C/N meter, FLAC recordings that keep up at the radio's full rate, DMR from co-channel repeaters and radios in direct
+mode, SSTV pictures joined under way, and no stall at a mode's first use: the work of 2026-10-15 and 2026-10-16 since
+0.3.0, in daily use since.
 
 ### Added
 
 - `demod sstv off` stops the SSTV decoder and keeps the mode it rides on; `demod <mode>` says when SSTV stays on.
 - A wheel built past a release says which commit it is, in the Stats panel's title and `tsdr --version`
-  (`0.3.0+N.gHASH`: N commits past v0.3.0; `.dirty` with uncommitted changes).
+  (`0.4.0+N.gHASH`: N commits past v0.4.0; `.dirty` with uncommitted changes).
 - `config --flac-level 0-8` sets the recordings' FLAC compression (1 by default; remembered). Higher levels save a
   little space for much more CPU (level 5: 9 % smaller, twice the CPU).
 
@@ -25,24 +27,28 @@ Work on the trunk since 0.3.0, for the next release.
   floor (the 10th percentile of the band's power averaged over 1 s, so neighbors and a station's skirts don't count as
   noise), with peak-detector ballistics (a higher reading at once, a lower one with a 0.5 s time constant). On a 106.7
   MHz FM station at gain 35, 25, 15 and 5 it reads 54.7, 41.2, 34.5 and 27.8 dB within about 1 dB (before: 47.6, 43.6,
-  39.4 and 39.2, jumping over 18 dB); a 30 dB C/N signal beside a station 20 dB stronger reads 29.8 dB (before: 17.5).
+  39.4 and 39.2, jumping about 18 dB); a 30 dB C/N signal beside a station 20 dB stronger reads 29.8 dB (before:
+  17.5).
 - **No stall the first time a mode is used after an install**: tsdr compiles its numba kernels in a background process
-  at the lowest priority (the first DMR use took 4.07 s, now 0.06 s; SEARCH's first frames 0.32 s, now 0.01 s; the first
-  spectrum 0.40 s, now none).
-- Recalling a memory, a band register or A/B applies all its stored settings, whatever the current mode (a recall in DMR
-  kept the current timeslot and deviation).
+  at the lowest priority, about half a minute of one core once per install (the first DMR use took 4.07 s, now 0.06 s;
+  SEARCH's first frames 0.32 s, now 0.01 s; the first spectrum 0.40 s, now none).
+- Recalling a memory, a band-stack slot or A/B applies all its stored settings, whatever the current mode (a recall in
+  the mode already in use kept the current DMR timeslot or NFM deviation).
 - Audio from a digital codec (DMR, TETRA, DAB) is never denoised: it holds no receiver noise for RNNoise to take off
   (the Stats panel reads `off (digital)`).
 - Starting SEARCH keeps the mode's saved tuning step, and the tuner shows SEARCH's grid while it runs; the squelch kept
   while demodulation is off is saved across restarts. Console completion offers an optional argument's choices beside
   the flags, and `demod` offers `off` only after a decoder.
 - `record --output` no longer replaces an existing file: the recording takes the next free name (`-2`, ...), as
-  automatic names do, and the start message says so. An `--output` that is a directory gets an automatic name in it.
-- **Recordings are FLAC files** (`.flac`, 16-bit I and Q), written by the system's libFLAC (Ubuntu: `sudo apt install
-  libflac12t64`; macOS: `brew install flac`). The true sample rate, center frequency, gain and device are tags in the
-  file. An 8-bit radio's samples are kept exactly, in about the space the 8-bit files took. `record --format` is gone,
-  and an `--output` without `.flac` gets it. `add --type iq-file` plays a FLAC recording as it decodes it, at the
-  rate in its tags; the older `.cu8.zst` and `.cf32.zst` recordings still play.
+  automatic names do, and the start message says so. An `--output` that is an existing directory gets an automatic
+  name in it.
+- **Recordings are FLAC files** (`.flac`, 16-bit I and Q), written by the system's libFLAC (Debian and Ubuntu:
+  `sudo apt install flac`, which brings your release's libFLAC; macOS: `brew install flac`). The true sample rate,
+  center frequency, gain and device are tags in the file (FLAC's own header can't hold most radio rates: other
+  programs read 16 MS/s there as 16 kHz). An 8-bit radio's samples are kept exactly, in about the space the old
+  `.cu8.zst` files took. `record --format` is gone, and an `--output` without `.flac` gets it. `add --type iq-file`
+  plays a FLAC recording as it decodes it, at the rate in its tags; the older `.cu8.zst` and `.cf32.zst` recordings
+  still play.
 
 ### Fixed
 
@@ -62,9 +68,9 @@ Work on the trunk since 0.3.0, for the next release.
   heard far more of the time (52-70 of 72 bursts in tests, 0-58 before); a fade that takes both slots' A syncs no longer
   cuts 3-8 bursts from each call; the slicer measures its levels from each sync.
 - A damaged voice model makes VSQ unavailable whichever part of the file is damaged (none of 46,674 one-byte damages
-  to its headers gets through); a hand-edited infinite or out-of-range step or frequency is refused; memories and
-  preferences saved in another encoding read, keeping their other entries; a setting left queued when a device stops
-  no longer overrides the current ones at the next start.
+  to its headers gets through); a hand-edited infinite step, or an infinite or out-of-range frequency, is refused;
+  memories and preferences saved in another encoding read, keeping their other entries; a setting left queued when a
+  device stops no longer overrides the current ones at the next start.
 - Stopping a recording could crash tsdr: the recording was closed from the console while it was still being
   written. A stage the configuration drops is now closed by the processing thread between batches, also when a stop
   gives up waiting for that thread. Two recordings started within the same minute got one name, and the one that
@@ -72,6 +78,11 @@ Work on the trunk since 0.3.0, for the next release.
   writes its own file, and a finished recording never replaces a file already there: it takes the next free name,
   which the "recording finished" notice shows (also after `record stop`, and when finishing fails). Quitting, or
   removing the device, finalizes a recording still running (it was left as a `.partial` file).
+
+### Known issues
+
+- FT8/FT4 decode nothing after a pause until the mode is picked again.
+- ADS-B and DAB keep their capture rate after a sample-rate change.
 
 ## [0.3.0] - 2026-10-16
 

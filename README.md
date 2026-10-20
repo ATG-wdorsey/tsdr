@@ -1,10 +1,10 @@
 # TSDR
 
 This is a fork of [floens/tsdr](https://github.com/floens/tsdr) by floens, maintained by
-[ATG-wdorsey](https://github.com/ATG-wdorsey). The current release is **0.3.0** (2026-10-16): what changed in each
+[ATG-wdorsey](https://github.com/ATG-wdorsey). The current release is **0.4.0** (2026-10-19): what changed in each
 release, and when, is in [CHANGELOG.md](CHANGELOG.md). The changes in 0.2.0 were also offered upstream
 ([floens/tsdr#2-#11](https://github.com/floens/tsdr/pulls)); their full descriptions are in [PRs.md](PRs.md).
-Branch `main` holds the latest release; each release is also a tag (`v0.3.0`). Branch `master` mirrors upstream.
+Branch `main` holds the latest release; each release is also a tag (`v0.4.0`). Branch `master` mirrors upstream.
 
 TSDR is a terminal user interface for software-defined radio. It provides a
 real-time spectrum display, a waterfall, audio demodulation, and a set of
@@ -21,9 +21,9 @@ interactive radio and as a general SDR toolkit.
 
 ## Features
 
-- Real-time spectrum and waterfall display, with optional Kitty graphics for
-  high-frame-rate image rendering if your terminal supports it (recommended!
-  see also the recommended terminals in the requirements section)
+- Real-time spectrum and waterfall display, with optional high-frame-rate image
+  rendering through the Kitty graphics protocol if your terminal supports it
+  (recommended! see also the recommended terminals in the requirements section)
 - Audio demodulators: all you can expect. WFM (with stereo and RDS), NFM, AM,
   SSB (USB/LSB), CW (Morse).
 - Protocol decoders: this list is always expanding. FLEX paging (2-FSK),
@@ -38,66 +38,58 @@ interactive radio and as a general SDR toolkit.
   (VSQ) that skips transmissions without speech.
 - Runs on Linux, macOS, and Windows.
 
-### New in 0.3.0
+### New in 0.4.0
 
 The highlights; the details and the smaller changes are in [CHANGELOG.md](CHANGELOG.md).
 
-- **SEARCH** (`/`): tsdr finds activity within the captured band and stops on it, holding while the squelch is open
-  and for 2 s after, so replies are heard. It judges each channel on its averaged power: with the noise just under the
-  squelch line it spends no time on silent NFM channels (95 % with a single-frame check), and finds a signal 10 dB up
-  in 0.03-0.04 s. Edges at the dial (`{` / `}`), session lockouts (`x`; `Ctrl+X` unlocks), `[` / `]` to move it on,
-  and a level squelch for decoder modes such as DMR and APRS.
-- **VSQ, a voice squelch for SEARCH** (`v`): a small neural network trained on real over-the-air audio lets SEARCH
-  leave a transmission with no speech within 3 s, so data, tones, dead carriers and open mics are skipped and talkers
-  are held.
-- **DMR on both timeslots:** hear TS1, TS2, the first call, or both at once (TS1 left, TS2 right): `t` / `T`. Calls
-  are followed through a late entry or a missed sync in every way the two slots can align (before, both could go
-  silent for the rest of the call); a repeater about 450 Hz off frequency decodes 351 of 357 frames without a bit
-  error (53 before); the speech level is set per call, as the reference decoders do, without clipping; a symbol
-  constellation shows the signal's quality.
-- **SSTV on any mode's audio:** SSTV decodes NFM on 2 m or USB on HF without switching modes, joins a picture already
-  under way from its line syncs, takes the mistune off, ends each picture with its sender and rides through fades (the
-  next picture starts from its VIS 24 of 24 times at 6 and 12 dB SNR, against 6-8 before).
-- **Faster at the keyboard:** `f` types a frequency on the status line (line editing, history, k/M/G); `D` picks a
-  decoder; `?` lists the keys; Space pauses and resumes; `[` / `]` jump between signals and memories in the band; each
-  mode keeps its own tuning step.
-- **A spectrum you can read:** a dB grid with labels, the squelch (`SQ`), hysteresis (`HY`) and trigger (`TR`) lines,
-  a color key for the waterfall and a cold-to-hot colormap.
-- **Cleaner audio:** NFM filters CTCSS tones out (they carried 85-98 % of the audio's power on local repeaters; now
-  57 dB down); WFM stereo plays at the mono level (it was 6 dB quieter) with a better pilot detector; the squelch
-  opens at its line, closes 3 dB under it, and stays set across mode changes.
-- **And more:** ADS-B and DAB decode at the radio's own capture rate; crashes fixed (a huge typed frequency, an LO at
-  0 Hz, a damaged voice model, non-UTF-8 history files); settings made while stopped reach the radio at start; the
-  Airspy starts streaming reliably.
+- **A C/N meter:** the tuner's meter reads the tuned channel's power over the noise in its bandwidth, with the noise
+  taken from the band's floor, so neighbors and a station's skirts don't count as noise. On an FM station it holds
+  steady within about 1 dB at every gain (the old reading jumped by about 18 dB), and a 30 dB signal beside one 20 dB
+  stronger reads 29.8 dB (17.5 before). It rises at once and falls with a 0.5 s time constant.
+- **FLAC recordings:** `record` writes FLAC on a thread of its own, about a quarter of a core at 16 MS/s (zstd took
+  more than a whole core, on the thread that feeds the audio), in files about 30 % smaller on a 12-bit radio's
+  signals. The true sample rate, frequency, gain and device are tags in the file, and `add --type iq-file` plays it
+  back. `--sr` now records the band centered on the dial (it recorded around the LO and missed the channel with an LO
+  offset or in free tuning), properly filtered. Stopping a recording no longer crashes tsdr, and a recording never
+  replaces a file.
+- **DMR:** a second repeater on the same frequency is heard (each lock learns its own color code); a radio in direct
+  mode is heard far more of the time (52-70 of 72 bursts in tests, 0-58 before); a fade that takes both slots' syncs
+  no longer cuts bursts from each call.
+- **SSTV:** a picture joined while tuned low locks on its syncs instead of its black porches (72 of 72 joins right, 38
+  before); APRS, RTTY and PSK31 no longer start false pictures; looking for a picture takes about half the CPU.
+- **No stall at a mode's first use:** the first start after an install compiles tsdr's numba kernels in a background
+  process at the lowest priority, about half a minute of one core (the first DMR use took 4 s, now 0.06 s).
+- **And more:** recalling a memory, a band-stack slot or A/B applies all its stored settings, whatever the current
+  mode; audio from a digital codec (DMR, TETRA, DAB) is never denoised; `demod sstv off` stops SSTV and keeps the mode;
+  a build past a release names its commit (`tsdr --version`, the Stats panel); damaged files and hand-edited settings
+  are refused or read instead of ending the app.
 
-### Known issues in 0.3.0
+### Known issues in 0.4.0
 
-- SSTV: a picture joined while tuned more than about 100 Hz low can lock on its black porches; APRS, RTTY or PSK31
-  can start a false picture.
-- DMR: a second repeater on the same frequency goes unheard; a radio in direct mode is heard only part of the time;
-  a memory recalled while in DMR keeps the current timeslot.
 - FT8/FT4 decode nothing after a pause until the mode is picked again.
 - ADS-B and DAB keep their capture rate after a sample-rate change.
-- The first use of a mode after an install pauses for 1-4 s while its code compiles.
 
 ## Requirements
 
 - Python 3.14 or newer.
 - A supported SDR device, or a device to connect to over the internet.
+- For recording, and for playing FLAC recordings: the system's libFLAC, which most Linux desktops already have (Debian
+  and Ubuntu: `sudo apt install flac`, which brings your release's libFLAC; macOS: `brew install flac`).
 - A modern, full-featured terminal emulator. [Ghostty](https://ghostty.org) is
   recommended on Linux and macOS for its broad protocol support. Image mode uses
-  the Kitty graphics protocol; Ghostty and [Rio](https://rioterm.com/) render it
-  best. On Windows, use Rio or a recent
+  the Kitty graphics protocol, an open terminal protocol named after the terminal
+  that introduced it and supported by others too; Ghostty and
+  [Rio](https://rioterm.com/) render it best. On Windows, use Rio or a recent
   [Windows Terminal](https://github.com/microsoft/terminal) (Terminal Preview
-  preferred), where only Rio supports Kitty images.
+  preferred), where only Rio supports the protocol.
 
-Supported device types: `rtltcp`, `rtlsdr`, `spyserver`, `soapy` (any
+Supported device types: `rtltcp`, `rtlsdr`, `spyserver`, `kiwisdr`, `soapy` (any
 SoapySDR-compatible device), `iq-file`.
 
 ## Installation
 
 TSDR is not published on PyPI. Install this fork directly from GitHub with
-[uv](https://docs.astral.sh/uv/), either the latest release (`main`) or a given one (`@v0.3.0`):
+[uv](https://docs.astral.sh/uv/), either the latest release (`main`) or a given one (`@v0.4.0`):
 
 ```
 uv tool install --from git+https://github.com/ATG-wdorsey/tsdr@main tsdr
@@ -229,9 +221,11 @@ with `config --deemphasis 75` (remembered).
 `record` saves IQ to `samples/` as FLAC: 16-bit I and Q, with the true sample rate, frequency and gain as tags in the
 file. `record for 10` records 10 s; `record start` and `record stop` record until stopped. It records the whole
 capture, or with `--sr` (for example `--sr 25k`) the band centered on the dial. Recording needs the system's libFLAC
-(Ubuntu: `sudo apt install libflac12t64`; macOS: `brew install flac`). `config --flac-level` sets the compression from
-0 to 8 (default 1, about a quarter of a core at 16 MS/s; remembered). `add --type iq-file --path <file>` plays a
-recording back, including the older `.cu8.zst` and `.cf32.zst` files.
+(Debian and Ubuntu: `sudo apt install flac`; macOS: `brew install flac`). `config --flac-level` sets the compression
+from 0 to 8 (default 1, about a quarter of a core at 16 MS/s; remembered). A recording never replaces a file: a name
+already taken gets `-2`, `-3`, ..., and the "recording finished" notice gives the name saved; `--output` names a file
+or an existing folder. `add --type iq-file --path <file>` plays a recording back, including the older `.cu8.zst` and
+`.cf32.zst` files.
 
 ### Keyboard controls
 
@@ -330,7 +324,8 @@ Reception:
 - `u` / `U`: lower / raise the squelch threshold 1 dB.
 - `Ctrl+U`: disable squelch.
 - `Shift+↑` / `Shift+↓`: decrease / increase volume.
-- `n`: toggle RNNoise denoising (`DN` beside the volume).
+- `n`: toggle RNNoise denoising (`DN` beside the volume). Audio from a digital
+  codec (DMR, TETRA, DAB) is never denoised: it holds no receiver noise.
 - `Space`: pause / resume the focused radio. Paused, the radio keeps streaming
   (resuming is instant, with none of a restart's delays) and tsdr drops what it
   reads: audio, spectrum and waterfall, decoders, SEARCH and recording all stop
@@ -385,6 +380,9 @@ Memories and panels:
 - `?`: show / hide the list of keys (a panel, like the numbered ones).
 - `Alt+1` to `Alt+9`: move the mapped panel to the next edge (left, bottom, right).
 - `Ctrl+1` to `Ctrl+9`: recall a band-stack slot; `Ctrl+0`: swap the A/B band stack.
+
+Recalling a memory, a band-stack slot or A/B applies all the settings stored with
+it (mode, decoder, bandwidth, DMR timeslot, deviation), whatever the current mode.
 
 When the console is focused:
 
