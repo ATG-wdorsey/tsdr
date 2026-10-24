@@ -30,12 +30,12 @@ interactive radio and as a general SDR toolkit.
   for the waterfall, and a C/N meter for the tuned channel.
 - Audio demodulators: all you can expect. WFM (with stereo and RDS), NFM (CTCSS
   tones filtered out), AM, SSB (USB/LSB), CW (Morse).
-- Protocol decoders: this list is always expanding. FLEX paging (2-FSK),
-  ADS-B (1090 MHz Mode S), DAB+ (AAC), DMR (with AMBE+2; both timeslots,
-  co-channel repeaters, radios in direct mode), TETRA (with ACELP), P25 Phase 1
-  (control channels, following trunked calls; voice with IMBE), FT8/FT4
-  (WSJT-X), APRS (AFSK1200/AX.25), SSTV (Martin/Scottie/Robot; on NFM, SSB or
-  AM audio, joined under way), NAVTEX, ACARS.
+- Protocol decoders: this list is always expanding. Project 25 (P25) Phase 1
+  (control channels, following trunked calls; voice with IMBE), FLEX paging
+  (2-FSK), ADS-B (1090 MHz Mode S), DAB+ (AAC), DMR (with AMBE+2; both
+  timeslots, co-channel repeaters, radios in direct mode), TETRA (with ACELP),
+  FT8/FT4 (WSJT-X), APRS (AFSK1200/AX.25), SSTV (Martin/Scottie/Robot; on NFM,
+  SSB or AM audio, joined under way), NAVTEX, ACARS.
 - Clean reception from real radios: decimation in stages keeps strong signals
   elsewhere in the capture off the tuned channel; zero-IF radios keep the LO
   beside the channel; the PlutoSDR's analog filter follows the sample rate;
