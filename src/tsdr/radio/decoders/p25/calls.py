@@ -1,4 +1,4 @@
-"""The calls a P25 control channel grants (M4 of plan_p25.md): one record per call, created and continued by grants and
+"""The calls a P25 control channel grants: one record per call, created and continued by grants and
 updates, closed into the call log.
 
 A call's identity is a serial (`cid`), never reused while the decoder lives. A grant or update continues its talkgroup's
@@ -63,7 +63,7 @@ class P25Call:
 @dataclass
 class CallRecord:
     """One call (pipeline thread only): what the control channel said of it, its follow state, and the facts its
-    outcome is decided from (DESIGN-M4b 4.2, 4.4)."""
+    outcome is decided from."""
 
     cid: int
     system: tuple[int, int] | None
@@ -95,7 +95,7 @@ class CallRecord:
 
     @property
     def outcome(self) -> str:
-        """The one outcome rule (DESIGN-M4b 4.4): learned, played, muted; then why it stopped or wasn't taken."""
+        """The one outcome rule: learned, played, muted; then why it stopped or wasn't taken."""
         if self.learned is not None and self.learned[0] != voice.ALGID_CLEAR:
             return "learned"
         if self.audible:

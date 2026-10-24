@@ -1,10 +1,10 @@
 # TSDR
 
 This is a fork of [floens/tsdr](https://github.com/floens/tsdr) by floens, maintained by
-[ATG-wdorsey](https://github.com/ATG-wdorsey). The current release is **0.4.0** (2026-10-19): what changed in each
+[ATG-wdorsey](https://github.com/ATG-wdorsey). The current release is **0.5.0** (2026-10-23): what changed in each
 release, and when, is in [CHANGELOG.md](CHANGELOG.md). The changes in 0.2.0 were also offered upstream
 ([floens/tsdr#2-#11](https://github.com/floens/tsdr/pulls)); their full descriptions are in [PRs.md](PRs.md).
-Branch `main` holds the latest release; each release is also a tag (`v0.4.0`). Branch `master` mirrors upstream.
+Branch `main` holds the latest release; each release is also a tag (`v0.5.0`). Branch `master` mirrors upstream.
 
 TSDR is a terminal user interface for software-defined radio. It provides a
 real-time spectrum display, a waterfall, audio demodulation, and a set of
@@ -17,57 +17,71 @@ interactive radio and as a general SDR toolkit.
 
 > **Note:** TSDR is in heavy development. Interfaces and commands may change.
 
-![Screenshot of TSDR](docs/files/screenshot_20260604.png)
+![TSDR following a P25 trunked system](docs/files/screenshot_20261023.png)
+
+![TSDR on the 20 m band in USB, with the bandplan overlay](docs/files/screenshot_20260604.png)
 
 ## Features
 
 - Real-time spectrum and waterfall display, with optional high-frame-rate image
   rendering through the Kitty graphics protocol if your terminal supports it
-  (recommended! see also the recommended terminals in the requirements section)
-- Audio demodulators: all you can expect. WFM (with stereo and RDS), NFM, AM,
-  SSB (USB/LSB), CW (Morse).
+  (recommended! see also the recommended terminals in the requirements section).
+  A dB grid with labels, the squelch, hysteresis and trigger lines, a color key
+  for the waterfall, and a C/N meter for the tuned channel.
+- Audio demodulators: all you can expect. WFM (with stereo and RDS), NFM (CTCSS
+  tones filtered out), AM, SSB (USB/LSB), CW (Morse).
 - Protocol decoders: this list is always expanding. FLEX paging (2-FSK),
-  ADS-B (1090 MHz Mode S), DAB+ (AAC), DMR (with AMBE+2), TETRA (with ACELP),
-  P25 Phase 1 (control channels, following trunked calls; voice with IMBE), FT8/FT4 (WSJT-X), APRS
-  (AFSK1200/AX.25), SSTV (Martin/Scottie/Robot), NAVTEX, ACARS.
+  ADS-B (1090 MHz Mode S), DAB+ (AAC), DMR (with AMBE+2; both timeslots,
+  co-channel repeaters, radios in direct mode), TETRA (with ACELP), P25 Phase 1
+  (control channels, following trunked calls; voice with IMBE), FT8/FT4
+  (WSJT-X), APRS (AFSK1200/AX.25), SSTV (Martin/Scottie/Robot; on NFM, SSB or
+  AM audio, joined under way), NAVTEX, ACARS.
+- Clean reception from real radios: decimation in stages keeps strong signals
+  elsewhere in the capture off the tuned channel; zero-IF radios keep the LO
+  beside the channel; the PlutoSDR's analog filter follows the sample rate;
+  SoapySDR streams are read on a native thread, so pauses in Python can't drop
+  radio samples, and the audio plays without gaps.
 - Multiple devices and multiple independent processing pipelines per device. It
   also connects to remote devices, such as KiwiSDR and spyserver.
+- Driven from the keyboard: type a frequency (`f`), pick a demodulator or a
+  decoder (`d`, `D`), list the keys (`?`), pause (Space), jump between signals
+  and memories (`[` / `]`); each mode keeps its own tuning step.
 - A command console with history, tab-completion, and argparse-style help.
-- Frequency memories, bandplan overlays, IQ recording, and squelch.
+- Frequency memories, bandplan overlays, squelch, and IQ recording to FLAC at
+  the radio's full rate.
 - SEARCH for active channels within the captured band, with a voice squelch
   (VSQ) that skips transmissions without speech.
 - Runs on Linux, macOS, and Windows.
 
-### New in 0.4.0
+### New in 0.5.0
 
 The highlights; the details and the smaller changes are in [CHANGELOG.md](CHANGELOG.md).
 
-- **A C/N meter:** the tuner's meter reads the tuned channel's power over the noise in its bandwidth, with the noise
-  taken from the band's floor, so neighbors and a station's skirts don't count as noise. On an FM station it holds
-  steady within about 1 dB at every gain (the old reading jumped by about 18 dB), and a 30 dB signal beside one 20 dB
-  stronger reads 29.8 dB (17.5 before). It rises at once and falls with a 0.5 s time constant.
-- **FLAC recordings:** `record` writes FLAC on a thread of its own, about a quarter of a core at 16 MS/s (zstd took
-  more than a whole core, on the thread that feeds the audio), in files about 30 % smaller on a 12-bit radio's
-  signals. The true sample rate, frequency, gain and device are tags in the file, and `add --type iq-file` plays it
-  back. `--sr` now records the band centered on the dial (it recorded around the LO and missed the channel with an LO
-  offset or in free tuning), properly filtered. Stopping a recording no longer crashes tsdr, and a recording never
-  replaces a file.
-- **DMR:** a second repeater on the same frequency is heard (each lock learns its own color code); a radio in direct
-  mode is heard far more of the time (52-70 of 72 bursts in tests, 0-58 before); a fade that takes both slots' syncs
-  no longer cuts bursts from each call.
-- **SSTV:** a picture joined while tuned low locks on its syncs instead of its black porches (72 of 72 joins right, 38
-  before); APRS, RTTY and PSK31 no longer start false pictures; looking for a picture takes about half the CPU.
-- **No stall at a mode's first use:** the first start after an install compiles tsdr's numba kernels in a background
-  process at the lowest priority, about half a minute of one core (the first DMR use took 4 s, now 0.06 s).
-- **And more:** recalling a memory, a band-stack slot or A/B applies all its stored settings, whatever the current
-  mode; audio from a digital codec (DMR, TETRA, DAB) is never denoised; `demod sstv off` stops SSTV and keeps the mode;
-  a build past a release names its commit (`tsdr --version`, the Stats panel); damaged files and hand-edited settings
-  are refused or read instead of ending the app.
+- **P25 Phase 1** (`D 5`, `demod p25`), C4FM or CQPSK (simulcast), in a P25 panel:
+  - **a trunking control channel** at the dial: the system and site, the adjacent sites, and the calls as they are
+    granted (talkgroup, frequency and slot, encryption and emergency flags);
+  - **voice** at the dial: IMBE speech with the call's talkgroup and talker; an encrypted call is muted, and a
+    talkgroup's encryption is named (AES, DES, ADP...);
+  - **trunked calls followed** from a site's control channel, on a second channel inside the capture while the control
+    channel keeps decoding, one call at a time. The panel shows the active channels, the talkgroups and a call log;
+    `Tab` gives it the keys to choose the talkgroups followed (also `p25 follow`), and `c` or `p25 fit` put the
+    capture on the site's channels.
+  - Phase 2 comes later.
+- **The decoder panel** opens in the left column, where its rows fill the height (a saved layout keeps its place).
+- **Fixed:** a mode chosen after demodulation was turned off starts at its own bandwidth (WFM came on at 12.5 kHz
+  after NFM or P25).
 
-### Known issues in 0.4.0
+### Known issues in 0.5.0
 
 - FT8/FT4 decode nothing after a pause until the mode is picked again.
-- ADS-B and DAB keep their capture rate after a sample-rate change.
+- ADS-B, DAB, DMR and TETRA decode nothing, without a warning, after the sample rate changes while they run.
+- ACARS can close tsdr when it plays a recording made at 8 or 10 kS/s; FT8/FT4, WFM and TETRA fail on such a
+  recording.
+- P25: a short voice reply beside a much stronger P25 signal on a neighboring channel can lose much of its audio.
+- P25: on a radio without a fixed list of sample rates (a Pluto, an RTL-SDR), `p25 fit` can set a rate beyond the
+  radio's when the site's channels spread wider than it can capture (as when they span two bands).
+- A/B back to a setting saved with demodulation off keeps the current mode, with that setting's bandwidth.
+- `record --output` with a folder that doesn't exist yet records to a hidden `.flac` file in it.
 
 ## Requirements
 
@@ -89,7 +103,7 @@ SoapySDR-compatible device), `iq-file`.
 ## Installation
 
 TSDR is not published on PyPI. Install this fork directly from GitHub with
-[uv](https://docs.astral.sh/uv/), either the latest release (`main`) or a given one (`@v0.4.0`):
+[uv](https://docs.astral.sh/uv/), either the latest release (`main`) or a given one (`@v0.5.0`):
 
 ```
 uv tool install --from git+https://github.com/ATG-wdorsey/tsdr@main tsdr
@@ -413,10 +427,10 @@ The panel's first line says what the dial is on (control, voice or data channel,
 frequency); the call log shows each call's start time and outcome (the tags are explained in `?`); the active channels
 show each channel's SNR. Starting P25 selects free tuning, so the capture stays on the site while the dial is on its
 control channel. `c` then centers the capture on the site's channels heard, at the sample rate as it is, with the LO at
-least 50 kHz from every one of them; when that rate can't hold them all, it keeps the control channel inside and says
-that channels at the site's edge stay outside (`p25 fit` also raises the rate).
+least 50 kHz from every one of them where it can; when that rate can't hold them all, it keeps the control channel
+inside and says that channels at the site's edge stay outside (`p25 fit` also raises the rate).
 
-In the console: `p25 follow <TG>... on|off`, `p25 follow all|none`, `p25 new on|off`, `p25 rescan <TG> [--forget]`,
+In the console: `p25 follow <TG>... on|off`, `p25 follow all|none`, `p25 new on|off`, `p25 rescan <TG>... [--forget]`,
 `p25 talkgroups`, and `p25 fit`, which sets the capture's center and rate to hold the site's channels heard.
 
 ## Configuration and data

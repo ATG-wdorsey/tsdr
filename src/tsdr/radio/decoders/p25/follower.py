@@ -1,4 +1,4 @@
-"""Following trunked calls on the second channel (M4 of plan_p25.md; DESIGN-M4b section 4): which call has the channel,
+"""Following trunked calls on the second channel: which call has the channel,
 its phase, and when it ends. Pure logic: its inputs are the call records, the choices and the second channel's
 `VoiceReport`; its outputs are takes, stops and what to do with a chunk's audio.
 
@@ -36,7 +36,7 @@ PAUSES = ("unfollowed", "preempted")
 
 @dataclass(frozen=True)
 class VoiceDecision:
-    """The follower's reading of one chunk of the followed call's voice (DESIGN-M4b 4.3 step 2)."""
+    """The follower's reading of one chunk of the followed call's voice."""
 
     keep_audio: bool
     stop: str | None = None

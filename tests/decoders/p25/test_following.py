@@ -1,6 +1,6 @@
-"""P25 following's logic without DSP (DESIGN-M4b sections 3-4): the call records' identity, the one outcome rule, the
-follower's phases, and what a talkgroup learns. The sequence grid (qa/work/p25/m4/seq) checks the sequences; these
-pin the rules most easily broken."""
+"""P25 following's logic without DSP: the call records' identity, the one outcome rule, the follower's phases, and
+what a talkgroup learns. A sequence checker outside the suite drives longer sequences; these pin the rules most easily
+broken."""
 
 from tsdr.radio.decoders.p25 import systems
 from tsdr.radio.decoders.p25.calls import DONE, PAUSED, CallRecord, CallTracker

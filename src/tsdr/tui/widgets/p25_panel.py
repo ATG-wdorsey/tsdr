@@ -1,4 +1,4 @@
-"""The P25 panel's logic, without Textual (DESIGN-M4b 3.7, Table E, 10.1-10.3): the rows of each view, the cursor's key,
+"""The P25 panel's logic, without Textual: the rows of each view, the cursor's key,
 what a key acts on, the confirmation pending. The widget (`p25_widget.py`) renders it; the keyboard calls it.
 
 - **The cursor holds a row's key, never an index:** rows come and go and reorder under it. When its row has gone, it

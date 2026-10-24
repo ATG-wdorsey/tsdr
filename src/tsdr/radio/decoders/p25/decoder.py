@@ -1,4 +1,4 @@
-"""P25 decoder: the Phase 1 channel at the dial, a control channel (M2 of plan_p25.md) or a voice
+"""P25 decoder: the Phase 1 channel at the dial, a control channel or a voice
 channel, trunked or conventional (M3), and the calls a control channel grants, followed on a second
 channel inside the capture (M4); Phase 2 comes later.
 
@@ -904,7 +904,7 @@ class P25Decoder(Demodulator):
         return (frequency_hz - dial) + error * frequency_hz / cc
 
     def _verdict(self, call: CallRecord, state: systems.SystemState) -> str | None:
-        """Why `call` can't be followed (DESIGN-M4b 4.3; a P25LogEntry outcome), or None when it can."""
+        """Why `call` can't be followed (a P25LogEntry outcome), or None when it can."""
         if call.frequency_hz is None:
             return "unknown"
         if call.slot is not None:
@@ -921,7 +921,7 @@ class P25Decoder(Demodulator):
         return None
 
     def _follow(self, iq: np.ndarray, now: float) -> None:
-        """The second channel (DESIGN-M4b 4.3): feed the call followed and see whether it goes on; take the best call
+        """The second channel: feed the call followed and see whether it goes on; take the best call
         wanting the channel (fed this same chunk); close the calls ended into the log."""
         state = self._state()
         f = self._follower

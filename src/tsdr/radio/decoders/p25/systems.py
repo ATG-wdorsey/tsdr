@@ -1,5 +1,4 @@
-"""The P25 systems heard and their talkgroups: which ones are followed, and what has been learned of each (M4 of
-plan_p25.md; DESIGN-M4b section 3).
+"""The P25 systems heard and their talkgroups: which ones are followed, and what has been learned of each.
 
 One `SystemState` per system (WACN and system ID), shared by the decoder (the pipeline thread), which reads the follow
 choices and records what it hears and learns, and the P25 panel and console commands (the main thread), which change the
@@ -83,7 +82,7 @@ class SystemState:
 
     def skips_flagged(self, group: int) -> bool:
         """A flagged grant of this talkgroup isn't taken: a key other than clear known, the flag not known wrong, and no
-        look pending (DESIGN-M4b 3.3)."""
+        look pending."""
         row = self._rows.get(group)
         return (
             row is not None

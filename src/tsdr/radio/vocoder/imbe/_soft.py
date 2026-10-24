@@ -5,7 +5,7 @@ in every combination (2^p trials), each trial is decoded by the hard decoder, an
 disagreement with the received bits weighs least (the sum of the reliabilities of the bits it
 changes) is kept. c0 first: its data seeds the pseudo-random sequence that covers c1..c6.
 
-Measured (2026-10-17, `qa/work/p25/m3/soft/`): synthesized C4FM voice with noise, frames whose
+Measured (2026-10-17): synthesized C4FM voice with noise, frames whose
 88 bits come out right, hard -> soft: 6 dB 67.0 -> 76.8 %, 8 dB 91.3 -> 93.7 %; c0..c3 right at
 5 dB 77.8 -> 82.4 %. On a weak simulcast it recovered a frame whose c0 the hard decoder miscorrected.
 """

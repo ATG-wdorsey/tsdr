@@ -1,4 +1,4 @@
-"""The second channel a P25 decoder follows calls on (M4 of plan_p25.md): the capture shifted to the granted channel, a
+"""The second channel a P25 decoder follows calls on: the capture shifted to the granted channel, a
 decoder of its own (its voice at its dial, never following), and what it heard each chunk as one immutable report.
 
 The shift centers the channel with the receiver's error the control channel measures, so the inner decoder's search

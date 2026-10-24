@@ -81,7 +81,7 @@ def needs_free_tuning(
     pipelines: Mapping[str, PipelineConfig],
     before: Mapping[str, PipelineConfig] | None = None,
 ) -> bool:
-    """D7 (DESIGN-M4b 10.1 item 7): a demodulator that decodes channels across the capture (P25 following calls)
+    """A demodulator that decodes channels across the capture (P25 following calls)
     keeps the capture on them, in free tuning, when it comes into service: chosen, restored with a saved
     configuration, or started (review 52, R52-3). `before`, for a change of pipelines: only a change that brings it in
     selects it, so a later squelch change or recording keeps a tuning mode chosen since (review 53, R53-4)."""

@@ -66,9 +66,9 @@ def center_on_site(device_id: str) -> str:
 
 
 def _fit(device_id: str) -> str:
-    """The capture center and rate that hold the site's channels heard, the dial staying on its control channel
-    (DESIGN-M4b 10.1 item 7): the rate raised only when the current one can't. When no rate the device has can, the
-    control channel is kept inside, as `c` keeps it."""
+    """The capture center and rate that hold the site's channels heard, the dial staying on its control channel: the
+    rate raised only when the current one can't. When no rate the device has can, the control channel is kept inside,
+    as `c` keeps it."""
     decoder = _decoder(device_id)
     fit = decoder.fit()
     if fit is None:

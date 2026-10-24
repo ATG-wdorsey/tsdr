@@ -59,7 +59,7 @@ _MAX_REPEATS = 3
 # Soft-decision correction (`_soft`): the bits flipped in every combination, and the soft distances
 # (c0's, the frame's) up to which a corrected frame is trusted. A frame is played when mbelib's rule
 # would play it (errors counted on the soft correction) or the correction is trusted. Measured on
-# synthesized voice (qa/work/p25/m3/soft/), frames played with c0..c3 right / wrong: 5 dB 80.2 / 17.3 %
+# synthesized voice, frames played with c0..c3 right / wrong: 5 dB 80.2 / 17.3 %
 # (hard decoding and mbelib's rule: 65.5 / 18.1 %), 6 dB 99.9 / 0.0 % (93.7 / 0.7 %).
 _CHASE_GOLAY = 4
 _CHASE_HAMMING = 3

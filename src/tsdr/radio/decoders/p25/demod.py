@@ -17,7 +17,7 @@ detector needs no carrier lock.
 the detector distorts its phase, so each symbol carries a few percent of its neighbors and the outer
 levels come out near +-2.7 (a sheared eye), while a 5 kHz one passes the signal whole but lets in more
 noise, which a differential detector can't average away. Measured on real control channels
-(2026-10-17, `qa/work/p25/m3/filter/`): at 4 dB the 5 kHz filter decodes a tenth of the blocks the
+(2026-10-17): at 4 dB the 5 kHz filter decodes a tenth of the blocks the
 3 kHz one does, while on strong signals it leaves the symbols far cleaner. Both run, sampled at the
 same instants, and the output follows whichever has the smaller symbol spread (with hysteresis); the
 timing follows the path in use, the frequency tracking the narrow path always. The timing loop is fast until frame syncs show up
@@ -59,8 +59,8 @@ _CHANNEL_SYMBOLS = 8  # the channel filters' length (the same for both, so the s
 # Timing loop gain per symbol, on Gardner's error from unit-RMS samples: fast to find the timing, slow
 # to hold it once frame syncs show it is right (within _SLOW_HOLD_SYMBOLS of the last). A simulcast's
 # delay spread makes Gardner's error noisy, and a fast loop slips symbols mid-frame: on a weak 800 MHz
-# simulcast voice channel 0.05 left 41 % of IMBE frames with 10 or more errors, 0.004 4 % (2026-10-17,
-# qa/work/p25/m3/op25cmp/); C4FM at 4 dB 430 -> 536 good blocks.
+# simulcast voice channel 0.05 left 41 % of IMBE frames with 10 or more errors, 0.004 4 % (2026-10-17);
+# C4FM at 4 dB 430 -> 536 good blocks.
 _TIMING_GAIN_FAST = 0.05
 _TIMING_GAIN_SLOW = 0.004
 # About 1.5 LDU periods: the next transmission, perhaps from another transmitter with unrelated
@@ -74,8 +74,8 @@ _FREQ_WEIGHT = 0.002
 # carrier (the two filters' powers), or the fourth powers of the latest steps agree, their average over
 # about _COHERENT_STEPS steps at least _COHERENT long. A strong neighbor in the wide filter can hide the
 # carrier but not the agreement, as its leakage doesn't agree (measured on the narrow path: a CQPSK
-# neighbor's leakage through the wide one did). Measured (12,000-sample chunks, 10 s,
-# `qa/work/p25/m3/r27fix/coh3.out`): white noise at most 0.26, also beside a C4FM neighbor 12.5 kHz
+# neighbor's leakage through the wide one did). Measured (12,000-sample chunks, 10 s):
+# white noise at most 0.26, also beside a C4FM neighbor 12.5 kHz
 # away and 50-60 dB stronger or a CQPSK one 6.25-7.5 kHz away; C4FM at 10 dB C/N 0.39 (median), at
 # 30 dB 0.60 (the narrow filter's ISI), beside the C4FM neighbor 0.48 / 0.42 / 0.32; CQPSK at 6 dB 0.41.
 _COHERENT_STEPS = 48.0
@@ -103,8 +103,8 @@ _CARRIER_WINDOW_S = 0.02
 # The signal's mean frequency in the narrow path (the phase of its lag-1 autocorrelation, averaged over
 # about this long, a plain mean until then; started over at each coarse step): unlike the fourth-power
 # tracking it has no ambiguity, so it tells a signal near the channel center from one a whole turn per
-# symbol (4800 Hz) away, which decodes a block now and then (reviews 28, 29). Measured
-# (`qa/work/p25/m3/r29fix/center.out`): within 600 Hz of the center it reads within 550 Hz, also beside
+# symbol (4800 Hz) away, which decodes a block now and then (reviews 28, 29). Measured:
+# within 600 Hz of the center it reads within 550 Hz, also beside
 # strong neighbors; 4.2-5.1 kHz away, 1450-2850 Hz at 12-30 dB C/N (below that no block decodes there).
 _CENTER_TC_S = 0.1
 # The spectrum around the channel, for the decoder's search (`located_hz`). A transmission more than about 1 kHz off the
@@ -114,8 +114,8 @@ _CENTER_TC_S = 0.1
 # _BUMP_DB down (a P25 signal 4.1-5.3 kHz; a receiver's spur 1.5 kHz, the smoothing), standing _BUMP_DB above the
 # lowest point on one side out to _BUMP_FIELD_HZ and _BUMP_DIP_DB above the one on the other. A neighbor 12.5 kHz
 # away only slopes up toward its side, but a 50 dB one's skirt fills the valley beside a transmission to within 4-5 dB
-# of its top (review 35), so that side is held to less, and the bump ends at the valley rather than climbing the skirt
-# (`qa/work/p25/m3/r34eval/`: `presence.out`, `peak-cen.out`, `peak-width.out`; `r35eval/`). The usual coarse
+# of its top (review 35), so that side is held to less, and the bump ends at the valley rather than climbing the skirt.
+# The usual coarse
 # acquisition ahead of timing, a band-edge frequency-locked loop (harris), compares the powers at the band's two
 # edges, which a neighbor's skirt tips; this takes the whole band's shape instead. The mean power of the
 # _SPECTRUM_SIZE-point Hann-windowed segments of the latest _SPECTRUM_S (none before that much: a plain window, so a

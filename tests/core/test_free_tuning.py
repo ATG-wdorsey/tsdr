@@ -1,4 +1,4 @@
-"""P25 keeps the capture on the site: free tuning when its decoder comes into service (DESIGN-M4b D7), whichever path
+"""P25 keeps the capture on the site: free tuning when its decoder comes into service, whichever path
 brings it: chosen, restored with a saved configuration, added as a pipeline, or started (review 52, R52-3: a saved P25
 configuration started in center tuning, the capture following the dial off the site)."""
 

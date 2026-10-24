@@ -1,5 +1,5 @@
-"""The P25 panel's state (DESIGN-M4b 3.7, Table E): the cursor holds a row's key, and a key acts on the target taken
-when it was pressed. Logic only, no rendering; the sequence grid (qa/work/p25/m4/seq) drives it through sequences."""
+"""The P25 panel's state: the cursor holds a row's key, and a key acts on the target taken when it was pressed. Logic
+only, no rendering; a sequence checker outside the suite drives it through longer sequences."""
 
 from tsdr.radio.decoders.p25 import systems
 from tsdr.radio.decoders.p25.calls import P25Call

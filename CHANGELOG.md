@@ -7,9 +7,10 @@ git tag (`v0.2.0`, ...); `main` on GitHub always holds the latest release. Versi
 The changes in 0.2.0 were also offered upstream as pull requests; their full descriptions (why, cause, change,
 testing) are in [PRs.md](PRs.md).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-23
 
-Work on the trunk since 0.4.0, for the next release.
+P25 Phase 1: a trunking control channel, voice with IMBE, and trunked calls followed from the control channel, in a P25
+panel with keys of its own: the work of 2026-10-17 to 2026-10-20 since 0.4.0, in use since.
 
 ### Added
 
@@ -42,6 +43,18 @@ Work on the trunk since 0.4.0, for the next release.
 
 - A mode chosen after demodulation was turned off (`d o`, `D o`, `demod off`), also after a restart, starts at its own
   bandwidth, as a change from the last mode does: WFM chosen after NFM or P25 came on at 12.5 kHz.
+
+### Known issues
+
+- FT8/FT4 decode nothing after a pause until the mode is picked again.
+- ADS-B, DAB, DMR and TETRA decode nothing, without a warning, after the sample rate changes while they run.
+- ACARS can close tsdr when it plays a recording made at 8 or 10 kS/s; FT8/FT4, WFM and TETRA fail on such a
+  recording.
+- P25: a short voice reply beside a much stronger P25 signal on a neighboring channel can lose much of its audio.
+- P25: on a radio without a fixed list of sample rates (a Pluto, an RTL-SDR), `p25 fit` can set a rate beyond the
+  radio's when the site's channels spread wider than it can capture (as when they span two bands).
+- A/B back to a setting saved with demodulation off keeps the current mode, with that setting's bandwidth.
+- `record --output` with a folder that doesn't exist yet records to a hidden `.flac` file in it.
 
 ## [0.4.0] - 2026-10-19
 
